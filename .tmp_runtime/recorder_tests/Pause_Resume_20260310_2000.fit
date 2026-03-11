@@ -1,0 +1,20 @@
+{
+  "workout_name": "Pause Resume",
+  "started_at_utc": "2026-03-10T20:00:00Z",
+  "records": [
+    {
+      "timestamp_utc": "2026-03-10T20:00:00Z",
+      "power_watts": 210,
+      "heart_rate_bpm": 150,
+      "cadence_rpm": 90.0,
+      "speed_mps": 10.2
+    },
+    {
+      "timestamp_utc": "2026-03-10T20:00:02Z",
+      "power_watts": 220,
+      "heart_rate_bpm": 150,
+      "cadence_rpm": 90.0,
+      "speed_mps": 10.2
+    }
+  ]
+}

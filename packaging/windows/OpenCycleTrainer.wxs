@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="OpenCycleTrainer"
+    Language="1033"
+    Version="$(var.AppVersion)"
+    Manufacturer="OpenCycleTrainer"
+    UpgradeCode="D7199057-45DF-4751-A5E8-3D5D87297C86">
+    <Package
+      InstallerVersion="500"
+      Compressed="yes"
+      InstallScope="perMachine"
+      Platform="x64" />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of OpenCycleTrainer is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="OpenCycleTrainer" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="OpenCycleTrainer" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="C130DC65-ACFA-4BDE-AD4E-90EC11F0D8A7">
+        <Shortcut
+          Id="ApplicationStartMenuShortcut"
+          Name="OpenCycleTrainer"
+          Target="[INSTALLDIR]OpenCycleTrainer.exe"
+          WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="RemoveProgramMenuFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\OpenCycleTrainer"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent" Guid="8DB2F741-B41A-42C3-B9E2-F11291C6F5D4">
+        <Shortcut
+          Id="ApplicationDesktopShortcut"
+          Name="OpenCycleTrainer"
+          Target="[INSTALLDIR]OpenCycleTrainer.exe"
+          WorkingDirectory="INSTALLDIR" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\OpenCycleTrainer"
+          Name="DesktopShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="OpenCycleTrainer" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+  </Product>
+</Wix>

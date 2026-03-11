@@ -1,0 +1,11 @@
+{
+  "ftp": 250,
+  "lead_time": 0,
+  "opentrueup_enabled": false,
+  "tile_selections": [
+    "heart_rate",
+    "workout_avg_power"
+  ],
+  "display_units": "metric",
+  "default_workout_behavior": "workout_mode"
+}

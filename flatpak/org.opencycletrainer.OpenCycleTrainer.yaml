@@ -1,0 +1,24 @@
+app-id: org.opencycletrainer.OpenCycleTrainer
+runtime: org.kde.Platform
+runtime-version: "6.9"
+sdk: org.kde.Sdk
+command: opencycletrainer
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=network
+  - --allow=bluetooth
+  - --system-talk-name=org.bluez
+  - --filesystem=xdg-documents
+
+modules:
+  - name: opencycletrainer
+    buildsystem: simple
+    build-commands:
+      - python3 -m pip install --verbose --exists-action=i --prefix=/app --no-build-isolation .
+    sources:
+      - type: dir
+        path: ..

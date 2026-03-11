@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencycletrainer"
+version = "0.1.0"
+description = "OpenCycleTrainer desktop app scaffold"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "bleak>=0.22",
+  "fit-tool>=0.9.15",
+  "PySide6>=6.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+opencycletrainer = "opencycletrainer.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["opencycletrainer/tests"]
+python_files = ["test_*.py"]
+
+[tool.setuptools.packages.find]
+include = ["opencycletrainer*"]
