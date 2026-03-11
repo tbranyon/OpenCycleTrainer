@@ -73,6 +73,11 @@ class SettingsScreen(QWidget):
         self.lead_time_spinbox.setValue(self._settings.lead_time)
         general_layout.addRow("Lead Time (s)", self.lead_time_spinbox)
 
+        self.windowed_power_window_spinbox = QSpinBox(general_group)
+        self.windowed_power_window_spinbox.setRange(1, 10)
+        self.windowed_power_window_spinbox.setValue(self._settings.windowed_power_window_seconds)
+        general_layout.addRow("Power Window (s)", self.windowed_power_window_spinbox)
+
         self.opentrueup_checkbox = QCheckBox("Enable OpenTrueUp", general_group)
         self.opentrueup_checkbox.setChecked(self._settings.opentrueup_enabled)
         general_layout.addRow("OpenTrueUp", self.opentrueup_checkbox)
@@ -139,6 +144,7 @@ class SettingsScreen(QWidget):
                 self.default_behavior_combo,
                 DEFAULT_BEHAVIOR_OPTIONS,
             ),
+            windowed_power_window_seconds=self.windowed_power_window_spinbox.value(),
         )
 
     def set_tile_selected(self, tile_key: str, selected: bool) -> None:

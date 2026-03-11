@@ -7,17 +7,20 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.settings import AppSettings, load_settings
 from .hotkeys import WorkoutHotkeys
 from .tile_config import TILE_LABEL_BY_KEY, normalize_tile_selections
+from .workout_chart import WorkoutChartWidget
 
 MODE_OPTIONS = ("ERG", "Resistance", "Hybrid")
 
@@ -58,6 +61,7 @@ class WorkoutScreen(QWidget):
     skip_interval_requested = Signal()
     jog_requested = Signal(int)
     pause_resume_requested = Signal()
+    load_workout_requested = Signal()
 
     def __init__(
         self,
@@ -76,6 +80,7 @@ class WorkoutScreen(QWidget):
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(10)
 
+        self.title_widget = QStackedWidget(self)
         self.title_label = QLabel("Workout", self)
         self.title_label.setObjectName("workoutScreenTitle")
         title_font = self.title_label.font()
@@ -83,8 +88,18 @@ class WorkoutScreen(QWidget):
         title_font.setPointSize(title_font.pointSize() + 4)
         self.title_label.setFont(title_font)
         self.title_label.setAlignment(Qt.AlignCenter)
-        root_layout.addWidget(self.title_label)
+        self.load_workout_button = QPushButton("Load Workout", self)
+        self.load_workout_button.setObjectName("loadWorkoutButton")
+        font = self.load_workout_button.font()
+        font.setPointSize(font.pointSize() + 2)
+        self.load_workout_button.setFont(font)
+        self.load_workout_button.clicked.connect(self.load_workout_requested)
+        self.title_widget.addWidget(self.title_label)
+        self.title_widget.addWidget(self.load_workout_button)
+        self.title_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        root_layout.addWidget(self.title_widget)
 
+        self._tile_by_key: dict[str, MetricTile] = {}
         self._build_control_buttons(root_layout)
         self._build_alert_banner(root_layout)
         self._build_metrics_section(root_layout)
@@ -113,6 +128,37 @@ class WorkoutScreen(QWidget):
         self._selected_tiles = normalize_tile_selections(settings.tile_selections)
         self._kj_mode_active = settings.default_workout_behavior == "kj_mode"
         self._render_selected_tiles()
+
+    def set_workout_name(self, workout_name: str | None) -> None:
+        name = str(workout_name or "").strip()
+        if name:
+            self.title_label.setText(name)
+            self.title_widget.setCurrentWidget(self.title_label)
+        else:
+            self.title_widget.setCurrentWidget(self.load_workout_button)
+
+    def set_mandatory_metrics(
+        self,
+        *,
+        elapsed_text: str,
+        remaining_text: str,
+        interval_remaining_text: str,
+    ) -> None:
+        self.elapsed_time_tile.value_label.setText(elapsed_text)
+        self.remaining_tile.value_label.setText(remaining_text)
+        self.interval_remaining_tile.value_label.setText(interval_remaining_text)
+
+    def set_session_state(self, state: str) -> None:
+        state_key = str(state).strip().lower()
+        can_start = state_key in {"idle", "ready", "stopped", "finished"}
+        can_pause = state_key in {"running", "ramp_in"}
+        can_resume = state_key == "paused"
+        can_stop = state_key in {"running", "ramp_in", "paused"}
+
+        self.start_button.setEnabled(can_start)
+        self.pause_button.setEnabled(can_pause)
+        self.resume_button.setEnabled(can_resume)
+        self.end_button.setEnabled(can_stop)
 
     def set_mode_state(self, mode: str) -> None:
         if mode not in MODE_OPTIONS:
@@ -213,20 +259,24 @@ class WorkoutScreen(QWidget):
         )
         root_layout.addWidget(self.alert_label)
 
-    def _build_chart_scaffolding(self, root_layout: QVBoxLayout) -> None:
-        self.interval_chart_group = QGroupBox("Interval Chart", self)
-        interval_layout = QVBoxLayout(self.interval_chart_group)
-        interval_layout.addWidget(
-            QLabel("TODO: Plot 1s power, target power, and HR for the current interval.", self),
-        )
-        root_layout.addWidget(self.interval_chart_group)
+    def load_workout_chart(self, workout: Workout, ftp_watts: int) -> None:
+        self.chart_widget.load_workout(workout, ftp_watts)
 
-        self.workout_chart_group = QGroupBox("Workout Chart", self)
-        workout_layout = QVBoxLayout(self.workout_chart_group)
-        workout_layout.addWidget(
-            QLabel("TODO: Plot 1s power, target power, and HR for the full workout.", self),
-        )
-        root_layout.addWidget(self.workout_chart_group)
+    def update_charts(
+        self,
+        elapsed_seconds: float,
+        current_interval_index: int | None,
+        power_series: list[tuple[float, int]],
+        hr_series: list[tuple[float, int]],
+    ) -> None:
+        self.chart_widget.update_charts(elapsed_seconds, current_interval_index, power_series, hr_series)
+
+    def clear_charts(self) -> None:
+        self.chart_widget.clear()
+
+    def _build_chart_scaffolding(self, root_layout: QVBoxLayout) -> None:
+        self.chart_widget = WorkoutChartWidget(self)
+        root_layout.addWidget(self.chart_widget, stretch=1)
 
     def _build_mode_footer(self, root_layout: QVBoxLayout) -> None:
         mode_row = QHBoxLayout()
@@ -251,7 +301,13 @@ class WorkoutScreen(QWidget):
         mode_row.addStretch(1)
         root_layout.addLayout(mode_row)
 
+    def set_tile_value(self, key: str, text: str) -> None:
+        tile = self._tile_by_key.get(key)
+        if tile is not None:
+            tile.value_label.setText(text)
+
     def _render_selected_tiles(self) -> None:
+        self._tile_by_key = {}
         while self.tile_display_layout.count():
             item = self.tile_display_layout.takeAt(0)
             widget = item.widget()
@@ -270,6 +326,7 @@ class WorkoutScreen(QWidget):
             row = index // 4
             column = index % 4
             tile = MetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
+            self._tile_by_key[key] = tile
             self.tile_display_layout.addWidget(tile, row, column)
 
     def _set_paused(self, paused: bool) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from dataclasses import replace
 import inspect
@@ -10,11 +10,15 @@ from typing import Any
 
 from .device_manager import AsyncioRunner, DeviceManager, NotificationCallback, completed_future
 from .types import (
+    CPS_CONTROL_POINT_CHARACTERISTIC_UUID,
     DeviceInfo,
     DeviceType,
+    FTMS_CONTROL_POINT_CHARACTERISTIC_UUID,
     NOTIFICATION_CHARACTERISTIC_UUIDS,
     infer_device_type,
 )
+
+PayloadNotificationCallback = Callable[[bytes], Awaitable[None] | None]
 
 
 class BleakDeviceBackend(DeviceManager):
@@ -57,9 +61,8 @@ class BleakDeviceBackend(DeviceManager):
     def disconnect_device(self, device_id: str) -> Future[None]:
         return self._runner.submit(self._disconnect_async(device_id))
 
-    def calibrate_device(self, device_id: str) -> Future[bool]:
-        self._get_device(device_id)
-        return completed_future(False)
+    def calibrate_device(self, device_id: str) -> Future[int | None]:
+        return self._runner.submit(self._calibrate_async(device_id))
 
     def subscribe_device_notifications(
         self,
@@ -67,6 +70,56 @@ class BleakDeviceBackend(DeviceManager):
         callback: NotificationCallback,
     ) -> Future[None]:
         return self._runner.submit(self._subscribe_notifications_async(device_id, callback))
+
+    def write_gatt_characteristic(
+        self,
+        device_id: str,
+        characteristic_uuid: str,
+        payload: bytes,
+        *,
+        response: bool = True,
+    ) -> Future[None]:
+        return self._runner.submit(
+            self._write_gatt_characteristic_async(
+                device_id,
+                characteristic_uuid,
+                payload,
+                response=response,
+            ),
+        )
+
+    def subscribe_characteristic(
+        self,
+        device_id: str,
+        characteristic_uuid: str,
+        callback: PayloadNotificationCallback,
+    ) -> Future[None]:
+        return self._runner.submit(
+            self._subscribe_characteristic_async(
+                device_id,
+                characteristic_uuid,
+                callback,
+            ),
+        )
+
+    def write_ftms_control_point(self, device_id: str, payload: bytes) -> Future[None]:
+        return self.write_gatt_characteristic(
+            device_id,
+            FTMS_CONTROL_POINT_CHARACTERISTIC_UUID,
+            payload,
+            response=True,
+        )
+
+    def subscribe_ftms_control_point_indications(
+        self,
+        device_id: str,
+        callback: PayloadNotificationCallback,
+    ) -> Future[None]:
+        return self.subscribe_characteristic(
+            device_id,
+            FTMS_CONTROL_POINT_CHARACTERISTIC_UUID,
+            callback,
+        )
 
     def shutdown(self) -> None:
         try:
@@ -166,6 +219,61 @@ class BleakDeviceBackend(DeviceManager):
         for device_id in device_ids:
             await self._disconnect_async(device_id)
 
+    async def _calibrate_async(self, device_id: str) -> int | None:
+        with self._lock:
+            device = self._get_device(device_id)
+            client = self._clients.get(device_id)
+        if device.device_type is not DeviceType.POWER_METER:
+            raise RuntimeError(f"Device {device_id} does not support calibration")
+        if client is None or not getattr(client, "is_connected", False):
+            raise RuntimeError(f"Device {device_id} is not connected")
+
+        # Subscribe to CPS Control Point indications to capture the offset response.
+        indication_event = asyncio.Event()
+        response_payload: list[bytes] = []
+
+        def _indication_handler(_: Any, data: bytearray) -> None:
+            if not response_payload:
+                response_payload.append(bytes(data))
+                indication_event.set()
+
+        indication_subscribed = False
+        try:
+            try:
+                await client.start_notify(CPS_CONTROL_POINT_CHARACTERISTIC_UUID, _indication_handler)
+                indication_subscribed = True
+            except Exception:
+                pass
+
+            # Cycling Power Control Point opcode 0x12 = Start Offset Compensation (zero-offset)
+            await client.write_gatt_char(
+                CPS_CONTROL_POINT_CHARACTERISTIC_UUID,
+                bytearray([0x12]),
+                response=True,
+            )
+
+            if indication_subscribed:
+                try:
+                    await asyncio.wait_for(indication_event.wait(), timeout=8.0)
+                except asyncio.TimeoutError:
+                    return None
+
+                # CPS Control Point response format:
+                # [0] 0x20 (Response Code), [1] 0x12 (request opcode), [2] result (0x01=success),
+                # [3:5] offset int16 LE (optional)
+                if response_payload:
+                    data = response_payload[0]
+                    if len(data) >= 3 and data[0] == 0x20 and data[1] == 0x12 and data[2] == 0x01:
+                        if len(data) >= 5:
+                            return int.from_bytes(data[3:5], "little", signed=True)
+            return None
+        finally:
+            if indication_subscribed:
+                try:
+                    await client.stop_notify(CPS_CONTROL_POINT_CHARACTERISTIC_UUID)
+                except Exception:
+                    pass
+
     async def _subscribe_notifications_async(
         self,
         device_id: str,
@@ -189,6 +297,39 @@ class BleakDeviceBackend(DeviceManager):
             except Exception:
                 continue
 
+    async def _write_gatt_characteristic_async(
+        self,
+        device_id: str,
+        characteristic_uuid: str,
+        payload: bytes,
+        *,
+        response: bool,
+    ) -> None:
+        with self._lock:
+            client = self._clients.get(device_id)
+        if client is None or not getattr(client, "is_connected", False):
+            raise RuntimeError(f"Device {device_id} is not connected")
+        await client.write_gatt_char(
+            characteristic_uuid,
+            bytearray(payload),
+            response=response,
+        )
+
+    async def _subscribe_characteristic_async(
+        self,
+        device_id: str,
+        characteristic_uuid: str,
+        callback: PayloadNotificationCallback,
+    ) -> None:
+        with self._lock:
+            client = self._clients.get(device_id)
+        if client is None or not getattr(client, "is_connected", False):
+            raise RuntimeError(f"Device {device_id} is not connected")
+        await client.start_notify(
+            characteristic_uuid,
+            self._build_payload_notification_handler(callback),
+        )
+
     def _build_notification_handler(
         self,
         device_id: str,
@@ -204,9 +345,35 @@ class BleakDeviceBackend(DeviceManager):
             payload = bytes(data)
             dispatch = _dispatch(payload)
             if inspect.isawaitable(dispatch):
-                asyncio.create_task(dispatch)
+                self._schedule_awaitable(dispatch)
 
         return _handler
+
+    def _build_payload_notification_handler(
+        self,
+        callback: PayloadNotificationCallback,
+    ) -> Any:
+        async def _dispatch(payload: bytes) -> None:
+            callback_result = callback(payload)
+            if isinstance(callback_result, Awaitable):
+                await callback_result
+
+        def _handler(_: Any, data: bytearray) -> None:
+            payload = bytes(data)
+            dispatch = _dispatch(payload)
+            if inspect.isawaitable(dispatch):
+                self._schedule_awaitable(dispatch)
+
+        return _handler
+
+    @staticmethod
+    def _schedule_awaitable(dispatch: Awaitable[None]) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(dispatch)
+            return
+        loop.create_task(dispatch)
 
     def _get_device(self, device_id: str) -> DeviceInfo:
         if device_id not in self._devices:
@@ -231,3 +398,53 @@ class BleakDeviceBackend(DeviceManager):
                 "Bleak backend requires the 'bleak' package. Install dependencies with 'pip install -e .'."
             ) from exc
         return BleakClient, BleakScanner
+
+
+class BleakFTMSControlTransport:
+    """FTMS control transport backed by BleakDeviceBackend GATT primitives."""
+
+    def __init__(
+        self,
+        backend: BleakDeviceBackend,
+        device_id: str,
+        *,
+        subscribe_timeout_seconds: float = 3.0,
+    ) -> None:
+        self._backend = backend
+        self._device_id = device_id
+        self._subscribe_timeout_seconds = float(subscribe_timeout_seconds)
+        self._indication_handler: Callable[[bytes], None] = lambda _: None
+        self._subscribe_future: Future[None] | None = None
+        self._lock = threading.Lock()
+
+    def write_control_point(self, payload: bytes) -> Future[None]:
+        try:
+            self._ensure_subscription_ready()
+        except Exception as exc:
+            failed: Future[None] = Future()
+            failed.set_exception(exc)
+            return failed
+        return self._backend.write_ftms_control_point(self._device_id, payload)
+
+    def set_indication_handler(self, handler: Callable[[bytes], None]) -> None:
+        self._indication_handler = handler
+        self._ensure_subscription_ready()
+
+    def _ensure_subscription_ready(self) -> None:
+        subscription = self._ensure_subscription_started()
+        subscription.result(timeout=self._subscribe_timeout_seconds)
+
+    def _ensure_subscription_started(self) -> Future[None]:
+        with self._lock:
+            if self._subscribe_future is None:
+                self._subscribe_future = self._backend.subscribe_ftms_control_point_indications(
+                    self._device_id,
+                    self._handle_indication,
+                )
+            return self._subscribe_future
+
+    def _handle_indication(self, payload: bytes) -> None:
+        try:
+            self._indication_handler(payload)
+        except Exception:
+            return

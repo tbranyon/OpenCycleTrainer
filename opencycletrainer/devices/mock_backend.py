@@ -77,13 +77,17 @@ class MockDeviceBackend(DeviceManager):
             self._devices[device_id] = replace(device, connected=False)
         return completed_future(None)
 
-    def calibrate_device(self, device_id: str) -> Future[bool]:
+    def calibrate_device(self, device_id: str) -> Future[int | None]:
         with self._lock:
             device = self._get_device(device_id)
             supported = (
                 device.device_type is DeviceType.POWER_METER and device.supports_calibration
             )
-        return completed_future(supported)
+        if not supported:
+            f: Future[int | None] = Future()
+            f.set_exception(RuntimeError(f"Device {device_id} does not support calibration"))
+            return f
+        return completed_future(0)
 
     def subscribe_device_notifications(
         self,

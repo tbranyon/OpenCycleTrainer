@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest opencycletrainer/tests/test_ftms_control.py -v)",
+      "Bash(python -m pytest -v)",
+      "Bash(python -m pytest opencycletrainer/tests/test_workout_controller.py -v)",
+      "Bash(python -m pytest --tb=short)",
+      "Bash(python -m pytest opencycletrainer/tests/test_workout_controller.py opencycletrainer/tests/test_devices_screen.py -v)",
+      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_chart.py -v)",
+      "Bash(python -c \"import pyqtgraph; print\\(pyqtgraph.__version__\\)\")",
+      "Bash(pip show:*)",
+      "Bash(python -c \":*)",
+      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest --tb=short -q)",
+      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_screen.py -q)",
+      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_controller.py opencycletrainer/tests/test_workout_chart.py opencycletrainer/tests/test_workout_screen.py -v --tb=short)",
+      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_controller.py -v --tb=short)"
+    ]
+  }
+}

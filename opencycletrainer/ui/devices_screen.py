@@ -17,15 +17,44 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer.core.sensors import SensorSample
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend
+from opencycletrainer.devices.decoders import (
+    CyclingPowerDecoder,
+    CyclingSpeedCadenceDecoder,
+    decode_heart_rate_measurement,
+    decode_indoor_bike_data,
+)
 from opencycletrainer.devices.device_manager import DeviceManager
 from opencycletrainer.devices.mock_backend import MockDeviceBackend
-from opencycletrainer.devices.types import DeviceInfo, DeviceType
+from opencycletrainer.devices.types import (
+    CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+    CSC_MEASUREMENT_CHARACTERISTIC_UUID,
+    DeviceInfo,
+    DeviceType,
+    FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
+    HRS_MEASUREMENT_CHARACTERISTIC_UUID,
+)
+
+_CALIBRATION_NOT_CALIBRATED = "Not calibrated"
+_CALIBRATION_NA = "N/A"
+
+_COL_NAME = 0
+_COL_TYPE = 1
+_COL_STATUS = 2
+_COL_BATTERY = 3
+_COL_READING = 4
+_COL_CALIBRATION = 5
+_COL_ACTIONS = 6
+_NUM_COLS = 7
 
 
 class DevicesScreen(QWidget):
     action_succeeded = Signal(object, object)
     action_failed = Signal(str)
+    sensor_sample_received = Signal(object)  # SensorSample
+    trainer_device_changed = Signal(object, object)  # (backend, trainer_device_id | None)
+    _reading_received = Signal(str, str)  # (device_id, reading_text)
 
     def __init__(
         self,
@@ -35,8 +64,17 @@ class DevicesScreen(QWidget):
         super().__init__(parent)
         self._backend = backend if backend is not None else MockDeviceBackend()
 
+        self._calibrating: set[str] = set()
+        self._calibration_offsets: dict[str, int | None] = {}
+        self._current_readings: dict[str, str] = {}
+        self._reading_items: dict[str, QTableWidgetItem] = {}
+        self._subscribed_devices: set[str] = set()
+        self._decoders: dict[str, CyclingPowerDecoder | CyclingSpeedCadenceDecoder] = {}
+        self._last_trainer_selection: tuple[int, str | None] | None = None
+
         self.action_succeeded.connect(self._handle_action_succeeded)
         self.action_failed.connect(self._handle_action_failed)
+        self._reading_received.connect(self._on_reading_received)
 
         layout = QVBoxLayout(self)
         title = QLabel("Devices")
@@ -83,12 +121,26 @@ class DevicesScreen(QWidget):
         super().closeEvent(event)
 
     def refresh(self) -> None:
-        self._populate_paired_table(self._backend.get_paired_devices())
+        paired = self._backend.get_paired_devices()
+        self._populate_paired_table(paired)
         self._populate_available_table(self._backend.get_available_devices())
+        self._emit_trainer_device_change(paired)
+
+    @property
+    def backend(self) -> DeviceManager:
+        return self._backend
+
+    def connected_trainer_device_id(self) -> str | None:
+        for device in self._backend.get_paired_devices():
+            if device.device_type is DeviceType.TRAINER and device.connected:
+                return device.device_id
+        return None
 
     def _create_table(self) -> QTableWidget:
-        table = QTableWidget(0, 5, self)
-        table.setHorizontalHeaderLabels(["Name", "Type", "Status", "Battery", "Actions"])
+        table = QTableWidget(0, _NUM_COLS, self)
+        table.setHorizontalHeaderLabels(
+            ["Name", "Type", "Status", "Battery", "Current Reading", "Calibration", "Actions"]
+        )
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setSelectionMode(QTableWidget.NoSelection)
@@ -109,6 +161,13 @@ class DevicesScreen(QWidget):
         else:
             self._backend = MockDeviceBackend()
 
+        self._calibrating.clear()
+        self._calibration_offsets.clear()
+        self._current_readings.clear()
+        self._reading_items.clear()
+        self._subscribed_devices.clear()
+        self._decoders.clear()
+
         self.status_label.setText(f"Using {backend_name} backend.")
         self.refresh()
 
@@ -125,9 +184,11 @@ class DevicesScreen(QWidget):
         self.status_label.setText(f"Scan complete: {len(devices)} relevant device(s).")
 
     def _populate_paired_table(self, devices: list[DeviceInfo]) -> None:
+        self._reading_items.clear()
         self.paired_table.setRowCount(len(devices))
         for row, device in enumerate(devices):
             self._set_device_row(self.paired_table, row, device)
+
             action_widget = QWidget(self.paired_table)
             action_layout = QHBoxLayout(action_widget)
             action_layout.setContentsMargins(0, 0, 0, 0)
@@ -144,13 +205,20 @@ class DevicesScreen(QWidget):
             action_layout.addWidget(unpair_button)
 
             if device.device_type is DeviceType.POWER_METER and device.supports_calibration:
-                calibrate_button = QPushButton("Calibrate", action_widget)
-                calibrate_button.setEnabled(True)
+                is_calibrating = device.device_id in self._calibrating
+                calibrate_button = QPushButton(
+                    "Calibrating..." if is_calibrating else "Calibrate",
+                    action_widget,
+                )
+                calibrate_button.setEnabled(not is_calibrating)
                 calibrate_button.clicked.connect(partial(self._calibrate_device, device.device_id))
                 action_layout.addWidget(calibrate_button)
 
             action_layout.addStretch(1)
-            self.paired_table.setCellWidget(row, 4, action_widget)
+            self.paired_table.setCellWidget(row, _COL_ACTIONS, action_widget)
+
+            if device.connected and device.device_id not in self._subscribed_devices:
+                self._subscribe_device(device.device_id)
 
         self.paired_table.resizeColumnsToContents()
 
@@ -158,6 +226,7 @@ class DevicesScreen(QWidget):
         self.available_table.setRowCount(len(devices))
         for row, device in enumerate(devices):
             self._set_device_row(self.available_table, row, device)
+
             action_widget = QWidget(self.available_table)
             action_layout = QHBoxLayout(action_widget)
             action_layout.setContentsMargins(0, 0, 0, 0)
@@ -167,18 +236,131 @@ class DevicesScreen(QWidget):
             pair_button.clicked.connect(partial(self._pair_device, device.device_id))
             action_layout.addWidget(pair_button)
             action_layout.addStretch(1)
-            self.available_table.setCellWidget(row, 4, action_widget)
+            self.available_table.setCellWidget(row, _COL_ACTIONS, action_widget)
 
         self.available_table.resizeColumnsToContents()
 
     def _set_device_row(self, table: QTableWidget, row: int, device: DeviceInfo) -> None:
-        table.setItem(row, 0, QTableWidgetItem(device.name))
-        table.setItem(row, 1, QTableWidgetItem(device.device_type.label))
-        table.setItem(row, 2, QTableWidgetItem(device.connection_status))
+        table.setItem(row, _COL_NAME, QTableWidgetItem(device.name))
+        table.setItem(row, _COL_TYPE, QTableWidgetItem(device.device_type.label))
+        table.setItem(row, _COL_STATUS, QTableWidgetItem(device.connection_status))
+
         battery_text = f"{device.battery_percent}%" if device.battery_percent is not None else "Unknown"
         battery_item = QTableWidgetItem(battery_text)
         battery_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 3, battery_item)
+        table.setItem(row, _COL_BATTERY, battery_item)
+
+        reading_text = self._current_readings.get(device.device_id, "--")
+        reading_item = QTableWidgetItem(reading_text)
+        reading_item.setTextAlignment(Qt.AlignCenter)
+        table.setItem(row, _COL_READING, reading_item)
+        if table is self.paired_table:
+            self._reading_items[device.device_id] = reading_item
+
+        if device.device_type is DeviceType.POWER_METER:
+            if device.device_id in self._calibration_offsets:
+                offset = self._calibration_offsets[device.device_id]
+                calibration_text = f"Offset: {offset}" if offset is not None else "Calibrated"
+            else:
+                calibration_text = _CALIBRATION_NOT_CALIBRATED
+        else:
+            calibration_text = _CALIBRATION_NA
+        calibration_item = QTableWidgetItem(calibration_text)
+        calibration_item.setTextAlignment(Qt.AlignCenter)
+        table.setItem(row, _COL_CALIBRATION, calibration_item)
+
+    def _subscribe_device(self, device_id: str) -> None:
+        self._subscribed_devices.add(device_id)
+        self._submit_future(
+            self._backend.subscribe_device_notifications(device_id, self._on_notification),
+            on_success=lambda _: None,
+            error_prefix=f"Subscribe failed for {device_id}",
+        )
+
+    def _on_notification(self, device_id: str, characteristic_uuid: str, payload: bytes) -> None:
+        from datetime import datetime, timezone
+        try:
+            sensor_sample, reading_text = self._decode_notification(
+                device_id, characteristic_uuid, payload, datetime.now(timezone.utc)
+            )
+        except Exception:
+            return
+        if sensor_sample is not None:
+            self.sensor_sample_received.emit(sensor_sample)
+        if reading_text is not None:
+            self._reading_received.emit(device_id, reading_text)
+
+    def _decode_notification(
+        self,
+        device_id: str,
+        characteristic_uuid: str,
+        payload: bytes,
+        received_at_utc: object,
+    ) -> tuple[SensorSample | None, str | None]:
+        from datetime import datetime, timezone
+        now = received_at_utc if isinstance(received_at_utc, datetime) else datetime.now(timezone.utc)
+
+        if characteristic_uuid == CPS_MEASUREMENT_CHARACTERISTIC_UUID:
+            if device_id not in self._decoders:
+                self._decoders[device_id] = CyclingPowerDecoder()
+            decoder = self._decoders[device_id]
+            if not isinstance(decoder, CyclingPowerDecoder):
+                return None, None
+            metrics = decoder.decode(payload)
+            sample = SensorSample(
+                timestamp_utc=now,
+                source_characteristic_uuid=characteristic_uuid,
+                power_watts=metrics.power_watts,
+                cadence_rpm=metrics.cadence_rpm,
+            )
+            reading_text = f"{metrics.power_watts} W" if metrics.power_watts is not None else None
+            return sample, reading_text
+
+        if characteristic_uuid == FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID:
+            metrics = decode_indoor_bike_data(payload)
+            sample = SensorSample(
+                timestamp_utc=now,
+                source_characteristic_uuid=characteristic_uuid,
+                power_watts=metrics.power_watts,
+                cadence_rpm=metrics.cadence_rpm,
+                speed_mps=metrics.speed_mps,
+            )
+            reading_text = f"{metrics.power_watts} W" if metrics.power_watts is not None else None
+            return sample, reading_text
+
+        if characteristic_uuid == HRS_MEASUREMENT_CHARACTERISTIC_UUID:
+            metrics = decode_heart_rate_measurement(payload)
+            sample = SensorSample(
+                timestamp_utc=now,
+                source_characteristic_uuid=characteristic_uuid,
+                heart_rate_bpm=metrics.heart_rate_bpm,
+            )
+            reading_text = f"{metrics.heart_rate_bpm} bpm" if metrics.heart_rate_bpm is not None else None
+            return sample, reading_text
+
+        if characteristic_uuid == CSC_MEASUREMENT_CHARACTERISTIC_UUID:
+            if device_id not in self._decoders:
+                self._decoders[device_id] = CyclingSpeedCadenceDecoder()
+            decoder = self._decoders[device_id]
+            if not isinstance(decoder, CyclingSpeedCadenceDecoder):
+                return None, None
+            metrics = decoder.decode(payload)
+            sample = SensorSample(
+                timestamp_utc=now,
+                source_characteristic_uuid=characteristic_uuid,
+                cadence_rpm=metrics.cadence_rpm,
+                speed_mps=metrics.speed_mps,
+            )
+            reading_text = f"{metrics.cadence_rpm:.0f} rpm" if metrics.cadence_rpm is not None else None
+            return sample, reading_text
+
+        return None, None
+
+    @Slot(str, str)
+    def _on_reading_received(self, device_id: str, reading_text: str) -> None:
+        self._current_readings[device_id] = reading_text
+        if device_id in self._reading_items:
+            self._reading_items[device_id].setText(reading_text)
 
     def _pair_device(self, device_id: str) -> None:
         self.status_label.setText(f"Pairing {device_id}...")
@@ -214,18 +396,39 @@ class DevicesScreen(QWidget):
 
     def _calibrate_device(self, device_id: str) -> None:
         self.status_label.setText(f"Calibrating {device_id}...")
-        self._submit_future(
-            self._backend.calibrate_device(device_id),
-            on_success=lambda supported: self._on_calibration_result(device_id, supported),
-            error_prefix=f"Calibration failed for {device_id}",
-        )
-
-    def _on_calibration_result(self, device_id: str, supported: bool) -> None:
+        self._calibrating.add(device_id)
         self.refresh()
-        if supported:
-            self.status_label.setText(f"Calibration command sent to {device_id}.")
+
+        future = self._backend.calibrate_device(device_id)
+
+        def _on_done(completed: Future) -> None:  # type: ignore[type-arg]
+            try:
+                offset = completed.result()
+                self.action_succeeded.emit(
+                    lambda o: self._on_calibration_complete(device_id, o),
+                    offset,
+                )
+            except Exception as exc:
+                self.action_succeeded.emit(
+                    lambda _: self._on_calibration_error(device_id, str(exc)),
+                    None,
+                )
+
+        future.add_done_callback(_on_done)
+
+    def _on_calibration_complete(self, device_id: str, offset: int | None) -> None:
+        self._calibrating.discard(device_id)
+        self._calibration_offsets[device_id] = offset
+        self.refresh()
+        if offset is not None:
+            self.status_label.setText(f"Calibration complete for {device_id}: offset {offset}.")
         else:
-            self.status_label.setText(f"Calibration not supported for {device_id}.")
+            self.status_label.setText(f"Calibration complete for {device_id}.")
+
+    def _on_calibration_error(self, device_id: str, message: str) -> None:
+        self._calibrating.discard(device_id)
+        self.refresh()
+        self.status_label.setText(f"Calibration failed for {device_id}: {message}")
 
     def _post_action_refresh(self, message: str) -> None:
         self.refresh()
@@ -256,3 +459,16 @@ class DevicesScreen(QWidget):
     @Slot(str)
     def _handle_action_failed(self, message: str) -> None:
         self.status_label.setText(message)
+
+    def _emit_trainer_device_change(self, paired_devices: list[DeviceInfo]) -> None:
+        trainer_id: str | None = None
+        for device in paired_devices:
+            if device.device_type is DeviceType.TRAINER and device.connected:
+                trainer_id = device.device_id
+                break
+
+        selection = (id(self._backend), trainer_id)
+        if selection == self._last_trainer_selection:
+            return
+        self._last_trainer_selection = selection
+        self.trainer_device_changed.emit(self._backend, trainer_id)

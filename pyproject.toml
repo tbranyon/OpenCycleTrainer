@@ -12,6 +12,7 @@ dependencies = [
   "bleak>=0.22",
   "fit-tool>=0.9.15",
   "PySide6>=6.8",
+  "pyqtgraph>=0.13",
 ]
 
 [project.optional-dependencies]

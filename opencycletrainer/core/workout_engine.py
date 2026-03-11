@@ -24,6 +24,7 @@ class WorkoutEngineSnapshot:
     total_duration_seconds: int
     current_interval_index: int | None
     current_interval_elapsed_seconds: float | None
+    current_interval_remaining_seconds: float | None
     ramp_in_remaining_seconds: float
     recording_active: bool
     pending_kj_extension: int
@@ -166,8 +167,10 @@ class WorkoutEngine:
     def snapshot(self) -> WorkoutEngineSnapshot:
         current_index = self._current_interval_index()
         interval_elapsed = None
+        interval_remaining = None
         if current_index is not None:
             interval_elapsed = self._elapsed_seconds - self._interval_start_offset(current_index)
+            interval_remaining = float(self._interval_durations_seconds[current_index]) - interval_elapsed
 
         return WorkoutEngineSnapshot(
             state=self._state,
@@ -175,6 +178,7 @@ class WorkoutEngine:
             total_duration_seconds=self._total_duration_seconds(),
             current_interval_index=current_index,
             current_interval_elapsed_seconds=interval_elapsed,
+            current_interval_remaining_seconds=interval_remaining,
             ramp_in_remaining_seconds=self._ramp_in_remaining_seconds,
             recording_active=self.recording_active,
             pending_kj_extension=self._pending_kj_extension,

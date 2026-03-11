@@ -46,12 +46,11 @@ def test_workout_screen_uses_settings_tile_selection_without_selector_controls()
 
 def test_workout_screen_includes_chart_scaffolding():
     _get_or_create_qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
     screen = WorkoutScreen(settings=AppSettings())
 
-    assert screen.interval_chart_group.title() == "Interval Chart"
-    assert screen.workout_chart_group.title() == "Workout Chart"
-    labels = [label.text() for label in screen.interval_chart_group.findChildren(QLabel)]
-    assert any("TODO" in text for text in labels)
+    assert isinstance(screen.chart_widget, WorkoutChartWidget)
 
 
 def test_workout_screen_alert_channel_visibility():

@@ -87,8 +87,9 @@ class DeviceManager(ABC):
         """Disconnect from a device."""
 
     @abstractmethod
-    def calibrate_device(self, device_id: str) -> Future[bool]:
-        """Attempt device calibration; returns True when supported and sent."""
+    def calibrate_device(self, device_id: str) -> Future[int | None]:
+        """Send zero-offset calibration command; returns offset value if received, None if sent
+        but no offset in response. Raises if the device does not support calibration."""
 
     @abstractmethod
     def subscribe_device_notifications(

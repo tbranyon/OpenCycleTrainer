@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from opencycletrainer.devices.ble_backend import BleakDeviceBackend
+from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.devices.mock_backend import MockDeviceBackend
 from opencycletrainer.devices.types import (
     CPS_SERVICE_UUID,
+    FTMS_CONTROL_POINT_CHARACTERISTIC_UUID,
     FTMS_SERVICE_UUID,
     HRS_SERVICE_UUID,
     DeviceInfo,
@@ -39,7 +40,7 @@ def test_mock_backend_pair_and_connect_flow_uses_manager_contract():
     assert rotor.connected is True
 
     calibration_result = backend.calibrate_device("pm-rotor").result(timeout=0.5)
-    assert calibration_result is True
+    assert calibration_result == 0
 
     backend.disconnect_device("pm-rotor").result(timeout=0.5)
     backend.unpair_device("pm-rotor").result(timeout=0.5)
@@ -83,6 +84,7 @@ class _FakeClient:
         self.address = address
         self.is_connected = False
         self.notifications: dict[str, Any] = {}
+        self.writes: list[tuple[str, bytes, bool]] = []
 
     async def connect(self) -> None:
         self.is_connected = True
@@ -92,6 +94,9 @@ class _FakeClient:
 
     async def start_notify(self, uuid: str, handler: Any) -> None:
         self.notifications[uuid] = handler
+
+    async def write_gatt_char(self, uuid: str, payload: bytearray, response: bool = True) -> None:
+        self.writes.append((uuid, bytes(payload), bool(response)))
 
 
 def test_bleak_backend_scan_connect_and_subscribe_plumbing(monkeypatch):
@@ -124,5 +129,36 @@ def test_bleak_backend_scan_connect_and_subscribe_plumbing(monkeypatch):
         assert paired[0].connected is True
         assert paired[0].device_id == "AA:BB:CC:02"
         assert callback_calls == []
+    finally:
+        backend.shutdown()
+
+
+def test_bleak_ftms_transport_subscribes_and_writes_control_point(monkeypatch):
+    backend = BleakDeviceBackend(scan_timeout_seconds=0.1)
+    monkeypatch.setattr(
+        BleakDeviceBackend,
+        "_load_bleak_classes",
+        staticmethod(lambda: (_FakeClient, _FakeScanner)),
+    )
+
+    try:
+        backend.scan().result(timeout=1.0)
+        backend.pair_device("AA:BB:CC:01").result(timeout=1.0)
+        backend.connect_device("AA:BB:CC:01").result(timeout=1.0)
+
+        transport = BleakFTMSControlTransport(backend, "AA:BB:CC:01")
+        indications: list[bytes] = []
+        transport.set_indication_handler(indications.append)
+        transport.write_control_point(b"\x05\xfa\x00").result(timeout=1.0)
+
+        client = backend._clients["AA:BB:CC:01"]
+        assert FTMS_CONTROL_POINT_CHARACTERISTIC_UUID in client.notifications
+        assert client.writes == [
+            (FTMS_CONTROL_POINT_CHARACTERISTIC_UUID, b"\x05\xfa\x00", True),
+        ]
+
+        notify = client.notifications[FTMS_CONTROL_POINT_CHARACTERISTIC_UUID]
+        notify(None, bytearray(b"\x80\x05\x01"))
+        assert indications == [b"\x80\x05\x01"]
     finally:
         backend.shutdown()

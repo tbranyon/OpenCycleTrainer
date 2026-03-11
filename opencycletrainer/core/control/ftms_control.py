@@ -11,8 +11,7 @@ from typing import Protocol
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController, OpenTrueUpStatus
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
-
-FTMS_CONTROL_POINT_CHARACTERISTIC_UUID = "00002ad9-0000-1000-8000-00805f9b34fb"
+from opencycletrainer.devices.types import FTMS_CONTROL_POINT_CHARACTERISTIC_UUID
 
 _OPCODE_REQUEST_CONTROL = 0x00
 _OPCODE_SET_TARGET_RESISTANCE = 0x04
@@ -228,13 +227,18 @@ class WorkoutEngineFTMSBridge:
         alert_callback: Callable[[str], None] | None = None,
         opentrueup: OpenTrueUpController | None = None,
         opentrueup_status_callback: Callable[[OpenTrueUpStatus], None] | None = None,
+        lead_time_seconds: int = 0,
+        kj_mode: bool = False,
     ) -> None:
         self._control = control
         self._alert_callback = alert_callback
         self._opentrueup = opentrueup
         self._opentrueup_status_callback = opentrueup_status_callback
+        self._lead_time_seconds = lead_time_seconds
+        self._kj_mode = kj_mode
         self._last_state: EngineState | None = None
         self._last_interval_index: int | None = None
+        self._lead_time_sent_for_interval: int | None = None
         self._current_erg_target_base_watts: int | None = None
         self._last_sent_erg_target_watts: int | None = None
         if mode is ControlMode.ERG:
@@ -247,10 +251,20 @@ class WorkoutEngineFTMSBridge:
         return self._control.mode
 
     def set_mode_erg(self) -> None:
+        if self._control.mode is ControlMode.ERG:
+            return
         self._control.set_mode_erg()
+        self._last_state = None
+        self._last_interval_index = None
+        self._lead_time_sent_for_interval = None
 
     def set_mode_resistance(self) -> None:
+        if self._control.mode is ControlMode.RESISTANCE:
+            return
         self._control.set_mode_resistance()
+        self._last_state = None
+        self._last_interval_index = None
+        self._lead_time_sent_for_interval = None
 
     def on_engine_snapshot(
         self,
@@ -322,7 +336,10 @@ class WorkoutEngineFTMSBridge:
         interval_changed = snapshot.current_interval_index != self._last_interval_index
         entered_running = self._last_state != EngineState.RUNNING
         if interval_changed or entered_running:
+            self._lead_time_sent_for_interval = None
             self._apply_interval_setpoint(snapshot, workout)
+        elif self._should_apply_lead_time(snapshot, workout):
+            self._apply_lead_time_setpoint(snapshot, workout)
 
         self._last_state = snapshot.state
         self._last_interval_index = snapshot.current_interval_index
@@ -350,6 +367,40 @@ class WorkoutEngineFTMSBridge:
             self._current_erg_target_base_watts = None
             resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)
             self._control.set_resistance_level(resistance_level)
+
+    def _should_apply_lead_time(
+        self, snapshot: WorkoutEngineSnapshot, workout: Workout
+    ) -> bool:
+        if self._kj_mode or self._lead_time_seconds <= 0:
+            return False
+        idx = snapshot.current_interval_index
+        if idx is None:
+            return False
+        if self._lead_time_sent_for_interval == idx:
+            return False
+        if snapshot.current_interval_remaining_seconds is None:
+            return False
+        if snapshot.current_interval_remaining_seconds > self._lead_time_seconds:
+            return False
+        if workout.intervals[idx].is_ramp:
+            return False
+        return idx + 1 < len(workout.intervals)
+
+    def _apply_lead_time_setpoint(
+        self, snapshot: WorkoutEngineSnapshot, workout: Workout
+    ) -> None:
+        next_index = snapshot.current_interval_index + 1  # type: ignore[operator]
+        next_interval = workout.intervals[next_index]
+        if self._control.mode is ControlMode.ERG:
+            target_watts = _resolve_interval_target_watts(next_interval, 0.0)
+            self._current_erg_target_base_watts = target_watts
+            adjusted_target_watts = self._apply_opentrueup_target(target_watts)
+            self._send_erg_target(adjusted_target_watts)
+        else:
+            self._current_erg_target_base_watts = None
+            resistance_level = _resolve_interval_percent(next_interval, 0.0)
+            self._control.set_resistance_level(resistance_level)
+        self._lead_time_sent_for_interval = snapshot.current_interval_index
 
     def _report_error(self, message: str) -> None:
         if self._alert_callback is not None:

@@ -7,5 +7,7 @@
     "workout_avg_power"
   ],
   "display_units": "metric",
-  "default_workout_behavior": "workout_mode"
+  "default_workout_behavior": "workout_mode",
+  "windowed_power_window_seconds": 3,
+  "last_workout_dir": null
 }

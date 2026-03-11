@@ -7,5 +7,7 @@
     "cadence"
   ],
   "display_units": "imperial",
-  "default_workout_behavior": "free_ride_mode"
+  "default_workout_behavior": "free_ride_mode",
+  "windowed_power_window_seconds": 3,
+  "last_workout_dir": null
 }

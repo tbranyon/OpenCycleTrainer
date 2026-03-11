@@ -27,6 +27,8 @@ class AppSettings:
     tile_selections: list[str] = field(default_factory=list)
     display_units: str = DISPLAY_UNITS_METRIC
     default_workout_behavior: str = DEFAULT_WORKOUT_BEHAVIOR
+    windowed_power_window_seconds: int = 3
+    last_workout_dir: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +38,8 @@ class AppSettings:
             "tile_selections": self.tile_selections,
             "display_units": self.display_units,
             "default_workout_behavior": self.default_workout_behavior,
+            "windowed_power_window_seconds": self.windowed_power_window_seconds,
+            "last_workout_dir": str(self.last_workout_dir) if self.last_workout_dir else None,
         }
 
     @classmethod
@@ -57,6 +61,8 @@ class AppSettings:
             tile_selections=list(data.get("tile_selections", [])),
             display_units=display_units,
             default_workout_behavior=default_workout_behavior,
+            windowed_power_window_seconds=max(1, min(10, int(data.get("windowed_power_window_seconds", 3)))),
+            last_workout_dir=Path(data["last_workout_dir"]) if data.get("last_workout_dir") else None,
         )
 
 

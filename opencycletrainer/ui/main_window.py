@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtWidgets import QMainWindow
 from PySide6.QtWidgets import QTabWidget
 
+from opencycletrainer.core.sensors import SensorSample
+from opencycletrainer.devices.types import CPS_MEASUREMENT_CHARACTERISTIC_UUID
 from opencycletrainer.storage.settings import AppSettings
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
+from .workout_controller import WorkoutSessionController
 from .workout_screen import WorkoutScreen
 
 
@@ -33,14 +37,53 @@ class MainWindow(QMainWindow):
             settings_path=settings_path,
             parent=self,
         )
+        self.workout_controller = WorkoutSessionController(
+            screen=self.workout_screen,
+            settings=settings or AppSettings(),
+            settings_path=settings_path,
+            parent=self,
+        )
         self.settings_screen.settings_applied.connect(self._on_settings_applied)
         self.devices_screen = DevicesScreen(parent=self)
+        self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
+        self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
         self.tabs.addTab(self.workout_screen, "Workout")
         self.tabs.addTab(self.devices_screen, "Devices")
         self.tabs.addTab(self.settings_screen, "Settings")
         self.setCentralWidget(self.tabs)
+        self.workout_controller.set_trainer_control_target(
+            backend=self.devices_screen.backend,
+            trainer_device_id=self.devices_screen.connected_trainer_device_id(),
+        )
+
+    def _on_sensor_sample(self, sample: object) -> None:
+        if not isinstance(sample, SensorSample):
+            return
+        if sample.power_watts is not None:
+            if sample.source_characteristic_uuid == CPS_MEASUREMENT_CHARACTERISTIC_UUID:
+                self.workout_controller.receive_bike_power_watts(sample.power_watts)
+            else:
+                self.workout_controller.receive_power_watts(sample.power_watts)
+        if sample.heart_rate_bpm is not None:
+            self.workout_controller.receive_hr_bpm(sample.heart_rate_bpm)
+        if sample.cadence_rpm is not None:
+            self.workout_controller.receive_cadence_rpm(sample.cadence_rpm)
+        if sample.speed_mps is not None:
+            self.workout_controller.receive_speed_mps(sample.speed_mps)
 
     def _on_settings_applied(self, settings: object) -> None:
         if not isinstance(settings, AppSettings):
             return
         self.workout_screen.apply_settings(settings)
+        self.workout_controller.apply_settings(settings)
+
+    def _on_trainer_device_changed(self, backend: object, trainer_device_id: object) -> None:
+        trainer_id = trainer_device_id if isinstance(trainer_device_id, str) else None
+        self.workout_controller.set_trainer_control_target(
+            backend=backend,
+            trainer_device_id=trainer_id,
+        )
+
+    def closeEvent(self, event: Any) -> None:  # noqa: N802
+        self.workout_controller.shutdown()
+        super().closeEvent(event)
