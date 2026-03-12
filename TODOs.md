@@ -14,3 +14,13 @@ The following items are described in the spec but not presently implemented.
 11. [DONE] Recorder/FIT export are implemented modules but not wired to workout lifecycle in the running app.
 12. Display units/date/time formatting behavior from spec is not implemented in UI behavior.
 13. CI build pipelines for Windows/Linux are not present in repo (no workflow configuration found).
+14. Graphs should with workout
+15. Switch to resistance mode doesn't work (FTMS command failure)
+16. Need current target power on display - mandatory field
+17. Need to do something when an interval is skipped--truncate the graph and put a yellow bar at the ski point
+18. Elapsed time shouldn't advance on skip
+19. Calibrate doesn't seem to work quite right, no light on PM
+20. Device pairings didn't seem to persist between invocations
+21. Don't seem to release devices correctly, closing the application left the devices connected and couldn't be re-found on subsequent invocations, status lights on devices indicated they're still connected to something.
+22. Need to display current resistance level when in resistance mode
+23. Errors in FTMS layer prevent writing FIT file on Stop apparently (sometimes). FIT file should be written on stop regardless of state.
