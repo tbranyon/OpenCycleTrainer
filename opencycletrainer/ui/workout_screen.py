@@ -143,8 +143,10 @@ class WorkoutScreen(QWidget):
         elapsed_text: str,
         remaining_text: str,
         interval_remaining_text: str,
+        target_power_text: str,
     ) -> None:
         self.elapsed_time_tile.value_label.setText(elapsed_text)
+        self.target_power_tile.value_label.setText(target_power_text)
         self.remaining_tile.value_label.setText(remaining_text)
         self.interval_remaining_tile.value_label.setText(interval_remaining_text)
 
@@ -194,15 +196,17 @@ class WorkoutScreen(QWidget):
         mandatory_row = QHBoxLayout()
         mandatory_row.setSpacing(8)
         self.elapsed_time_tile = MetricTile(title="Time Elapsed", key="time_elapsed", parent=self)
-        self.remaining_tile = MetricTile(title="Time Remaining", key="time_remaining", parent=self)
+        self.target_power_tile = MetricTile(title="Target Power", key="target_power", parent=self)
         self.interval_remaining_tile = MetricTile(
             title="Interval Time/Work Remaining",
             key="interval_remaining",
             prominent=True,
             parent=self,
         )
+        self.remaining_tile = MetricTile(title="Time Remaining", key="time_remaining", parent=self)
 
         mandatory_row.addWidget(self.elapsed_time_tile, 2)
+        mandatory_row.addWidget(self.target_power_tile, 2)
         mandatory_row.addWidget(self.interval_remaining_tile, 3)
         mandatory_row.addWidget(self.remaining_tile, 2)
         metrics_layout.addLayout(mandatory_row)

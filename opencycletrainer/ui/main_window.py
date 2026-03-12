@@ -86,4 +86,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.workout_controller.shutdown()
+        self.devices_screen.backend.shutdown()
         super().closeEvent(event)

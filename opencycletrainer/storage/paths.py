@@ -50,3 +50,7 @@ def get_log_file_path() -> Path:
 
 def get_opentrueup_offsets_file_path() -> Path:
     return get_config_dir() / "opentrueup_offsets.json"
+
+
+def get_paired_devices_file_path() -> Path:
+    return get_config_dir() / "paired_devices.json"

@@ -25,6 +25,7 @@ def test_workout_screen_displays_mandatory_fields_controls_and_mode():
     button_texts = {button.text() for button in screen.findChildren(QPushButton)}
 
     assert "Time Elapsed" in label_texts
+    assert "Target Power" in label_texts
     assert "Time Remaining" in label_texts
     assert "Interval Time/Work Remaining" in label_texts
     assert {"Start", "Pause", "Resume", "Stop"}.issubset(button_texts)

@@ -124,8 +124,8 @@ class FTMSControl:
 
     def set_resistance_level(self, percent_or_unit: float) -> FTMSControlAck:
         level = float(percent_or_unit)
-        if level < 0 or level > 200:
-            raise ValueError("Resistance level must be between 0 and 200.")
+        if level < 0 or level > 100:
+            raise ValueError("Resistance level must be between 0 and 100%.")
         resistance_units = int(round(level * 10.0))
         payload = bytes([_OPCODE_SET_TARGET_RESISTANCE]) + resistance_units.to_bytes(
             2,

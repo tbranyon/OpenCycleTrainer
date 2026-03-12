@@ -13,7 +13,15 @@
       "Bash(QT_QPA_PLATFORM=offscreen python -m pytest --tb=short -q)",
       "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_screen.py -q)",
       "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_controller.py opencycletrainer/tests/test_workout_chart.py opencycletrainer/tests/test_workout_screen.py -v --tb=short)",
-      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_controller.py -v --tb=short)"
+      "Bash(QT_QPA_PLATFORM=offscreen python -m pytest opencycletrainer/tests/test_workout_controller.py -v --tb=short)",
+      "Bash(python -m pytest opencycletrainer/tests/test_workout_screen.py opencycletrainer/tests/test_workout_controller.py -x -q)",
+      "Bash(python -m pytest opencycletrainer/tests/test_device_backends.py::test_bleak_backend_shutdown_stops_notifications_before_disconnect opencycletrainer/tests/test_main_window.py::test_main_window_close_event_shuts_down_backend -v)",
+      "Bash(python -m pytest opencycletrainer/tests/test_paired_devices.py -v)",
+      "Bash(python -c \"from opencycletrainer.storage.paths import get_paired_devices_file_path; p = get_paired_devices_file_path\\(\\); print\\(p\\); print\\(''exists:'', p.exists\\(\\)\\); print\\(p.read_text\\(\\) if p.exists\\(\\) else ''FILE NOT FOUND''\\)\")",
+      "WebSearch",
+      "WebFetch(domain:forums.garmin.com)",
+      "WebFetch(domain:www.makinolo.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

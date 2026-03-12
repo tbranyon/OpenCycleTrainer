@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from opencycletrainer.core.sensors import SensorSample
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend
+from opencycletrainer.storage.paired_devices import PairedDeviceStore
 from opencycletrainer.devices.decoders import (
     CyclingPowerDecoder,
     CyclingSpeedCadenceDecoder,
@@ -157,7 +158,7 @@ class DevicesScreen(QWidget):
 
         self._backend.shutdown()
         if backend_name == "Bleak":
-            self._backend = BleakDeviceBackend()
+            self._backend = BleakDeviceBackend(paired_device_store=PairedDeviceStore())
         else:
             self._backend = MockDeviceBackend()
 

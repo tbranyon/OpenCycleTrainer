@@ -17,20 +17,28 @@ from .types import (
     NOTIFICATION_CHARACTERISTIC_UUIDS,
     infer_device_type,
 )
+from opencycletrainer.storage.paired_devices import PairedDeviceStore
 
 PayloadNotificationCallback = Callable[[bytes], Awaitable[None] | None]
 
+START_OFFSET_COMP_OPCODE = 0x0C
 
 class BleakDeviceBackend(DeviceManager):
     """Bleak-powered device manager with async scan/connect/notify plumbing."""
 
-    def __init__(self, scan_timeout_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        scan_timeout_seconds: float = 5.0,
+        paired_device_store: PairedDeviceStore | None = None,
+    ) -> None:
         self._scan_timeout_seconds = scan_timeout_seconds
+        self._paired_device_store = paired_device_store if paired_device_store is not None else PairedDeviceStore()
         self._runner = AsyncioRunner()
         self._lock = threading.Lock()
         self._devices: dict[str, DeviceInfo] = {}
         self._paired_ids: set[str] = set()
         self._clients: dict[str, Any] = {}
+        self._load_paired_ids_from_store()
 
     def scan(self) -> Future[list[DeviceInfo]]:
         return self._runner.submit(self._scan_async())
@@ -50,6 +58,7 @@ class BleakDeviceBackend(DeviceManager):
             device = self._get_device(device_id)
             self._paired_ids.add(device_id)
             self._devices[device_id] = replace(device, paired=True)
+        self._persist_paired_ids()
         return completed_future(None)
 
     def unpair_device(self, device_id: str) -> Future[None]:
@@ -176,6 +185,13 @@ class BleakDeviceBackend(DeviceManager):
                 self._devices[device_id] = info
                 scanned_devices.append(info)
 
+        for device_id in self._paired_ids:
+            if device_id not in self._clients:
+                try:
+                    await self._connect_async(device_id)
+                except Exception:
+                    pass
+
         return sorted(scanned_devices, key=lambda device: device.name.lower())
 
     async def _unpair_async(self, device_id: str) -> None:
@@ -185,6 +201,7 @@ class BleakDeviceBackend(DeviceManager):
             device = self._get_device(device_id)
             self._paired_ids.discard(device_id)
             self._devices[device_id] = replace(device, paired=False, connected=False)
+        self._persist_paired_ids()
 
     async def _connect_async(self, device_id: str) -> None:
         client_cls, _ = self._load_bleak_classes()
@@ -207,6 +224,11 @@ class BleakDeviceBackend(DeviceManager):
         with self._lock:
             client = self._clients.get(device_id)
         if client is not None:
+            for uuid in NOTIFICATION_CHARACTERISTIC_UUIDS:
+                try:
+                    await client.stop_notify(uuid)
+                except Exception:
+                    pass
             await client.disconnect()
         with self._lock:
             self._clients.pop(device_id, None)
@@ -248,7 +270,7 @@ class BleakDeviceBackend(DeviceManager):
             # Cycling Power Control Point opcode 0x12 = Start Offset Compensation (zero-offset)
             await client.write_gatt_char(
                 CPS_CONTROL_POINT_CHARACTERISTIC_UUID,
-                bytearray([0x12]),
+                bytearray([START_OFFSET_COMP_OPCODE]),
                 response=True,
             )
 
@@ -263,7 +285,7 @@ class BleakDeviceBackend(DeviceManager):
                 # [3:5] offset int16 LE (optional)
                 if response_payload:
                     data = response_payload[0]
-                    if len(data) >= 3 and data[0] == 0x20 and data[1] == 0x12 and data[2] == 0x01:
+                    if len(data) >= 3 and data[0] == 0x20 and data[1] == START_OFFSET_COMP_OPCODE and data[2] == 0x01:
                         if len(data) >= 5:
                             return int.from_bytes(data[3:5], "little", signed=True)
             return None
@@ -374,6 +396,41 @@ class BleakDeviceBackend(DeviceManager):
             asyncio.run(dispatch)
             return
         loop.create_task(dispatch)
+
+    def _load_paired_ids_from_store(self) -> None:
+        """Populate _paired_ids and _devices with stub entries from the persistent store."""
+        for entry in self._paired_device_store.load():
+            device_id = entry["device_id"]
+            try:
+                device_type = DeviceType(entry["device_type"])
+            except ValueError:
+                continue
+            self._paired_ids.add(device_id)
+            self._devices[device_id] = DeviceInfo(
+                device_id=device_id,
+                name=entry["name"],
+                device_type=device_type,
+                address=None,
+                rssi=None,
+                paired=True,
+                connected=False,
+                battery_percent=None,
+                supports_calibration=device_type is DeviceType.POWER_METER,
+            )
+
+    def _persist_paired_ids(self) -> None:
+        """Save the current set of paired device identities to the store."""
+        with self._lock:
+            snapshot = [
+                {
+                    "device_id": device.device_id,
+                    "name": device.name,
+                    "device_type": device.device_type.value,
+                }
+                for device in self._devices.values()
+                if device.paired
+            ]
+        self._paired_device_store.save(snapshot)
 
     def _get_device(self, device_id: str) -> DeviceInfo:
         if device_id not in self._devices:

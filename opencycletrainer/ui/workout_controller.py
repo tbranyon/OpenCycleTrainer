@@ -180,6 +180,7 @@ class WorkoutSessionController(QObject):
             elapsed_text="--:--:--",
             remaining_text="--:--:--",
             interval_remaining_text="--:--:--",
+            target_power_text="-- W",
         )
 
     def _request_load_workout_from_file(self) -> None:
@@ -212,7 +213,7 @@ class WorkoutSessionController(QObject):
         self._interval_extra_seconds = {}
         self._manual_resistance_offset_percent = 0.0
         self._chart_timer.stop()
-        self._screen.clear_charts()
+        self._screen.load_workout_chart(workout, ftp)
         snapshot = self._engine.load_workout(self._workout)
         self._screen.set_workout_name(self._workout.name)
         self._handle_snapshot(snapshot, now_monotonic=None)
@@ -327,10 +328,12 @@ class WorkoutSessionController(QObject):
         elapsed_seconds = int(round(snapshot.elapsed_seconds))
         remaining_seconds = max(int(snapshot.total_duration_seconds) - elapsed_seconds, 0)
         interval_remaining_seconds = self._interval_remaining_seconds(snapshot)
+        target_watts = self._workout_target_watts(snapshot)
         self._screen.set_mandatory_metrics(
             elapsed_text=_format_hh_mm_ss(elapsed_seconds),
             remaining_text=_format_hh_mm_ss(remaining_seconds),
             interval_remaining_text=_format_hh_mm_ss(interval_remaining_seconds),
+            target_power_text=f"{target_watts} W" if target_watts is not None else "-- W",
         )
 
         self._update_tiles(snapshot)
@@ -401,6 +404,22 @@ class WorkoutSessionController(QObject):
         if target_watts is None or target_watts <= 0:
             return
         self._total_kj += (float(target_watts) * delta_seconds) / 1000.0
+
+    def _workout_target_watts(self, snapshot: WorkoutEngineSnapshot) -> int | None:
+        """Return the raw workout target power regardless of control mode."""
+        if self._workout is None:
+            return None
+        index = snapshot.current_interval_index
+        if index is None or index < 0 or index >= len(self._workout.intervals):
+            return None
+        interval = self._workout.intervals[index]
+        elapsed = float(snapshot.current_interval_elapsed_seconds or 0.0)
+        duration = max(float(interval.duration_seconds), 1.0)
+        ratio = min(max(elapsed, 0.0), duration) / duration
+        target = float(interval.start_target_watts) + (
+            float(interval.end_target_watts) - float(interval.start_target_watts)
+        ) * ratio
+        return int(round(target))
 
     def _resolve_target_watts(self, snapshot: WorkoutEngineSnapshot) -> int | None:
         if self._workout is None:

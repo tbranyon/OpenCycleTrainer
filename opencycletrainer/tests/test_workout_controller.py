@@ -537,7 +537,34 @@ def test_on_chart_tick_passes_correct_elapsed_and_series_to_screen():
     controller.shutdown()
 
 
-def test_load_workout_clears_chart_and_stops_timer():
+def test_load_workout_pre_loads_chart_with_target_profile():
+    """Chart target series should be populated as soon as a workout file is loaded."""
+    _get_or_create_qapp()
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    # Before loading: target series should be empty
+    x_before, _ = screen.chart_widget._workout_target.getData()
+    assert x_before is None or len(x_before) == 0
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+
+    # After loading (before Start): target series should be populated
+    x_after, y_after = screen.chart_widget._workout_target.getData()
+    assert x_after is not None and len(x_after) > 0
+    assert y_after is not None and len(y_after) > 0
+
+    controller.shutdown()
+
+
+def test_load_workout_replaces_chart_and_stops_timer():
     app = _get_or_create_qapp()
     monotonic_now = 0.0
 
@@ -555,9 +582,11 @@ def test_load_workout_clears_chart_and_stops_timer():
     app.processEvents()
     assert controller._chart_timer.isActive()
 
-    # Loading a new workout while running should stop timer and clear charts
+    # Loading a new workout while running should stop timer and pre-load the new chart
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
     assert not controller._chart_timer.isActive()
+    x, _ = screen.chart_widget._workout_target.getData()
+    assert x is not None and len(x) > 0
 
     controller.shutdown()
 
