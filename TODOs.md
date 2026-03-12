@@ -5,7 +5,7 @@ The following items are described in the spec but not presently implemented.
 2. kJ-based workout completion is not implemented (engine explicitly marks kJ mode as stub). Evidence: workout_engine.py.
 3. Free Ride behavior is not implemented beyond a settings enum (no free-ride control logic/manual target workflow).
 4. Pause/resume ramp-in countdown user messaging is missing in UI.
-5. Live workout charts are not implemented (explicit TODO placeholders). Evidence: workout_screen.py.
+5. [DONE] ~~Live workout charts are not implemented (explicit TODO placeholders). Evidence: workout_screen.py.~~
 6. [DONE] ~~Live metric computation/refresh for tiles is not implemented (tiles render, but no data-update path).~~
 7. Workout completion summary screen (“Great job!” with time/kJ/NP/TSS/avg HR) is not implemented.
 8. Primary power source selection logic and persistence per pairing are not implemented.
