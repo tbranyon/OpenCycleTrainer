@@ -803,4 +803,158 @@ def test_trainer_controls_hidden_when_trainer_disconnected():
     assert screen.trainer_mode_label.isHidden()
     assert screen.mode_selector.isHidden()
 
+
+# ── Strava upload trigger ─────────────────────────────────────────────────────
+
+def _make_controller_with_upload(
+    app,
+    upload_fn,
+    *,
+    strava_auto_sync_enabled: bool = True,
+):
+    """Build a started controller wired with a fake Strava upload function."""
+    test_data_dir = Path(__file__).parent / "data"
+    screen = WorkoutScreen(settings=AppSettings())
+    settings = AppSettings(strava_auto_sync_enabled=strava_auto_sync_enabled)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+        strava_upload_fn=upload_fn,
+    )
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    return controller, screen
+
+
+def test_finalize_recorder_enqueues_strava_upload_when_enabled():
+    app = _get_or_create_qapp()
+    uploaded: list[Path] = []
+
+    def fake_upload(path: Path, power_series: list) -> None:  # noqa: ARG001
+        uploaded.append(path)
+
+    controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert _wait_until(app, lambda: len(uploaded) == 1)
+    assert uploaded[0].name == "Quick_Start_20260311_1200.fit"
+
+    controller.shutdown()
+
+
+def test_finalize_recorder_passes_power_series_to_upload_fn():
+    """Controller passes a captured power series snapshot to the upload function."""
+    app = _get_or_create_qapp()
+    received: list[list] = []
+
+    def fake_upload(_path: Path, power_series: list) -> None:
+        received.append(power_series)
+
+    controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
+    controller.receive_power_watts(200)
+    controller.receive_power_watts(250)
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert _wait_until(app, lambda: len(received) == 1)
+    assert isinstance(received[0], list)
+
+    controller.shutdown()
+
+
+def test_finalize_recorder_skips_strava_upload_when_disabled():
+    app = _get_or_create_qapp()
+    uploaded: list[Path] = []
+
+    controller, screen = _make_controller_with_upload(
+        app,
+        lambda p, _s: uploaded.append(p),
+        strava_auto_sync_enabled=False,
+    )
+
+    screen.end_button.click()
+    app.processEvents()
+
+    # Give the executor a moment to run anything it might incorrectly schedule
+    _wait_until(app, lambda: False, timeout_seconds=0.1)
+    assert uploaded == []
+
+    controller.shutdown()
+
+
+def test_finalize_recorder_no_error_when_upload_fn_is_none():
+    app = _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    settings = AppSettings(strava_auto_sync_enabled=True)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(strava_auto_sync_enabled=True),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+        # strava_upload_fn not provided (defaults to None)
+    )
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    # Should not raise even with auto_sync enabled
+    screen.end_button.click()
+    app.processEvents()
+
+    controller.shutdown()
+
+
+def test_strava_upload_success_shows_success_alert():
+    app = _get_or_create_qapp()
+
+    def fake_upload(_path: Path, _series: list) -> None:
+        pass  # success
+
+    controller, screen = _make_controller_with_upload(app, fake_upload)
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert _wait_until(app, lambda: "Ride synced to Strava" in screen.alert_label.text())
+
+    controller.shutdown()
+
+
+def test_strava_upload_failure_shows_error_alert():
+    app = _get_or_create_qapp()
+
+    def fake_upload(_path: Path, _series: list) -> None:
+        raise RuntimeError("Strava upload failed after 3 attempts")
+
+    controller, screen = _make_controller_with_upload(app, fake_upload)
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert _wait_until(app, lambda: "Strava sync failed" in screen.alert_label.text())
+
+    controller.shutdown()
+
+
+def test_strava_duplicate_upload_shows_already_synced_alert():
+    from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
+    app = _get_or_create_qapp()
+
+    def fake_upload(_path: Path, _series: list) -> None:
+        raise DuplicateUploadError("already uploaded")
+
+    controller, screen = _make_controller_with_upload(app, fake_upload)
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert _wait_until(app, lambda: "already synced" in screen.alert_label.text())
+
     controller.shutdown()

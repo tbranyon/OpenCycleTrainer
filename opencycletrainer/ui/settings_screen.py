@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -18,6 +19,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer.integrations.strava.app_credentials import (
+    has_app_credentials,
+    load_app_credentials,
+)
+from opencycletrainer.integrations.strava.oauth_flow import OAuthResult, run_oauth_flow
+from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
+from opencycletrainer.integrations.strava.token_store import clear_tokens, is_available, save_tokens
+from opencycletrainer.storage.paths import get_data_dir
 from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
 from .tile_config import MAX_CONFIGURABLE_TILES, TILE_OPTIONS, normalize_tile_selections
 
@@ -32,21 +41,46 @@ DEFAULT_BEHAVIOR_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+class _OAuthWorker(QObject):
+    """Runs the blocking OAuth flow off the UI thread."""
+
+    succeeded = Signal(object)  # OAuthResult
+    failed = Signal(str)
+
+    def __init__(self, credentials: object) -> None:
+        super().__init__()
+        self._credentials = credentials
+
+    def run(self) -> None:
+        try:
+            result = run_oauth_flow(self._credentials)  # type: ignore[arg-type]
+            self.succeeded.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 class SettingsScreen(QWidget):
     settings_applied = Signal(object)
+    _sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
 
     def __init__(
         self,
         *,
         settings: AppSettings | None = None,
         settings_path: Path | None = None,
+        strava_connected: bool = False,
+        strava_sync_fn: object = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings_path = settings_path
         self._settings = settings if settings is not None else load_settings(settings_path)
+        self._strava_sync_fn = strava_sync_fn
         self._selected_tiles = normalize_tile_selections(self._settings.tile_selections)
         self._tile_checkboxes: dict[str, QCheckBox] = {}
+        self._strava_connected = strava_connected
+        self._oauth_thread: QThread | None = None
+        self._sync_now_signal.connect(self._on_sync_now_result)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
@@ -120,6 +154,35 @@ class SettingsScreen(QWidget):
         root_layout.addWidget(tiles_group)
         self._update_selection_status()
 
+        strava_group = QGroupBox("Strava", self)
+        strava_layout = QFormLayout(strava_group)
+
+        self.strava_status_label = QLabel("", strava_group)
+        self.strava_status_label.setObjectName("stravaStatusLabel")
+        strava_layout.addRow("Status", self.strava_status_label)
+
+        self.strava_connect_button = QPushButton("Connect with Strava", strava_group)
+        self.strava_connect_button.clicked.connect(self._on_strava_connect)
+        strava_layout.addRow(self.strava_connect_button)
+
+        self.strava_disconnect_button = QPushButton("Disconnect Strava", strava_group)
+        self.strava_disconnect_button.clicked.connect(self.disconnect_strava)
+        strava_layout.addRow(self.strava_disconnect_button)
+
+        self.strava_auto_sync_checkbox = QCheckBox("Automatically sync rides with Strava", strava_group)
+        self.strava_auto_sync_checkbox.setChecked(self._settings.strava_auto_sync_enabled)
+        strava_layout.addRow(self.strava_auto_sync_checkbox)
+
+        self.strava_sync_now_button = QPushButton("Sync now", strava_group)
+        self.strava_sync_now_button.clicked.connect(self._on_strava_sync_now)
+        strava_layout.addRow(self.strava_sync_now_button)
+
+        root_layout.addWidget(strava_group)
+        self._apply_strava_connected_state(
+            self._strava_connected,
+            self._settings.strava_athlete_name,
+        )
+
         buttons_row = QHBoxLayout()
         buttons_row.addStretch(1)
         self.save_button = QPushButton("Save Settings", self)
@@ -145,6 +208,7 @@ class SettingsScreen(QWidget):
                 DEFAULT_BEHAVIOR_OPTIONS,
             ),
             windowed_power_window_seconds=self.windowed_power_window_spinbox.value(),
+            strava_auto_sync_enabled=self.strava_auto_sync_checkbox.isChecked(),
         )
 
     def set_tile_selected(self, tile_key: str, selected: bool) -> None:
@@ -159,6 +223,110 @@ class SettingsScreen(QWidget):
         self.status_label.setText("Settings saved.")
         self.settings_applied.emit(self._settings)
         return self._settings
+
+    def disconnect_strava(self) -> None:
+        """Clear stored tokens and update the UI to the disconnected state."""
+        clear_tokens()
+        self._settings = replace(
+            self._settings,
+            strava_athlete_name="",
+            strava_auto_sync_enabled=False,
+        )
+        save_settings(self._settings, self._settings_path)
+        self._apply_strava_connected_state(False, "")
+
+    def _on_strava_connect(self) -> None:
+        if not is_available():
+            self.status_label.setText(
+                "Strava sync requires a system keychain. "
+                "Secure credential storage is not available on this system."
+            )
+            return
+        if not has_app_credentials():
+            self.status_label.setText("Strava app credentials are not configured.")
+            return
+
+        credentials = load_app_credentials()
+        self.strava_connect_button.setEnabled(False)
+        self.status_label.setText("Opening Strava authorization in browser…")
+
+        self._oauth_thread = QThread(self)
+        worker = _OAuthWorker(credentials)
+        worker.moveToThread(self._oauth_thread)
+        self._oauth_thread.started.connect(worker.run)
+        worker.succeeded.connect(self._on_oauth_succeeded)
+        worker.failed.connect(self._on_oauth_failed)
+        worker.succeeded.connect(self._oauth_thread.quit)
+        worker.failed.connect(self._oauth_thread.quit)
+        self._oauth_thread.start()
+
+    def _on_oauth_succeeded(self, result: object) -> None:
+        if not isinstance(result, OAuthResult):
+            return
+        save_tokens(result.token_bundle)
+        self._settings = replace(self._settings, strava_athlete_name=result.athlete_name)
+        save_settings(self._settings, self._settings_path)
+        self._apply_strava_connected_state(True, result.athlete_name)
+        self.status_label.setText("Strava connected.")
+
+    def _on_oauth_failed(self, error_message: str) -> None:
+        self.strava_connect_button.setEnabled(True)
+        self.status_label.setText(f"Strava connection failed: {error_message}")
+
+    def _apply_strava_connected_state(self, connected: bool, athlete_name: str) -> None:
+        self._strava_connected = connected
+        if connected:
+            label = f"Connected as {athlete_name}" if athlete_name else "Connected"
+        else:
+            label = "Not connected"
+        self.strava_status_label.setText(label)
+        self.strava_connect_button.setVisible(not connected)
+        self.strava_connect_button.setEnabled(True)
+        self.strava_disconnect_button.setVisible(connected)
+        self.strava_auto_sync_checkbox.setEnabled(connected)
+        self.strava_sync_now_button.setEnabled(connected)
+
+    def _on_strava_sync_now(self) -> None:
+        """Open a FIT file picker and enqueue the selected file for Strava upload."""
+        default_dir = str(get_data_dir())
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select FIT File to Sync",
+            default_dir,
+            "FIT Files (*.fit)",
+        )
+        if not path or self._strava_sync_fn is None:
+            return
+        self.strava_sync_now_button.setEnabled(False)
+        self.status_label.setText("Syncing to Strava…")
+
+        fit_path = Path(path)
+        sync_fn = self._strava_sync_fn
+        signal = self._sync_now_signal
+
+        def _run() -> None:
+            try:
+                sync_fn(fit_path)  # type: ignore[operator]
+                signal.emit("success")
+            except DuplicateUploadError:
+                signal.emit("duplicate")
+            except Exception as exc:  # noqa: BLE001
+                signal.emit(f"error:{exc}")
+
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="strava_sync_now")
+        executor.submit(_run)
+        executor.shutdown(wait=False)
+
+    def _on_sync_now_result(self, result: str) -> None:
+        self.strava_sync_now_button.setEnabled(True)
+        if result == "success":
+            self.status_label.setText("Ride synced to Strava.")
+        elif result == "duplicate":
+            self.status_label.setText("Ride already synced to Strava.")
+        else:
+            msg = result[len("error:"):] if result.startswith("error:") else result
+            self.status_label.setText(f"Strava sync failed: {msg}")
 
     def _on_tile_toggled(self, tile_key: str, checked: bool) -> None:
         if checked:

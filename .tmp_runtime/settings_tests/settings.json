@@ -1,13 +1,1 @@
-{
-  "ftp": 300,
-  "lead_time": 5,
-  "opentrueup_enabled": true,
-  "tile_selections": [
-    "power",
-    "cadence"
-  ],
-  "display_units": "imperial",
-  "default_workout_behavior": "free_ride_mode",
-  "windowed_power_window_seconds": 3,
-  "last_workout_dir": null
-}
+{"ftp": 250}

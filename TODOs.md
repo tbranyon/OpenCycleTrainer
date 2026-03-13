@@ -29,3 +29,7 @@
 27. [DONE] ~~Ramp doesn't work with Tempo 1x15 at least, just maintained the start power. Switching between resistance and back to ERG jumped to the current ramp target momentarily but then got overwritten again with original start power.~~
 28. [DONE] ~~Need cadence tile on display~~
 29. [DONE] ~~Error alerts should not persist indefinitely on the UI. They should be clearable and auto clear after 5s.~~
+30. [DONE] ~~Strava sync Phases 1-4: OAuth connect/disconnect, secure token storage, and automatic FIT upload on workout completion.~~
+31. [DONE] ~~Strava sync Phase 5: Structured logging, duplicate upload prevention with local history, external_id on uploads, "already synced" alert, and Sync Now button wiring.~~
+32. [DONE] ~~Strava sync Phase 6: workout power chart image generated (matplotlib, 1080×1350 portrait) and attached to Strava activity after successful FIT upload, best-effort and non-blocking.~~
+33. Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.

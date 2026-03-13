@@ -44,3 +44,49 @@ def test_save_settings_writes_expected_keys():
     assert raw["tile_selections"] == ["power", "cadence"]
     assert raw["display_units"] == "imperial"
     assert raw["default_workout_behavior"] == "free_ride_mode"
+
+
+def test_strava_auto_sync_defaults_to_false():
+    assert AppSettings().strava_auto_sync_enabled is False
+
+
+def test_strava_auto_sync_round_trips_through_serialization():
+    settings_file = _settings_file()
+    settings = AppSettings(strava_auto_sync_enabled=True)
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.strava_auto_sync_enabled is True
+
+
+def test_strava_auto_sync_missing_key_defaults_to_false():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.strava_auto_sync_enabled is False
+
+
+def test_strava_athlete_name_defaults_to_empty_string():
+    assert AppSettings().strava_athlete_name == ""
+
+
+def test_strava_athlete_name_round_trips_through_serialization():
+    settings_file = _settings_file()
+    settings = AppSettings(strava_athlete_name="Jane Smith")
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.strava_athlete_name == "Jane Smith"
+
+
+def test_strava_athlete_name_missing_key_defaults_to_empty_string():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.strava_athlete_name == ""

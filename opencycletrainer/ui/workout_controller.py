@@ -38,6 +38,7 @@ class WorkoutSessionController(QObject):
     """Connects WorkoutScreen controls/hotkeys to the workout engine runtime loop."""
     _bridge_alert_signal = Signal(str)
     _opentrueup_offset_signal = Signal(object)
+    _strava_alert_signal = Signal(str, str)
 
     def __init__(
         self,
@@ -51,6 +52,7 @@ class WorkoutSessionController(QObject):
         summary_dialog_factory: Callable[[WorkoutSummary, object], object] | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] | None = None,
+        strava_upload_fn: Callable[[Path, list[tuple[float, int]]], None] | None = None,
         tick_interval_ms: int = 250,
         parent: QObject | None = None,
     ) -> None:
@@ -75,6 +77,8 @@ class WorkoutSessionController(QObject):
             opentrueup if opentrueup is not None
             else self._make_opentrueup(settings)
         )
+        self._strava_upload_fn = strava_upload_fn
+        self._upload_executor: ThreadPoolExecutor | None = None
         self._trainer_backend: object | None = None
         self._trainer_device_id: str | None = None
         self._ftms_bridge: WorkoutEngineFTMSBridge | None = None
@@ -130,6 +134,7 @@ class WorkoutSessionController(QObject):
         self._set_no_workout_state()
         self._bridge_alert_signal.connect(self._screen.show_alert)
         self._opentrueup_offset_signal.connect(self._screen.set_opentrueup_offset_watts)
+        self._strava_alert_signal.connect(self._screen.show_alert)
 
     @property
     def last_snapshot(self) -> WorkoutEngineSnapshot | None:
@@ -163,6 +168,8 @@ class WorkoutSessionController(QObject):
         self._teardown_ftms_bridge()
         if self._recorder_active:
             self._finalize_recorder()
+        if self._upload_executor is not None:
+            self._upload_executor.shutdown(wait=False)
 
     def process_tick(self, now_monotonic: float | None = None) -> WorkoutEngineSnapshot | None:
         if self._engine.workout is None:
@@ -535,6 +542,34 @@ class WorkoutSessionController(QObject):
             f"Workout saved: {summary.fit_file_path.name}",
             alert_type="success",
         )
+        if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
+            power_series = list(self._power_history)
+            self._enqueue_strava_upload(summary.fit_file_path, power_series)
+
+    def _enqueue_strava_upload(self, fit_path: Path, power_series: list[tuple[float, int]]) -> None:
+        from concurrent.futures import Future  # noqa: PLC0415
+        if self._upload_executor is None:
+            self._upload_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="strava_upload",
+            )
+        fut: Future[None] = self._upload_executor.submit(self._strava_upload_fn, fit_path, power_series)
+        fut.add_done_callback(self._on_upload_done)
+
+    def _on_upload_done(self, future: object) -> None:
+        """Called in the upload thread when an upload finishes."""
+        from concurrent.futures import Future  # noqa: PLC0415
+        from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError  # noqa: PLC0415
+        if not isinstance(future, Future):
+            return
+        exc = future.exception()
+        if exc is None:
+            self._strava_alert_signal.emit("Ride synced to Strava", "success")
+        elif isinstance(exc, DuplicateUploadError):
+            self._strava_alert_signal.emit("Ride already synced to Strava", "info")
+        else:
+            _logger.warning("Strava upload failed: %s", exc)
+            self._strava_alert_signal.emit("Strava sync failed (ride kept locally)", "error")
 
     def _show_workout_summary(self) -> None:
         """Build a WorkoutSummary from current session data and display the modal."""

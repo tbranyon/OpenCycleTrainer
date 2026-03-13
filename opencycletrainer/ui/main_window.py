@@ -8,6 +8,8 @@ from PySide6.QtWidgets import QTabWidget
 
 from opencycletrainer.core.sensors import SensorSample
 from opencycletrainer.devices.types import CPS_MEASUREMENT_CHARACTERISTIC_UUID
+from opencycletrainer.integrations.strava.sync_service import upload_fit_to_strava
+from opencycletrainer.integrations.strava.token_store import get_tokens
 from opencycletrainer.storage.settings import AppSettings
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
@@ -35,12 +37,15 @@ class MainWindow(QMainWindow):
         self.settings_screen = SettingsScreen(
             settings=settings,
             settings_path=settings_path,
+            strava_connected=get_tokens() is not None,
+            strava_sync_fn=upload_fit_to_strava,
             parent=self,
         )
         self.workout_controller = WorkoutSessionController(
             screen=self.workout_screen,
             settings=settings or AppSettings(),
             settings_path=settings_path,
+            strava_upload_fn=upload_fit_to_strava,
             parent=self,
         )
         self.settings_screen.settings_applied.connect(self._on_settings_applied)

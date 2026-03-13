@@ -89,10 +89,11 @@ Do not store access tokens, refresh tokens, or client secrets in:
 |---|---|
 | `strava_auto_sync_enabled` | `settings.json` (`AppSettings`) |
 | `strava_connected` (optional UI hint) | derive from token presence or store in `settings.json` |
+| App `client_id` | Environment variable (app-wide), not per-user settings |
+| App `client_secret` | Environment variable (app-wide), never committed |
 | Access token | OS keychain via `keyring` |
 | Refresh token | OS keychain via `keyring` |
 | Token expiry (`expires_at`) | OS keychain via `keyring` (same payload) |
-| Client secret (if required) | OS keychain via `keyring` |
 
 ### Security Requirements
 
@@ -100,6 +101,10 @@ Do not store access tokens, refresh tokens, or client secrets in:
 - If no usable keyring backend is available, fail closed:
   - Do not fall back to plaintext files.
   - Show user-facing message that Strava sync requires secure credential storage.
+- Read app OAuth credentials from environment variables:
+  - `OCT_STRAVA_CLIENT_ID`
+  - `OCT_STRAVA_CLIENT_SECRET`
+- Do not store app client secret in repository files or `settings.json`.
 - Redact tokens/secrets from logs and exceptions.
 - Bind callback server to `127.0.0.1` only.
 - Validate OAuth `state` on callback before token exchange.
@@ -113,6 +118,8 @@ Do not store access tokens, refresh tokens, or client secrets in:
 
 ### New Modules
 
+- `opencycletrainer/integrations/strava/app_credentials.py`
+  - Reads and validates app-wide OAuth credentials from environment.
 - `opencycletrainer/integrations/strava/token_store.py`
   - Keyring-backed read/write/delete for Strava token bundle.
 - `opencycletrainer/integrations/strava/oauth_flow.py`

@@ -2,12 +2,11 @@
   "ftp": 250,
   "lead_time": 0,
   "opentrueup_enabled": false,
-  "tile_selections": [
-    "heart_rate",
-    "workout_avg_power"
-  ],
+  "tile_selections": [],
   "display_units": "metric",
   "default_workout_behavior": "workout_mode",
   "windowed_power_window_seconds": 3,
-  "last_workout_dir": null
+  "last_workout_dir": null,
+  "strava_auto_sync_enabled": false,
+  "strava_athlete_name": ""
 }

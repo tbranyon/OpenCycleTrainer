@@ -28,7 +28,8 @@
       "Bash(python -m pytest opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_hidden_by_default opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_shown_with_value_when_in_resistance_mode opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_hidden_when_cleared opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_zero -v)",
       "Bash(python -m pytest opencycletrainer/tests/test_sensor_decoders.py::test_csc_crank_counter_rollover_produces_correct_cadence opencycletrainer/tests/test_sensor_decoders.py::test_csc_cadence_out_of_range_is_rejected opencycletrainer/tests/test_sensor_decoders.py::test_cps_cadence_out_of_range_is_rejected opencycletrainer/tests/test_sensor_decoders.py::test_ftms_cadence_out_of_range_is_rejected opencycletrainer/tests/test_recorder.py::test_recorder_stop_completes_gracefully_when_fit_export_fails -v)",
       "Bash(python -m pytest opencycletrainer/tests/test_opentrueup.py::test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset -v)",
-      "Bash(python -m pytest opencycletrainer/tests/test_ftms_control.py::test_bridge_updates_erg_target_continuously_during_ramp_interval opencycletrainer/tests/test_ftms_control.py::test_bridge_resistance_ramp_updates_continuously -v)"
+      "Bash(python -m pytest opencycletrainer/tests/test_ftms_control.py::test_bridge_updates_erg_target_continuously_during_ramp_interval opencycletrainer/tests/test_ftms_control.py::test_bridge_resistance_ramp_updates_continuously -v)",
+      "Bash(pip install:*)"
     ]
   }
 }
