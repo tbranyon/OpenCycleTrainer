@@ -165,9 +165,16 @@ class WorkoutScreen(QWidget):
     def set_mode_state(self, mode: str) -> None:
         if mode not in MODE_OPTIONS:
             return
-        self.mode_state_value.setText(mode)
         if self.mode_selector.currentText() != mode:
             self.mode_selector.setCurrentText(mode)
+
+    def set_resistance_level(self, level: int | None) -> None:
+        """Show the resistance level label with the given percentage, or hide it if None."""
+        if level is None:
+            self.resistance_level_label.setVisible(False)
+            return
+        self.resistance_level_label.setText(f"{level} %")
+        self.resistance_level_label.setVisible(True)
 
     def set_opentrueup_offset_watts(self, offset_watts: int | None) -> None:
         if offset_watts is None:
@@ -175,11 +182,35 @@ class WorkoutScreen(QWidget):
             return
         self.opentrueup_offset_value.setText(f"{int(offset_watts)} W")
 
-    def show_alert(self, message: str) -> None:
+    _ALERT_STYLES = {
+        "error": (
+            "QLabel#workoutAlertLabel {"
+            "color: #9f1d1d;"
+            "background-color: #ffe8e8;"
+            "border: 1px solid #d33;"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "}"
+        ),
+        "success": (
+            "QLabel#workoutAlertLabel {"
+            "color: #1a7f37;"
+            "background-color: #e6ffed;"
+            "border: 1px solid #2da44e;"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "}"
+        ),
+    }
+
+    def show_alert(self, message: str, alert_type: str = "error") -> None:
+        """Show a banner alert. alert_type is 'error' or 'success'."""
         message_clean = message.strip()
         if not message_clean:
             self.clear_alert()
             return
+        style = self._ALERT_STYLES.get(alert_type, self._ALERT_STYLES["error"])
+        self.alert_label.setStyleSheet(style)
         self.alert_label.setText(message_clean)
         self.alert_label.setVisible(True)
 
@@ -252,15 +283,6 @@ class WorkoutScreen(QWidget):
         self.alert_label = QLabel("", self)
         self.alert_label.setObjectName("workoutAlertLabel")
         self.alert_label.setVisible(False)
-        self.alert_label.setStyleSheet(
-            "QLabel#workoutAlertLabel {"
-            "color: #9f1d1d;"
-            "background-color: #ffe8e8;"
-            "border: 1px solid #d33;"
-            "border-radius: 4px;"
-            "padding: 6px;"
-            "}",
-        )
         root_layout.addWidget(self.alert_label)
 
     def load_workout_chart(self, workout: Workout, ftp_watts: int) -> None:
@@ -288,14 +310,15 @@ class WorkoutScreen(QWidget):
         mode_row.addStretch(1)
 
         mode_row.addWidget(QLabel("Trainer Mode:", self))
-        self.mode_state_value = QLabel("ERG", self)
-        self.mode_state_value.setObjectName("modeStateValue")
-        mode_row.addWidget(self.mode_state_value)
-
         self.mode_selector = QComboBox(self)
         self.mode_selector.addItems(list(MODE_OPTIONS))
         self.mode_selector.currentTextChanged.connect(self.set_mode_state)
         mode_row.addWidget(self.mode_selector)
+
+        self.resistance_level_label = QLabel("-- %", self)
+        self.resistance_level_label.setObjectName("resistanceLevelLabel")
+        self.resistance_level_label.setVisible(False)
+        mode_row.addWidget(self.resistance_level_label)
 
         mode_row.addSpacing(16)
         mode_row.addWidget(QLabel("OpenTrueUp Offset:", self))

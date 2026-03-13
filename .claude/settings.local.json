@@ -21,7 +21,10 @@
       "WebSearch",
       "WebFetch(domain:forums.garmin.com)",
       "WebFetch(domain:www.makinolo.com)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(python -m pytest)",
+      "Bash(python -m pytest --timeout=30)",
+      "Bash(python -m pytest opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_hidden_by_default opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_shown_with_value_when_in_resistance_mode opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_hidden_when_cleared opencycletrainer/tests/test_workout_screen.py::test_resistance_level_label_zero -v)"
     ]
   }
 }

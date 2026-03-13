@@ -29,7 +29,6 @@ def test_workout_screen_displays_mandatory_fields_controls_and_mode():
     assert "Time Remaining" in label_texts
     assert "Interval Time/Work Remaining" in label_texts
     assert {"Start", "Pause", "Resume", "Stop"}.issubset(button_texts)
-    assert screen.mode_state_value.text() == "ERG"
 
 
 def test_workout_screen_uses_settings_tile_selection_without_selector_controls():
@@ -66,6 +65,23 @@ def test_workout_screen_alert_channel_visibility():
     assert screen.alert_label.isHidden() is True
 
 
+def test_workout_screen_alert_defaults_to_error_style():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.show_alert("Something went wrong")
+    assert "#d33" in screen.alert_label.styleSheet()
+
+
+def test_workout_screen_alert_success_style():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.show_alert("Workout saved: ride.fit", alert_type="success")
+    style = screen.alert_label.styleSheet()
+    assert "#1a7f37" in style or "green" in style.lower()
+
+
 def test_workout_screen_can_render_opentrueup_offset_value():
     _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
@@ -75,3 +91,40 @@ def test_workout_screen_can_render_opentrueup_offset_value():
     assert screen.opentrueup_offset_value.text() == "14 W"
     screen.set_opentrueup_offset_watts(None)
     assert screen.opentrueup_offset_value.text() == "-- W"
+
+
+def test_resistance_level_label_hidden_by_default():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    assert screen.resistance_level_label.isHidden() is True
+
+
+def test_resistance_level_label_shown_with_value_when_in_resistance_mode():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.set_resistance_level(50)
+
+    assert screen.resistance_level_label.isHidden() is False
+    assert screen.resistance_level_label.text() == "50 %"
+
+
+def test_resistance_level_label_hidden_when_cleared():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.set_resistance_level(25)
+    screen.set_resistance_level(None)
+
+    assert screen.resistance_level_label.isHidden() is True
+
+
+def test_resistance_level_label_zero():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.set_resistance_level(0)
+
+    assert screen.resistance_level_label.isHidden() is False
+    assert screen.resistance_level_label.text() == "0 %"

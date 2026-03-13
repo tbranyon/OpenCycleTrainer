@@ -26,6 +26,7 @@ from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
 from .workout_screen import MODE_OPTIONS, WorkoutScreen
+from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, compute_tss
 
 RECOVERY_THRESHOLD_PERCENT = 56.0
 
@@ -44,6 +45,7 @@ class WorkoutSessionController(QObject):
         recorder: WorkoutRecorder | None = None,
         opentrueup: OpenTrueUpController | None = None,
         ftms_transport_factory: Callable[[object, str], FTMSControlTransport | None] | None = None,
+        summary_dialog_factory: Callable[[WorkoutSummary, object], object] | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] | None = None,
         tick_interval_ms: int = 250,
@@ -61,6 +63,11 @@ class WorkoutSessionController(QObject):
             if ftms_transport_factory is not None
             else self._default_ftms_transport_factory
         )
+        self._summary_dialog_factory = (
+            summary_dialog_factory
+            if summary_dialog_factory is not None
+            else lambda summary, parent: WorkoutSummaryDialog(summary, parent)
+        )
         self._opentrueup: OpenTrueUpController | None = (
             opentrueup if opentrueup is not None
             else self._make_opentrueup(settings)
@@ -76,11 +83,13 @@ class WorkoutSessionController(QObject):
         self._workout: Workout | None = None
         self._selected_mode = self._screen.mode_selector.currentText()
         self._manual_resistance_offset_percent = 0.0
+        self._manual_erg_jog_watts = 0.0
         self._total_kj = 0.0
         self._interval_extra_seconds: dict[int, int] = {}
         self._last_energy_tick_monotonic: float | None = None
         self._last_snapshot: WorkoutEngineSnapshot | None = None
         self._recorder_active = False
+        self._recorder_started = False
 
         self._power_history: deque[tuple[float, int]] = deque()
         self._interval_power_sum = 0.0
@@ -159,6 +168,7 @@ class WorkoutSessionController(QObject):
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
             self._finalize_recorder()
+            self._show_workout_summary()
         return snapshot
 
     def _wire_screen_actions(self) -> None:
@@ -168,7 +178,7 @@ class WorkoutSessionController(QObject):
         self._screen.end_button.clicked.connect(self._stop_workout)
         self._screen.extend_interval_requested.connect(self._extend_interval)
         self._screen.skip_interval_requested.connect(self._skip_interval)
-        self._screen.jog_requested.connect(self._jog_resistance)
+        self._screen.jog_requested.connect(self._jog_target)
         self._screen.mode_selector.currentTextChanged.connect(self._mode_selected)
         self._screen.load_workout_requested.connect(self._request_load_workout_from_file)
 
@@ -212,6 +222,7 @@ class WorkoutSessionController(QObject):
         self._workout = workout
         self._interval_extra_seconds = {}
         self._manual_resistance_offset_percent = 0.0
+        self._manual_erg_jog_watts = 0.0
         self._chart_timer.stop()
         self._screen.load_workout_chart(workout, ftp)
         snapshot = self._engine.load_workout(self._workout)
@@ -232,6 +243,7 @@ class WorkoutSessionController(QObject):
 
         self._total_kj = 0.0
         self._interval_extra_seconds = {}
+        self._manual_erg_jog_watts = 0.0
         self._last_energy_tick_monotonic = None
         self._power_history.clear()
         self._interval_power_sum = 0.0
@@ -276,6 +288,7 @@ class WorkoutSessionController(QObject):
         self._chart_timer.stop()
         self._handle_snapshot(snapshot, now_monotonic=None)
         self._finalize_recorder()
+        self._show_workout_summary()
 
     def _extend_interval(self, seconds_or_kj: int, is_kj_mode: bool) -> None:
         if bool(is_kj_mode) != self._engine.kj_mode:
@@ -294,15 +307,33 @@ class WorkoutSessionController(QObject):
             self._timer.stop()
             self._chart_timer.stop()
             self._finalize_recorder()
+            self._show_workout_summary()
 
-    def _jog_resistance(self, delta_percent: int) -> None:
-        if self._selected_mode not in {"Resistance", "Hybrid"}:
-            return
+    def _jog_target(self, delta_percent: int) -> None:
         snapshot = self._last_snapshot or self._engine.snapshot()
-        if self._active_control_mode(snapshot) != "Resistance":
-            return
-        updated = self._manual_resistance_offset_percent + float(delta_percent)
-        self._manual_resistance_offset_percent = max(-100.0, min(100.0, updated))
+        active_mode = self._active_control_mode(snapshot)
+
+        if active_mode == "ERG":
+            ftp = max(1, self._settings.ftp)
+            delta_watts = (ftp * delta_percent) / 100.0
+            self._manual_erg_jog_watts += delta_watts
+            jog_watts = self._manual_erg_jog_watts
+            self._submit_ftms_bridge_action(
+                lambda bridge: bridge.set_erg_jog_offset_watts(jog_watts)
+            )
+        elif active_mode == "Resistance":
+            updated = self._manual_resistance_offset_percent + float(delta_percent)
+            self._manual_resistance_offset_percent = max(-100.0, min(100.0, updated))
+            # TODO: The updated _manual_resistance_offset_percent needs to be sent to the
+            # FTMS bridge to command the trainer. This part of the implementation is missing.
+            # For example, a hypothetical call might look like this:
+            # self._submit_ftms_bridge_action(
+            #     lambda bridge: bridge.set_resistance_level(self._manual_resistance_offset_percent)
+            # )
+
+        # Force an immediate update of the trainer target
+        if self._last_snapshot:
+            self._handle_snapshot(self._last_snapshot, now_monotonic=None)
 
     def _mode_selected(self, mode: str) -> None:
         if mode not in MODE_OPTIONS:
@@ -320,15 +351,22 @@ class WorkoutSessionController(QObject):
         self._screen.set_session_state(snapshot.state.value)
         self._screen.set_mode_state(self._selected_mode)
 
+        active_mode = self._active_control_mode(snapshot)
+        if active_mode == "Resistance":
+            self._screen.set_resistance_level(int(self._manual_resistance_offset_percent))
+        else:
+            self._screen.set_resistance_level(None)
+
         current_index = snapshot.current_interval_index
         if current_index != self._active_interval_index:
             self._active_interval_index = current_index
             self._reset_interval_accumulators()
+            self._manual_erg_jog_watts = 0.0
 
         elapsed_seconds = int(round(snapshot.elapsed_seconds))
         remaining_seconds = max(int(snapshot.total_duration_seconds) - elapsed_seconds, 0)
         interval_remaining_seconds = self._interval_remaining_seconds(snapshot)
-        target_watts = self._workout_target_watts(snapshot)
+        target_watts = self._resolve_target_watts(snapshot) or self._workout_target_watts(snapshot)
         self._screen.set_mandatory_metrics(
             elapsed_text=_format_hh_mm_ss(elapsed_seconds),
             remaining_text=_format_hh_mm_ss(remaining_seconds),
@@ -439,7 +477,8 @@ class WorkoutSessionController(QObject):
         target = float(interval.start_target_watts) + (
             float(interval.end_target_watts) - float(interval.start_target_watts)
         ) * ratio
-        return int(round(target))
+        final_target = target + self._manual_erg_jog_watts
+        return int(round(max(0, final_target)))
 
     def _active_control_mode(self, snapshot: WorkoutEngineSnapshot) -> str:
         if self._selected_mode == "ERG":
@@ -459,17 +498,19 @@ class WorkoutSessionController(QObject):
         return "Resistance"
 
     def _start_recorder(self) -> None:
-        if self._workout is None or self._recorder_active:
+        if self._workout is None or self._recorder_started:
             return
         self._recorder.start(
             workout_name=self._workout.name,
             started_at_utc=self._utc_now(),
         )
         self._recorder_active = True
+        self._recorder_started = True
 
     def _finalize_recorder(self) -> None:
-        if not self._recorder_active:
+        if not self._recorder_started:
             return
+        self._recorder_started = False
         self._recorder_active = False
         try:
             summary = self._recorder.stop(finished_at_utc=self._utc_now())
@@ -477,7 +518,34 @@ class WorkoutSessionController(QObject):
             return
         self._screen.show_alert(
             f"Workout saved: {summary.fit_file_path.name}",
+            alert_type="success",
         )
+
+    def _show_workout_summary(self) -> None:
+        """Build a WorkoutSummary from current session data and display the modal."""
+        elapsed = self._last_snapshot.elapsed_seconds if self._last_snapshot else 0.0
+        np_watts = self._compute_normalized_power()
+        ftp = max(1, int(self._settings.ftp))
+        tss = compute_tss(np_watts, ftp, elapsed)
+        avg_hr = (
+            int(self._workout_hr_sum / self._workout_hr_count)
+            if self._workout_hr_count > 0
+            else None
+        )
+        summary = WorkoutSummary(
+            elapsed_seconds=elapsed,
+            kj=self._workout_actual_kj,
+            normalized_power=np_watts,
+            tss=tss,
+            avg_hr=avg_hr,
+        )
+        dialog = self._summary_dialog_factory(summary, self._screen)
+        if dialog is not None:
+            dialog.accepted.connect(self._set_no_workout_state)
+            dialog.rejected.connect(self._set_no_workout_state)
+            dialog.open()
+        else:
+            self._set_no_workout_state()
 
     def receive_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
         """Feed a live trainer power reading (W) into the metric computation pipeline."""

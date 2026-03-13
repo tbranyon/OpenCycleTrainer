@@ -159,12 +159,20 @@ class FTMSControl:
     def _send_command_with_ack(self, *, request_opcode: int, payload: bytes) -> FTMSControlAck:
         with self._command_lock:
             if request_opcode != _OPCODE_REQUEST_CONTROL and not self._has_control:
-                control_ack = self._send_command_locked(
-                    request_opcode=_OPCODE_REQUEST_CONTROL,
-                    payload=bytes([_OPCODE_REQUEST_CONTROL]),
-                )
+                try:
+                    control_ack = self._send_command_locked(
+                        request_opcode=_OPCODE_REQUEST_CONTROL,
+                        payload=bytes([_OPCODE_REQUEST_CONTROL]),
+                    )
+                except FTMSControlError:
+                    self._has_control = False
+                    raise
                 self._has_control = control_ack.result_code == _RESULT_SUCCESS
-            ack = self._send_command_locked(request_opcode=request_opcode, payload=payload)
+            try:
+                ack = self._send_command_locked(request_opcode=request_opcode, payload=payload)
+            except FTMSControlError:
+                self._has_control = False
+                raise
             if request_opcode == _OPCODE_REQUEST_CONTROL and ack.result_code == _RESULT_SUCCESS:
                 self._has_control = True
             return ack
@@ -241,6 +249,7 @@ class WorkoutEngineFTMSBridge:
         self._lead_time_sent_for_interval: int | None = None
         self._current_erg_target_base_watts: int | None = None
         self._last_sent_erg_target_watts: int | None = None
+        self._erg_jog_offset_watts: float = 0.0
         if mode is ControlMode.ERG:
             self._control.set_mode_erg()
         else:
@@ -265,6 +274,13 @@ class WorkoutEngineFTMSBridge:
         self._last_state = None
         self._last_interval_index = None
         self._lead_time_sent_for_interval = None
+
+    def set_erg_jog_offset_watts(self, offset_watts: float) -> None:
+        """Apply a manual ERG jog offset and immediately send the updated target."""
+        self._erg_jog_offset_watts = offset_watts
+        if self._current_erg_target_base_watts is not None:
+            jogged = int(round(self._current_erg_target_base_watts + offset_watts))
+            self._send_erg_target(self._apply_opentrueup_target(jogged), force=True)
 
     def on_engine_snapshot(
         self,
@@ -359,6 +375,7 @@ class WorkoutEngineFTMSBridge:
         interval = workout.intervals[interval_index]
         elapsed_in_interval = snapshot.current_interval_elapsed_seconds or 0.0
         if self._control.mode is ControlMode.ERG:
+            self._erg_jog_offset_watts = 0.0
             target_watts = _resolve_interval_target_watts(interval, elapsed_in_interval)
             self._current_erg_target_base_watts = target_watts
             adjusted_target_watts = self._apply_opentrueup_target(target_watts)

@@ -267,7 +267,7 @@ class BleakDeviceBackend(DeviceManager):
             except Exception:
                 pass
 
-            # Cycling Power Control Point opcode 0x12 = Start Offset Compensation (zero-offset)
+            # Cycling Power Control Point opcode 0x0C = Start Offset Compensation (zero-offset)
             await client.write_gatt_char(
                 CPS_CONTROL_POINT_CHARACTERISTIC_UUID,
                 bytearray([START_OFFSET_COMP_OPCODE]),
@@ -281,7 +281,7 @@ class BleakDeviceBackend(DeviceManager):
                     return None
 
                 # CPS Control Point response format:
-                # [0] 0x20 (Response Code), [1] 0x12 (request opcode), [2] result (0x01=success),
+                # [0] 0x20 (Response Code), [1] 0x0C (request opcode), [2] result (0x01=success),
                 # [3:5] offset int16 LE (optional)
                 if response_payload:
                     data = response_payload[0]
