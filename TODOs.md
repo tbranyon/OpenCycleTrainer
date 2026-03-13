@@ -25,3 +25,6 @@
 23. Errors in FTMS layer prevent writing FIT file on Stop apparently (sometimes). FIT file should be written on stop regardless of state.
 24. [DONE] ~~FIT file write message should be in green, not red.~~
 25. Add workout library tab/screen which lists all workouts both added by the user and prepackaged with the app. User should be able to load a workout from this screen by double clicking.
+26. Power jog adjustments need to persist for the remainder of the interval. They currently seem to get overwritten after a moment
+27. Ramp doesn't work with Tempo 1x15 at least, just maintained the start power. Switching between resistance and back to ERG jumped to the current ramp target but then got overwritten again with original start power.
+28. Need cadence
