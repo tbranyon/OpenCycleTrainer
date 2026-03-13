@@ -1,0 +1,42 @@
+Traceback (most recent call last):
+  File "/home/throwaway-breaker/Code/OpenCycleTrainer/opencycletrainer/ui/workout_controller.py", line 170, in process_tick
+    self._finalize_recorder()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/throwaway-breaker/Code/OpenCycleTrainer/opencycletrainer/ui/workout_controller.py", line 516, in _finalize_recorder
+    summary = self._recorder.stop(finished_at_utc=self._utc_now())
+  File "/home/throwaway-breaker/Code/OpenCycleTrainer/opencycletrainer/core/recorder.py", line 216, in stop
+    self._fit_exporter.export_activity(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        workout_name=session.workout_name,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        samples=fit_samples,
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/throwaway-breaker/Code/OpenCycleTrainer/opencycletrainer/core/fit_exporter.py", line 58, in export_activity
+    self._writer_backend.write_activity(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        workout_name=workout_name,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        samples=normalized_samples,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/throwaway-breaker/Code/OpenCycleTrainer/opencycletrainer/core/fit_exporter.py", line 104, in write_activity
+    _set_field(record, ("cadence",), int(round(sample.cadence_rpm)))
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/throwaway-breaker/Code/OpenCycleTrainer/opencycletrainer/core/fit_exporter.py", line 148, in _set_field
+    setattr(target, field_name, value)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/throwaway-breaker/.local/lib/python3.14/site-packages/fit_tool/profile/messages/record_message.py", line 398, in cadence
+    field.set_value(0, value, sub_field)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/home/throwaway-breaker/.local/lib/python3.14/site-packages/fit_tool/field.py", line 229, in set_value
+    self.set_encoded_value(index, encoded_value)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/throwaway-breaker/.local/lib/python3.14/site-packages/fit_tool/field.py", line 237, in set_encoded_value
+    raise Exception(
+        f'{self.name} encoded value {encoded_value} is not in valid range [{self.base_type.min}, {self.base_type.max}]')
+Exception: cadence encoded value 1899859 is not in valid range [0, 255]
