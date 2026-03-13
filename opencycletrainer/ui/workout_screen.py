@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -204,7 +204,7 @@ class WorkoutScreen(QWidget):
     }
 
     def show_alert(self, message: str, alert_type: str = "error") -> None:
-        """Show a banner alert. alert_type is 'error' or 'success'."""
+        """Show a banner alert. alert_type is 'error' or 'success'. Auto-dismisses after 5s; click to dismiss early."""
         message_clean = message.strip()
         if not message_clean:
             self.clear_alert()
@@ -213,8 +213,10 @@ class WorkoutScreen(QWidget):
         self.alert_label.setStyleSheet(style)
         self.alert_label.setText(message_clean)
         self.alert_label.setVisible(True)
+        self._alert_timer.start()
 
     def clear_alert(self) -> None:
+        self._alert_timer.stop()
         self.alert_label.clear()
         self.alert_label.setVisible(False)
 
@@ -283,7 +285,14 @@ class WorkoutScreen(QWidget):
         self.alert_label = QLabel("", self)
         self.alert_label.setObjectName("workoutAlertLabel")
         self.alert_label.setVisible(False)
+        self.alert_label.setCursor(Qt.PointingHandCursor)
+        self.alert_label.mousePressEvent = lambda _: self.clear_alert()
         root_layout.addWidget(self.alert_label)
+
+        self._alert_timer = QTimer(self)
+        self._alert_timer.setSingleShot(True)
+        self._alert_timer.setInterval(5000)
+        self._alert_timer.timeout.connect(self.clear_alert)
 
     def load_workout_chart(self, workout: Workout, ftp_watts: int) -> None:
         self.chart_widget.load_workout(workout, ftp_watts)
@@ -297,6 +306,9 @@ class WorkoutScreen(QWidget):
     ) -> None:
         self.chart_widget.update_charts(elapsed_seconds, current_interval_index, power_series, hr_series)
 
+    def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
+        self.chart_widget.add_skip_marker(elapsed_before, elapsed_after)
+
     def clear_charts(self) -> None:
         self.chart_widget.clear()
 
@@ -304,12 +316,22 @@ class WorkoutScreen(QWidget):
         self.chart_widget = WorkoutChartWidget(self)
         root_layout.addWidget(self.chart_widget, stretch=1)
 
+    def set_trainer_controls_visible(self, visible: bool) -> None:
+        """Show or hide the trainer mode and OpenTrueUp footer controls."""
+        self.trainer_mode_label.setVisible(visible)
+        self.mode_selector.setVisible(visible)
+        self.opentrueup_label.setVisible(visible)
+        self.opentrueup_offset_value.setVisible(visible)
+        if not visible:
+            self.resistance_level_label.setVisible(False)
+
     def _build_mode_footer(self, root_layout: QVBoxLayout) -> None:
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
         mode_row.addStretch(1)
 
-        mode_row.addWidget(QLabel("Trainer Mode:", self))
+        self.trainer_mode_label = QLabel("Trainer Mode:", self)
+        mode_row.addWidget(self.trainer_mode_label)
         self.mode_selector = QComboBox(self)
         self.mode_selector.addItems(list(MODE_OPTIONS))
         self.mode_selector.currentTextChanged.connect(self.set_mode_state)
@@ -321,12 +343,16 @@ class WorkoutScreen(QWidget):
         mode_row.addWidget(self.resistance_level_label)
 
         mode_row.addSpacing(16)
-        mode_row.addWidget(QLabel("OpenTrueUp Offset:", self))
+        self.opentrueup_label = QLabel("OpenTrueUp Offset:", self)
+        mode_row.addWidget(self.opentrueup_label)
         self.opentrueup_offset_value = QLabel("-- W", self)
         self.opentrueup_offset_value.setObjectName("openTrueUpOffsetValue")
         mode_row.addWidget(self.opentrueup_offset_value)
         mode_row.addStretch(1)
         root_layout.addLayout(mode_row)
+
+        # Hidden until a controllable trainer is connected
+        self.set_trainer_controls_visible(False)
 
     def set_tile_value(self, key: str, text: str) -> None:
         tile = self._tile_by_key.get(key)

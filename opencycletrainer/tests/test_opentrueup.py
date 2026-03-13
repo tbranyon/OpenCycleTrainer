@@ -176,6 +176,40 @@ def test_bridge_applies_offset_in_erg_and_holds_setpoint_during_pm_dropout():
     assert control.erg_targets[-1] == 250
 
 
+def test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset():
+    """When OpenTrueUp re-applies after PM dropout recovery, the active jog offset must be preserved."""
+    workout = _build_workout((30, 70.0, 200))
+    control = _StubControl(mode=ControlMode.ERG)
+    opentrueup = OpenTrueUpController(
+        enabled=True,
+        window_seconds=30.0,
+        update_interval_seconds=1000.0,
+        dropout_seconds=3.0,
+        initial_offset_watts=10,
+    )
+    bridge = WorkoutEngineFTMSBridge(control, opentrueup=opentrueup)
+    engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0.0)
+    assert control.erg_targets == [210]  # 200 base + 10 OTU offset
+
+    # User applies a +20W jog: trainer should get 200 + 20 + 10 = 230W.
+    bridge.set_erg_jog_offset_watts(20.0)
+    assert control.erg_targets[-1] == 230
+
+    # Simulate PM dropout.
+    bridge.on_power_sample(timestamp=1.0, trainer_power_watts=200, bike_power_watts=210)
+    bridge.on_power_sample(timestamp=5.0, trainer_power_watts=200, bike_power_watts=None)
+    assert opentrueup.dropout_active is True
+
+    # PM returns → OTU requires re-apply → jog must be preserved: 200 + 20 + 10 = 230W.
+    bridge.on_power_sample(timestamp=9.0, trainer_power_watts=200, bike_power_watts=210)
+    assert opentrueup.dropout_active is False
+    assert control.erg_targets[-1] == 230
+
+
 def test_bridge_computes_offset_in_background_when_control_mode_is_resistance():
     workout = _build_workout((15, 70.0, 200))
     control = _StubControl(mode=ControlMode.RESISTANCE)

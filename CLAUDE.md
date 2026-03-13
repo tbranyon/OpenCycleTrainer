@@ -18,7 +18,7 @@ python -m pytest
 Comment classes and methods succinctly. Do not comment method code inline unless something atypical or counterintuitive is being done. Follow existing structure and style. If in doubt, follow PEP-8 guidelines.
 
 ## Agent Delegation
-- **Always** use the `codebase-explorer` agent for reading files, searching code, or understanding structure. Do not use Read, Grep, Glob, or Bash directly in the main agent for exploration UNLESS exact code contents are required.
+- **Always** use the `codebase-explorer` agent for reading files, searching code, or understanding structure. Do not use Read, Grep, Glob, or Bash directly in the main agent for exploration. Agent will summarize results unless explicitly asked for full file content.
 - **Always** use the `test-runner` agent to run tests. Do not run pytest directly in the main agent. Specify the exact command (full suite or targeted test file/test name).
 - For multi-area exploration, launch multiple `codebase-explorer` agents in parallel in a single message.
 - In the TDD workflow: use `codebase-explorer` to understand existing patterns before writing tests, then `test-runner` to confirm they fail for the right reason, then `test-runner` again after implementation.

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from .base import DecodedMetrics
 
+_logger = logging.getLogger(__name__)
+
 _CRANK_REVOLUTION_DATA_PRESENT = 1 << 5
 _EVENT_TIME_ROLLOVER = 65536
+_CRANK_REVOLUTION_ROLLOVER = 65536
+_MAX_CADENCE_RPM = 300.0
+_MAX_POWER_WATTS = 3000
 
 
 @dataclass
@@ -30,6 +36,8 @@ class CyclingPowerDecoder:
 
         power_watts = int.from_bytes(payload[index:index + 2], "little", signed=True)
         index += 2
+        if power_watts < 0 or power_watts > _MAX_POWER_WATTS:
+            _logger.warning("CPS power out of expected range (%d W)", power_watts)
         cadence_rpm: float | None = None
 
         if flags & _CRANK_REVOLUTION_DATA_PRESENT:
@@ -51,7 +59,7 @@ class CyclingPowerDecoder:
         if previous_revs is None or previous_time is None:
             return None
 
-        delta_revs = crank_revolutions - previous_revs
+        delta_revs = (crank_revolutions - previous_revs) % _CRANK_REVOLUTION_ROLLOVER
         delta_time_ticks = (crank_event_time - previous_time) % _EVENT_TIME_ROLLOVER
         if delta_revs <= 0 or delta_time_ticks <= 0:
             return None
@@ -60,4 +68,8 @@ class CyclingPowerDecoder:
         if delta_seconds <= 0:
             return None
 
-        return (delta_revs / delta_seconds) * 60.0
+        cadence = (delta_revs / delta_seconds) * 60.0
+        if cadence > _MAX_CADENCE_RPM:
+            _logger.warning("CPS cadence out of range (%.1f RPM); discarding", cadence)
+            return None
+        return cadence

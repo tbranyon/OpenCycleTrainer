@@ -16,15 +16,16 @@
 14. [DONE] ~~Graphs should load with workout file (currently don't display until workout is started)~~
 15. Switch to resistance mode doesn't work (FTMS command failure)
 16. [DONE] ~~Need current target power on display - mandatory field~~
-17. Need to do something when an interval is skipped--truncate the graph and put a yellow bar at the skip point
-18. Elapsed time shouldn't advance on skip
-19. [POSSIBLY DONE, NEEDS REAL TEST] ~~Calibrate doesn't seem to work quite right, no light on PM~~
+17. [DONE] ~~Need to do something when an interval is skipped--truncate the graph and put a yellow bar at the skip point~~
+18. [DONE] ~~Elapsed time shouldn't advance on skip~~
+19. [DONE] ~~Calibrate doesn't seem to work quite right, no light on PM~~
 20. [DONE] ~~Device pairings didn't seem to persist between invocations~~
 21. [DONE] ~~Don't seem to release devices correctly, closing the application left the devices connected and couldn't be re-found on subsequent invocations, status lights on devices indicated they're still connected to something.~~
 22. [DONE] ~~Need to display current resistance level when in resistance mode~~
 23. Errors in FTMS layer prevent writing FIT file on Stop apparently (sometimes). FIT file should be written on stop regardless of state.
 24. [DONE] ~~FIT file write message should be in green, not red.~~
 25. Add workout library tab/screen which lists all workouts both added by the user and prepackaged with the app. User should be able to load a workout from this screen by double clicking.
-26. Power jog adjustments need to persist for the remainder of the interval. They currently seem to get overwritten after a moment
-27. Ramp doesn't work with Tempo 1x15 at least, just maintained the start power. Switching between resistance and back to ERG jumped to the current ramp target but then got overwritten again with original start power.
-28. Need cadence
+26. [DONE] ~~Power jog adjustments need to persist for the remainder of the interval. They currently seem to get overwritten after a moment~~
+27. [DONE] ~~Ramp doesn't work with Tempo 1x15 at least, just maintained the start power. Switching between resistance and back to ERG jumped to the current ramp target momentarily but then got overwritten again with original start power.~~
+28. [DONE] ~~Need cadence tile on display~~
+29. [DONE] ~~Error alerts should not persist indefinitely on the UI. They should be clearable and auto clear after 5s.~~

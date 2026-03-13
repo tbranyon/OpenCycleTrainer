@@ -18,6 +18,7 @@ _HR_PEN       = (239, 68,  68)            # #ef4444 red
 _POS_PEN      = (200, 200, 200, 180)      # light grey, slim
 _FTP_LINE_PEN = (150, 150, 150, 128)      # muted grey, dashed
 _FTP_TEXT_COL = (150, 150, 150)
+_SKIP_BRUSH   = (234, 179,   8,  80)      # yellow ~30 % alpha
 
 _Y_STEP = 50.0          # watts between horizontal grid lines
 _CONTEXT_SECONDS = 30   # padding on each side of interval chart
@@ -90,6 +91,8 @@ class WorkoutChartWidget(QWidget):
         self._workout_ftp_line = _make_ftp_line()
         self._workout_ftp_text = _make_ftp_text()
 
+        self._skip_markers: list[tuple[pg.LinearRegionItem, pg.LinearRegionItem]] = []
+
         for item in (
             self._interval_target, self._interval_actual, self._interval_hr,
             self._interval_ftp_line, self._interval_ftp_text, self._interval_pos,
@@ -148,6 +151,26 @@ class WorkoutChartWidget(QWidget):
 
         for pos in (self._interval_pos, self._workout_pos):
             pos.setValue(0.0)
+
+        self._clear_skip_markers()
+
+    def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
+        """Add a yellow shaded region spanning the skipped interval on both charts."""
+        interval_region = pg.LinearRegionItem(
+            values=[elapsed_before, elapsed_after],
+            orientation="vertical",
+            brush=pg.mkBrush(_SKIP_BRUSH),
+            movable=False,
+        )
+        workout_region = pg.LinearRegionItem(
+            values=[elapsed_before, elapsed_after],
+            orientation="vertical",
+            brush=pg.mkBrush(_SKIP_BRUSH),
+            movable=False,
+        )
+        self._interval_plot.addItem(interval_region)
+        self._workout_plot.addItem(workout_region)
+        self._skip_markers.append((interval_region, workout_region))
 
     def update_charts(
         self,
@@ -224,8 +247,15 @@ class WorkoutChartWidget(QWidget):
             pos.setValue(0.0)
         for text in (self._interval_ftp_text, self._workout_ftp_text):
             text.setText("")
+        self._clear_skip_markers()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _clear_skip_markers(self) -> None:
+        for interval_region, workout_region in self._skip_markers:
+            self._interval_plot.removeItem(interval_region)
+            self._workout_plot.removeItem(workout_region)
+        self._skip_markers.clear()
 
     def _update_interval_range(self, interval_index: int) -> None:
         if self._workout is None:

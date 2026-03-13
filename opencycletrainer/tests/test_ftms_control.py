@@ -243,6 +243,64 @@ def test_bridge_does_not_send_lead_time_for_last_interval():
     assert stub_control.erg_targets == [150, 225]
 
 
+def test_bridge_updates_erg_target_continuously_during_ramp_interval():
+    intervals = (
+        WorkoutInterval(
+            start_offset_seconds=0,
+            duration_seconds=10,
+            start_percent_ftp=50.0,
+            end_percent_ftp=75.0,  # ramp: 150W → 225W
+            start_target_watts=150,
+            end_target_watts=225,
+        ),
+    )
+    workout = Workout(name="Ramp Progress Test", ftp_watts=300, intervals=intervals)
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control)
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)  # elapsed=0 → 150W
+    engine.tick(5)  # elapsed=5 → 188W (midpoint of 150→225)
+
+    assert 150 in stub_control.erg_targets
+    assert any(150 < t < 225 for t in stub_control.erg_targets), (
+        f"Expected intermediate ramp target between 150 and 225, got: {stub_control.erg_targets}"
+    )
+
+
+def test_bridge_resistance_ramp_updates_continuously():
+    intervals = (
+        WorkoutInterval(
+            start_offset_seconds=0,
+            duration_seconds=10,
+            start_percent_ftp=20.0,
+            end_percent_ftp=80.0,  # ramp
+            start_target_watts=60,
+            end_target_watts=240,
+        ),
+    )
+    workout = Workout(name="Resistance Ramp Test", ftp_watts=300, intervals=intervals)
+    stub_control = _StubControl(mode=ControlMode.RESISTANCE)
+    bridge = WorkoutEngineFTMSBridge(stub_control, mode=ControlMode.RESISTANCE)
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)  # elapsed=0 → 20% resistance
+    engine.tick(5)  # elapsed=5 → 50% resistance (midpoint of 20→80)
+
+    assert 20.0 in stub_control.resistance_levels
+    assert any(20.0 < r < 80.0 for r in stub_control.resistance_levels), (
+        f"Expected intermediate resistance between 20% and 80%, got: {stub_control.resistance_levels}"
+    )
+
+
 def test_bridge_reports_control_errors_to_alert_callback():
     alerts: list[str] = []
     failing_control = _StubControl(mode=ControlMode.ERG, fail_on_apply=True)
@@ -256,4 +314,4 @@ def test_bridge_reports_control_errors_to_alert_callback():
     engine.start()
 
     assert alerts
-    assert "Trainer control error:" in alerts[0]
+    assert "Error communicating with trainer" in alerts[0]

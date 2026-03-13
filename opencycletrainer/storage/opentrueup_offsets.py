@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import threading
+
+_logger = logging.getLogger(__name__)
 
 from .paths import ensure_dir, get_opentrueup_offsets_file_path
 
@@ -62,6 +65,7 @@ class OpenTrueUpOffsetStore:
             try:
                 normalized[key] = int(value)
             except (TypeError, ValueError):
+                _logger.warning("Skipping invalid offset value for key '%s': %r", key, value)
                 continue
         return normalized
 

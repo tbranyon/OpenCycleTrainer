@@ -21,6 +21,7 @@ class EngineState(str, Enum):
 class WorkoutEngineSnapshot:
     state: EngineState
     elapsed_seconds: float
+    riding_elapsed_seconds: float
     total_duration_seconds: int
     current_interval_index: int | None
     current_interval_elapsed_seconds: float | None
@@ -45,6 +46,7 @@ class WorkoutEngine:
         self._interval_durations_seconds: list[int] = []
         self._state = EngineState.IDLE
         self._elapsed_seconds = 0.0
+        self._skipped_seconds = 0.0
         self._last_tick_time: float | None = None
         self._ramp_in_remaining_seconds = 0.0
         self._pending_kj_extension = 0
@@ -68,6 +70,7 @@ class WorkoutEngine:
         self._workout = workout
         self._interval_durations_seconds = [interval.duration_seconds for interval in workout.intervals]
         self._elapsed_seconds = 0.0
+        self._skipped_seconds = 0.0
         self._last_tick_time = None
         self._ramp_in_remaining_seconds = 0.0
         self._pending_kj_extension = 0
@@ -82,6 +85,7 @@ class WorkoutEngine:
             interval.duration_seconds for interval in self._workout.intervals
         ]
         self._elapsed_seconds = 0.0
+        self._skipped_seconds = 0.0
         self._last_tick_time = None
         self._ramp_in_remaining_seconds = 0.0
         self._pending_kj_extension = 0
@@ -141,6 +145,8 @@ class WorkoutEngine:
         if current_index is None:
             return self._emit_snapshot()
 
+        skipped = float(self._interval_end_offset(current_index)) - self._elapsed_seconds
+        self._skipped_seconds += skipped
         self._elapsed_seconds = float(self._interval_end_offset(current_index))
         self._handle_possible_finish()
         return self._emit_snapshot()
@@ -175,6 +181,7 @@ class WorkoutEngine:
         return WorkoutEngineSnapshot(
             state=self._state,
             elapsed_seconds=self._elapsed_seconds,
+            riding_elapsed_seconds=self._elapsed_seconds - self._skipped_seconds,
             total_duration_seconds=self._total_duration_seconds(),
             current_interval_index=current_index,
             current_interval_elapsed_seconds=interval_elapsed,

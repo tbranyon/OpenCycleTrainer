@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 from opencycletrainer.core.fit_exporter import FitExportSample, FitExporter
 from opencycletrainer.storage.filenames import build_activity_filename
@@ -213,12 +216,21 @@ class WorkoutRecorder:
             )
             for sample in self._recorded_samples
         ]
-        self._fit_exporter.export_activity(
-            workout_name=session.workout_name,
-            started_at_utc=session.started_at_utc,
-            fit_file_path=session.fit_file_path,
-            samples=fit_samples,
-        )
+        try:
+            self._fit_exporter.export_activity(
+                workout_name=session.workout_name,
+                started_at_utc=session.started_at_utc,
+                fit_file_path=session.fit_file_path,
+                samples=fit_samples,
+            )
+        except Exception:
+            _logger.exception(
+                "FIT export failed; workout data preserved in %s",
+                session.samples_file_path,
+            )
+        else:
+            size_kb = session.fit_file_path.stat().st_size / 1024
+            _logger.info("FIT file written: %s (%.1f KB)", session.fit_file_path, size_kb)
 
         summary = RecorderSummary(
             workout_name=session.workout_name,

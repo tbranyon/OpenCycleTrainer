@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 120" width="100%" height="100%">
+  <defs>
+    <linearGradient id="coolMetallic" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="45%" stop-color="#E2E5EA" />
+      <stop offset="55%" stop-color="#D1D5DB" />
+      <stop offset="100%" stop-color="#9CA3AF" />
+    </linearGradient>
+    
+    <filter id="subtleShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000000" flood-opacity="0.1" />
+    </filter>
+  </defs>
+
+  <text 
+    x="50%" 
+    y="55%" 
+    dominant-baseline="middle" 
+    text-anchor="middle" 
+    font-family="'Montserrat', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif" 
+    font-weight="800" 
+    font-size="68" 
+    fill="url(#coolMetallic)" 
+    filter="url(#subtleShadow)" 
+    letter-spacing="-1">
+    OpenCycleTrainer
+  </text>
+</svg>

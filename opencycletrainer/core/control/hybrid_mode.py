@@ -88,7 +88,7 @@ class HybridModeController:
         try:
             self._apply_snapshot(snapshot, workout)
         except FTMSControlError as exc:
-            self._report_error(f"Trainer control error: {exc}")
+            self._report_error("Error communicating with trainer")
 
     def handle_resistance_hotkey(self, key: str) -> bool:
         delta = HOTKEY_RESISTANCE_DELTAS.get(key.lower().strip())
@@ -109,7 +109,7 @@ class HybridModeController:
             self._control.set_mode_resistance()
             self._control.set_resistance_level(updated)
         except FTMSControlError as exc:
-            self._report_error(f"Trainer control error: {exc}")
+            self._report_error("Error communicating with trainer")
             return False
 
         self._work_resistance_level = updated

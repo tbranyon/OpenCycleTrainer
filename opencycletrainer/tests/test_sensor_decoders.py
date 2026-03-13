@@ -120,3 +120,62 @@ def test_unknown_characteristic_returns_none():
     decoder = SensorStreamDecoder()
     sample = decoder.decode_notification("0000ffff-0000-1000-8000-00805f9b34fb", b"\x00")
     assert sample is None
+
+
+# Crank counter rollover: previous=65534, new=2 (4 actual revolutions), time delta=1 second.
+# After fix: (2 - 65534) % 65536 = 4 → 240 RPM (valid, within cap).
+_CSC_CRANK_ROLLOVER_PACKET_1 = bytes.fromhex("02feff0000")
+_CSC_CRANK_ROLLOVER_PACKET_2 = bytes.fromhex("0202000004")
+
+# Crank delta of 6 revolutions in 1 second → 360 RPM, which exceeds the sanity cap.
+_CSC_CADENCE_OUT_OF_RANGE_PACKET_1 = bytes.fromhex("0264000000")
+_CSC_CADENCE_OUT_OF_RANGE_PACKET_2 = bytes.fromhex("026a000004")
+
+# CPS: same 360 RPM scenario via power meter crank data.
+_CPS_CADENCE_OUT_OF_RANGE_PACKET_1 = bytes.fromhex("2000c80064000000")
+_CPS_CADENCE_OUT_OF_RANGE_PACKET_2 = bytes.fromhex("2000c8006a000004")
+
+# FTMS: cadence_raw=65535 → 32767.5 RPM, far beyond any sane value.
+_FTMS_CADENCE_OUT_OF_RANGE = bytes.fromhex("04000000ffff")
+
+
+def test_csc_crank_counter_rollover_produces_correct_cadence():
+    decoder = SensorStreamDecoder()
+
+    sample_1 = decoder.decode_notification(CSC_MEASUREMENT_CHARACTERISTIC_UUID, _CSC_CRANK_ROLLOVER_PACKET_1)
+    sample_2 = decoder.decode_notification(CSC_MEASUREMENT_CHARACTERISTIC_UUID, _CSC_CRANK_ROLLOVER_PACKET_2)
+
+    assert sample_1 is not None
+    assert sample_1.cadence_rpm is None
+
+    assert sample_2 is not None
+    assert sample_2.cadence_rpm == pytest.approx(240.0)
+
+
+def test_csc_cadence_out_of_range_is_rejected():
+    decoder = SensorStreamDecoder()
+
+    decoder.decode_notification(CSC_MEASUREMENT_CHARACTERISTIC_UUID, _CSC_CADENCE_OUT_OF_RANGE_PACKET_1)
+    sample_2 = decoder.decode_notification(CSC_MEASUREMENT_CHARACTERISTIC_UUID, _CSC_CADENCE_OUT_OF_RANGE_PACKET_2)
+
+    assert sample_2 is not None
+    assert sample_2.cadence_rpm is None
+
+
+def test_cps_cadence_out_of_range_is_rejected():
+    decoder = SensorStreamDecoder()
+
+    decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_CADENCE_OUT_OF_RANGE_PACKET_1)
+    sample_2 = decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_CADENCE_OUT_OF_RANGE_PACKET_2)
+
+    assert sample_2 is not None
+    assert sample_2.cadence_rpm is None
+
+
+def test_ftms_cadence_out_of_range_is_rejected():
+    decoder = SensorStreamDecoder()
+
+    sample = decoder.decode_notification(FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_CADENCE_OUT_OF_RANGE)
+
+    assert sample is not None
+    assert sample.cadence_rpm is None

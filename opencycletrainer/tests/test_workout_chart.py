@@ -290,3 +290,50 @@ def test_widget_ftp_line_position():
 
     assert widget._workout_ftp_line.value()  == pytest.approx(250.0)
     assert widget._interval_ftp_line.value() == pytest.approx(250.0)
+
+
+def test_add_skip_marker_appends_regions():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    assert len(widget._skip_markers) == 0
+
+    widget.add_skip_marker(100.0, 300.0)
+    assert len(widget._skip_markers) == 1
+    interval_region, workout_region = widget._skip_markers[0]
+    lo, hi = interval_region.getRegion()
+    assert lo == pytest.approx(100.0)
+    assert hi == pytest.approx(300.0)
+
+    widget.add_skip_marker(400.0, 450.0)
+    assert len(widget._skip_markers) == 2
+
+
+def test_load_workout_clears_skip_markers():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    widget.add_skip_marker(100.0, 200.0)
+    assert len(widget._skip_markers) == 1
+
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    assert len(widget._skip_markers) == 0
+
+
+def test_clear_removes_skip_markers():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    widget.add_skip_marker(50.0, 150.0)
+    widget.add_skip_marker(200.0, 300.0)
+    assert len(widget._skip_markers) == 2
+
+    widget.clear()
+    assert len(widget._skip_markers) == 0

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
+
+_logger = logging.getLogger(__name__)
 
 from opencycletrainer.storage.paths import ensure_dir
 
@@ -149,6 +152,7 @@ def _set_field(target: object, candidate_names: tuple[str, ...], value: object) 
             return
         except (AttributeError, TypeError):
             continue
+    _logger.debug("Could not set any of %s to %r on %s", candidate_names, value, type(target).__name__)
 
 
 def _enum_value(value: object) -> object:

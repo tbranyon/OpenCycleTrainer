@@ -7,8 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from opencycletrainer.core.fit_exporter import FitExporter, JsonFitWriterBackend
+from opencycletrainer.core.fit_exporter import FitExporter, FitExportSample, JsonFitWriterBackend
 from opencycletrainer.core.recorder import RecorderSample, WorkoutRecorder
+
+
+class _FailingFitWriterBackend:
+    """Writer backend that always raises, used to test graceful FIT failure handling."""
+
+    def write_activity(
+        self,
+        *,
+        workout_name: str,
+        started_at_utc: object,
+        fit_file_path: object,
+        samples: list[FitExportSample],
+    ) -> None:
+        raise RuntimeError("simulated FIT write failure")
 
 
 def _test_data_dir() -> Path:
@@ -126,3 +140,25 @@ def test_recorder_can_pause_and_resume_sampling_via_recording_active_flag():
     assert accepted_paused is False
     assert accepted_resumed is True
     assert summary.sample_count == 2
+
+
+def test_recorder_stop_completes_gracefully_when_fit_export_fails():
+    data_dir = _test_data_dir()
+    recorder = WorkoutRecorder(
+        data_dir=data_dir,
+        flush_batch_size=5,
+        fit_exporter=FitExporter(writer_backend=_FailingFitWriterBackend()),
+    )
+    start_time = datetime(2026, 3, 10, 22, 0, 0, tzinfo=timezone.utc)
+
+    recorder.start("FIT Fail Test", started_at_utc=start_time)
+    recorder.record_sample(_sample(start_time, trainer=200))
+    recorder.record_sample(_sample(start_time + timedelta(seconds=1), trainer=210))
+
+    summary = recorder.stop(finished_at_utc=start_time + timedelta(seconds=2))
+
+    assert summary.sample_count == 2
+    assert not summary.fit_file_path.exists()
+    assert summary.summary_file_path.exists()
+    summary_payload = json.loads(summary.summary_file_path.read_text(encoding="utf-8"))
+    assert summary_payload["sample_count"] == 2

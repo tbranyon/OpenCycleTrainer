@@ -5,8 +5,11 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from dataclasses import replace
 import inspect
+import logging
 import threading
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 from .device_manager import AsyncioRunner, DeviceManager, NotificationCallback, completed_future
 from .types import (
@@ -189,8 +192,8 @@ class BleakDeviceBackend(DeviceManager):
             if device_id not in self._clients:
                 try:
                     await self._connect_async(device_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.warning("Failed to reconnect paired device '%s': %s", device_id, exc)
 
         return sorted(scanned_devices, key=lambda device: device.name.lower())
 
@@ -264,8 +267,8 @@ class BleakDeviceBackend(DeviceManager):
             try:
                 await client.start_notify(CPS_CONTROL_POINT_CHARACTERISTIC_UUID, _indication_handler)
                 indication_subscribed = True
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("Failed to subscribe to CPS control point on device '%s': %s", device_id, exc)
 
             # Cycling Power Control Point opcode 0x0C = Start Offset Compensation (zero-offset)
             await client.write_gatt_char(
@@ -293,8 +296,8 @@ class BleakDeviceBackend(DeviceManager):
             if indication_subscribed:
                 try:
                     await client.stop_notify(CPS_CONTROL_POINT_CHARACTERISTIC_UUID)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("Failed to unsubscribe from CPS control point on device '%s': %s", device_id, exc)
 
     async def _subscribe_notifications_async(
         self,
@@ -316,7 +319,13 @@ class BleakDeviceBackend(DeviceManager):
                         callback=callback,
                     ),
                 )
-            except Exception:
+            except Exception as exc:
+                _logger.warning(
+                    "Failed to subscribe to characteristic %s for device '%s': %s",
+                    characteristic_uuid,
+                    device_id,
+                    exc,
+                )
                 continue
 
     async def _write_gatt_characteristic_async(

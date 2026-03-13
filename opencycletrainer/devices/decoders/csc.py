@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from .base import DecodedMetrics
+
+_logger = logging.getLogger(__name__)
 
 _WHEEL_REVOLUTION_DATA_PRESENT = 1 << 0
 _CRANK_REVOLUTION_DATA_PRESENT = 1 << 1
 _EVENT_TIME_ROLLOVER = 65536
 _WHEEL_REVOLUTION_ROLLOVER = 2 ** 32
+_CRANK_REVOLUTION_ROLLOVER = 65536
+_MAX_CADENCE_RPM = 300.0
+_MAX_SPEED_MPS = 33.3
 
 
 @dataclass
@@ -71,7 +77,10 @@ class CyclingSpeedCadenceDecoder:
         if delta_seconds <= 0:
             return None
 
-        return (delta_revs * self._wheel_circumference_m) / delta_seconds
+        speed = (delta_revs * self._wheel_circumference_m) / delta_seconds
+        if speed > _MAX_SPEED_MPS:
+            _logger.warning("CSC speed out of expected range (%.2f m/s)", speed)
+        return speed
 
     def _calculate_cadence(self, crank_revolutions: int, crank_event_time: int) -> float | None:
         previous_revs = self._state.last_crank_revolutions
@@ -82,7 +91,7 @@ class CyclingSpeedCadenceDecoder:
         if previous_revs is None or previous_time is None:
             return None
 
-        delta_revs = crank_revolutions - previous_revs
+        delta_revs = (crank_revolutions - previous_revs) % _CRANK_REVOLUTION_ROLLOVER
         delta_time_ticks = (crank_event_time - previous_time) % _EVENT_TIME_ROLLOVER
         if delta_revs <= 0 or delta_time_ticks <= 0:
             return None
@@ -91,4 +100,8 @@ class CyclingSpeedCadenceDecoder:
         if delta_seconds <= 0:
             return None
 
-        return (delta_revs / delta_seconds) * 60.0
+        cadence = (delta_revs / delta_seconds) * 60.0
+        if cadence > _MAX_CADENCE_RPM:
+            _logger.warning("CSC cadence out of range (%.1f RPM); discarding", cadence)
+            return None
+        return cadence

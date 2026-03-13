@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from .base import DecodedMetrics
 
+_logger = logging.getLogger(__name__)
+
+_MAX_CADENCE_RPM = 300.0
+_MAX_POWER_WATTS = 3000
+_MAX_SPEED_MPS = 33.3
+_MAX_HEART_RATE_BPM = 250
 _AVERAGE_SPEED_PRESENT = 1 << 1
 _INSTANTANEOUS_CADENCE_PRESENT = 1 << 2
 _AVERAGE_CADENCE_PRESENT = 1 << 3
@@ -28,6 +36,8 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     speed_raw = int.from_bytes(payload[index:index + 2], "little")
     index += 2
     speed_mps = (speed_raw / 100.0) / 3.6
+    if speed_mps > _MAX_SPEED_MPS:
+        _logger.warning("FTMS speed out of expected range (%.2f m/s)", speed_mps)
 
     cadence_rpm: float | None = None
     power_watts: int | None = None
@@ -39,6 +49,9 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     if flags & _INSTANTANEOUS_CADENCE_PRESENT:
         cadence_raw = int.from_bytes(payload[index:index + 2], "little")
         cadence_rpm = cadence_raw / 2.0
+        if cadence_rpm > _MAX_CADENCE_RPM:
+            _logger.warning("FTMS cadence out of range (%.1f RPM); discarding", cadence_rpm)
+            cadence_rpm = None
         index += 2
 
     if flags & _AVERAGE_CADENCE_PRESENT:
@@ -53,6 +66,8 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     if flags & _INSTANTANEOUS_POWER_PRESENT:
         power_watts = int.from_bytes(payload[index:index + 2], "little", signed=True)
         index += 2
+        if power_watts < 0 or power_watts > _MAX_POWER_WATTS:
+            _logger.warning("FTMS power out of expected range (%d W)", power_watts)
 
     if flags & _AVERAGE_POWER_PRESENT:
         index += 2
@@ -63,6 +78,8 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     if flags & _HEART_RATE_PRESENT:
         heart_rate_bpm = payload[index]
         index += 1
+        if heart_rate_bpm > _MAX_HEART_RATE_BPM:
+            _logger.warning("FTMS heart rate out of expected range (%d bpm)", heart_rate_bpm)
 
     if flags & _METABOLIC_EQUIVALENT_PRESENT:
         index += 1

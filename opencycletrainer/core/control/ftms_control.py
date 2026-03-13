@@ -5,8 +5,11 @@ from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import logging
 import threading
 from typing import Protocol
+
+_logger = logging.getLogger(__name__)
 
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController, OpenTrueUpStatus
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
@@ -190,30 +193,31 @@ class FTMSControl:
             try:
                 write_future.result(timeout=self._write_timeout_seconds)
             except FutureTimeoutError as exc:
-                raise FTMSControlAckTimeoutError(
-                    f"Timed out writing FTMS command '{_opcode_label(request_opcode)}'.",
-                ) from exc
+                msg = f"Timed out writing FTMS command '{_opcode_label(request_opcode)}'."
+                _logger.warning(msg)
+                raise FTMSControlAckTimeoutError(msg) from exc
             except Exception as exc:
-                raise FTMSControlError(
-                    f"FTMS write failed for '{_opcode_label(request_opcode)}': {exc}",
-                ) from exc
+                msg = f"FTMS write failed for '{_opcode_label(request_opcode)}': {exc}"
+                _logger.error(msg)
+                raise FTMSControlError(msg) from exc
 
             if not pending.event.wait(timeout=self._ack_timeout_seconds):
-                raise FTMSControlAckTimeoutError(
-                    f"Timed out waiting for FTMS ack for '{_opcode_label(request_opcode)}'.",
-                )
+                msg = f"Timed out waiting for FTMS ack for '{_opcode_label(request_opcode)}'."
+                _logger.warning(msg)
+                raise FTMSControlAckTimeoutError(msg)
 
             result_code = pending.result_code
             if result_code is None:
-                raise FTMSControlAckTimeoutError(
-                    f"FTMS ack missing result code for '{_opcode_label(request_opcode)}'.",
-                )
+                msg = f"FTMS ack missing result code for '{_opcode_label(request_opcode)}'."
+                _logger.warning(msg)
+                raise FTMSControlAckTimeoutError(msg)
             if result_code != _RESULT_SUCCESS:
-                raise FTMSControlAckError(
-                    "FTMS command "
-                    f"'{_opcode_label(request_opcode)}' failed with "
-                    f"'{_result_label(result_code)}'.",
+                msg = (
+                    f"FTMS command '{_opcode_label(request_opcode)}' failed with "
+                    f"'{_result_label(result_code)}'."
                 )
+                _logger.error(msg)
+                raise FTMSControlAckError(msg)
             return FTMSControlAck(
                 request_opcode=request_opcode,
                 result_code=result_code,
@@ -290,7 +294,7 @@ class WorkoutEngineFTMSBridge:
         try:
             self._apply_snapshot(snapshot, workout)
         except FTMSControlError as exc:
-            self._report_error(f"Trainer control error: {exc}")
+            self._report_error("Error communicating with trainer")
 
     def on_power_sample(
         self,
@@ -318,13 +322,14 @@ class WorkoutEngineFTMSBridge:
                 return
             if self._current_erg_target_base_watts is None:
                 return
+            jogged_base = int(round(self._current_erg_target_base_watts + self._erg_jog_offset_watts))
             adjusted_target_watts = self._opentrueup.adjust_erg_target(
-                self._current_erg_target_base_watts,
+                jogged_base,
                 apply_offset=True,
             )
             self._send_erg_target(adjusted_target_watts)
         except FTMSControlError as exc:
-            self._report_error(f"Trainer control error: {exc}")
+            self._report_error("Error communicating with trainer")
 
     def _apply_snapshot(
         self,
@@ -354,6 +359,11 @@ class WorkoutEngineFTMSBridge:
         if interval_changed or entered_running:
             self._lead_time_sent_for_interval = None
             self._apply_interval_setpoint(snapshot, workout)
+        elif (
+            snapshot.current_interval_index is not None
+            and workout.intervals[snapshot.current_interval_index].is_ramp
+        ):
+            self._apply_ramp_update(snapshot, workout)
         elif self._should_apply_lead_time(snapshot, workout):
             self._apply_lead_time_setpoint(snapshot, workout)
 
@@ -380,6 +390,23 @@ class WorkoutEngineFTMSBridge:
             self._current_erg_target_base_watts = target_watts
             adjusted_target_watts = self._apply_opentrueup_target(target_watts)
             self._send_erg_target(adjusted_target_watts)
+        else:
+            self._current_erg_target_base_watts = None
+            resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)
+            self._control.set_resistance_level(resistance_level)
+
+    def _apply_ramp_update(self, snapshot: WorkoutEngineSnapshot, workout: Workout) -> None:
+        """Update trainer target for the current tick of an active ramp interval, preserving any jog offset."""
+        interval_index = snapshot.current_interval_index
+        if interval_index is None:
+            return
+        interval = workout.intervals[interval_index]
+        elapsed_in_interval = snapshot.current_interval_elapsed_seconds or 0.0
+        if self._control.mode is ControlMode.ERG:
+            target_watts = _resolve_interval_target_watts(interval, elapsed_in_interval)
+            self._current_erg_target_base_watts = target_watts
+            jogged = int(round(target_watts + self._erg_jog_offset_watts))
+            self._send_erg_target(self._apply_opentrueup_target(jogged))
         else:
             self._current_erg_target_base_watts = None
             resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)

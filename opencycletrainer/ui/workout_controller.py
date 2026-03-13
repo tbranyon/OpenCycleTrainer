@@ -4,8 +4,11 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import time
+
+_logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QFileDialog
@@ -92,6 +95,7 @@ class WorkoutSessionController(QObject):
         self._recorder_started = False
 
         self._power_history: deque[tuple[float, int]] = deque()
+        self._cadence_history: deque[tuple[float, float]] = deque()
         self._interval_power_sum = 0.0
         self._interval_power_count = 0
         self._workout_power_sum = 0.0
@@ -112,6 +116,7 @@ class WorkoutSessionController(QObject):
 
         self._chart_start_monotonic: float | None = None
         self._hr_history: list[tuple[float, int]] = []
+        self._skip_events: list[tuple[float, float, float]] = []
 
         self._timer = QTimer(self)
         self._timer.setInterval(max(100, int(tick_interval_ms)))
@@ -213,10 +218,10 @@ class WorkoutSessionController(QObject):
         try:
             workout = parse_mrc_file(path, ftp_watts=ftp)
         except MRCParseError as exc:
-            self._screen.show_alert(f"Error parsing '{path.name}': {exc}")
+            self._screen.show_alert(f"Could not load '{path.name}' — file format may be invalid")
             return
         except (IOError, OSError) as exc:
-            self._screen.show_alert(f"Error reading '{path.name}': {exc}")
+            self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
             return
 
         self._workout = workout
@@ -262,6 +267,7 @@ class WorkoutSessionController(QObject):
         self._last_hr_bpm = None
         self._chart_start_monotonic = None
         self._hr_history = []
+        self._skip_events = []
         self._start_recorder()
 
         self._engine.start()
@@ -301,7 +307,13 @@ class WorkoutSessionController(QObject):
         self._handle_snapshot(snapshot, now_monotonic=None)
 
     def _skip_interval(self) -> None:
+        elapsed_before = self._last_snapshot.elapsed_seconds if self._last_snapshot else 0.0
+        mono_now = float(self._monotonic_clock())
         snapshot = self._engine.skip_interval()
+        elapsed_after = snapshot.elapsed_seconds
+        if elapsed_after > elapsed_before and self._chart_start_monotonic is not None:
+            self._skip_events.append((mono_now, elapsed_before, elapsed_after))
+            self._screen.add_skip_marker(elapsed_before, elapsed_after)
         self._handle_snapshot(snapshot, now_monotonic=None)
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
@@ -363,8 +375,8 @@ class WorkoutSessionController(QObject):
             self._reset_interval_accumulators()
             self._manual_erg_jog_watts = 0.0
 
-        elapsed_seconds = int(round(snapshot.elapsed_seconds))
-        remaining_seconds = max(int(snapshot.total_duration_seconds) - elapsed_seconds, 0)
+        elapsed_seconds = int(round(snapshot.riding_elapsed_seconds))
+        remaining_seconds = max(int(snapshot.total_duration_seconds) - int(round(snapshot.elapsed_seconds)), 0)
         interval_remaining_seconds = self._interval_remaining_seconds(snapshot)
         target_watts = self._resolve_target_watts(snapshot) or self._workout_target_watts(snapshot)
         self._screen.set_mandatory_metrics(
@@ -399,7 +411,8 @@ class WorkoutSessionController(QObject):
     ) -> None:
         try:
             self._recorder.set_recording_active(snapshot.recording_active)
-        except RuntimeError:
+        except RuntimeError as exc:
+            _logger.warning("Recorder set_recording_active failed, halting recording: %s", exc)
             self._recorder_active = False
             return
 
@@ -425,7 +438,8 @@ class WorkoutSessionController(QObject):
                     total_kj=round(self._total_kj, 3),
                 ),
             )
-        except RuntimeError:
+        except RuntimeError as exc:
+            _logger.warning("Recorder record_sample failed, halting recording: %s", exc)
             self._recorder_active = False
 
     def _update_total_kj(self, snapshot: WorkoutEngineSnapshot, now_monotonic: float) -> None:
@@ -514,7 +528,8 @@ class WorkoutSessionController(QObject):
         self._recorder_active = False
         try:
             summary = self._recorder.stop(finished_at_utc=self._utc_now())
-        except RuntimeError:
+        except RuntimeError as exc:
+            _logger.warning("Recorder stop failed: %s", exc)
             return
         self._screen.show_alert(
             f"Workout saved: {summary.fit_file_path.name}",
@@ -593,12 +608,14 @@ class WorkoutSessionController(QObject):
         self._workout_hr_sum += float(bpm)
         self._workout_hr_count += 1
         if self._recorder_active and self._chart_start_monotonic is not None:
-            elapsed = self._monotonic_clock() - self._chart_start_monotonic
-            self._hr_history.append((elapsed, int(bpm)))
+            self._hr_history.append((float(self._monotonic_clock()), int(bpm)))
 
     def receive_cadence_rpm(self, rpm: float | None) -> None:
         """Feed a live cadence reading (rpm) for inclusion in recorder samples."""
         self._last_cadence_rpm = rpm
+        if rpm is not None:
+            now = float(self._monotonic_clock())
+            self._cadence_history.append((now, rpm))
 
     def receive_speed_mps(self, mps: float | None) -> None:
         """Feed a live speed reading (m/s) for inclusion in recorder samples."""
@@ -663,10 +680,12 @@ class WorkoutSessionController(QObject):
     def _reconfigure_ftms_bridge(self) -> None:
         self._teardown_ftms_bridge()
         if self._trainer_device_id is None or self._trainer_backend is None:
+            self._screen.set_trainer_controls_visible(False)
             return
 
         transport = self._create_ftms_transport(self._trainer_backend, self._trainer_device_id)
         if transport is None:
+            self._screen.set_trainer_controls_visible(False)
             return
 
         initial_snapshot = self._last_snapshot if self._last_snapshot is not None else self._engine.snapshot()
@@ -679,7 +698,9 @@ class WorkoutSessionController(QObject):
         try:
             control = FTMSControl(transport)
         except Exception as exc:
-            self._bridge_alert_signal.emit(f"Trainer control unavailable: {exc}")
+            _logger.error("Failed to initialise FTMSControl: %s", exc)
+            self._bridge_alert_signal.emit("Could not connect to trainer")
+            self._screen.set_trainer_controls_visible(False)
             return
 
         self._ftms_bridge = WorkoutEngineFTMSBridge(
@@ -696,6 +717,7 @@ class WorkoutSessionController(QObject):
             thread_name_prefix="ftms-bridge",
         )
         self._submit_snapshot_to_ftms_bridge(initial_snapshot)
+        self._screen.set_trainer_controls_visible(True)
 
     def _teardown_ftms_bridge(self) -> None:
         executor = self._ftms_bridge_executor
@@ -712,7 +734,8 @@ class WorkoutSessionController(QObject):
         try:
             return self._ftms_transport_factory(backend, trainer_device_id)
         except Exception as exc:
-            self._bridge_alert_signal.emit(f"Trainer control unavailable: {exc}")
+            _logger.error("Failed to create FTMS transport: %s", exc)
+            self._bridge_alert_signal.emit("Could not connect to trainer")
             return None
 
     def _handle_bridge_opentrueup_status(self, status: object) -> None:
@@ -808,6 +831,9 @@ class WorkoutSessionController(QObject):
             if not self._interval_power_count:
                 return "--"
             return f"{self._interval_actual_kj:.1f} kJ"
+        if key == "cadence_rpm":
+            val = self._windowed_avg_cadence(now)
+            return f"{val} rpm" if val is not None else "--"
         return "--"
 
     def _windowed_avg_power(self, now: float, window_seconds: int) -> int | None:
@@ -817,16 +843,41 @@ class WorkoutSessionController(QObject):
             return None
         return round(sum(in_window) / len(in_window))
 
+    def _windowed_avg_cadence(self, now: float) -> int | None:
+        """Return the average cadence (rpm) over the last 1 second, or None if no data."""
+        cutoff = now - 1.0
+        in_window = [rpm for t, rpm in self._cadence_history if t >= cutoff]
+        if not in_window:
+            return None
+        return round(sum(in_window) / len(in_window))
+
     def _on_chart_tick(self) -> None:
         if self._chart_start_monotonic is None:
             return
-        now = self._monotonic_clock()
-        elapsed = now - self._chart_start_monotonic
 
-        # Build elapsed-keyed power series from the monotonic-keyed history
+        now = self._monotonic_clock()
+        skip_offset = sum(after - before for _, before, after in self._skip_events)
+        elapsed = (now - self._chart_start_monotonic) + skip_offset
+
+        # Build elapsed-keyed series, adjusting timestamps to account for skips.
+        # Samples taken after a skip are shifted forward by the cumulative skipped duration
+        # so they appear at the correct position on the workout timeline.
+        def _adjusted_time(sample_mono: float) -> float:
+            offset = sum(
+                after - before
+                for skip_mono, before, after in self._skip_events
+                if skip_mono <= sample_mono
+            )
+            return (sample_mono - self._chart_start_monotonic) + offset  # type: ignore[operator]
+
         power_series = [
-            (mono - self._chart_start_monotonic, watts)
+            (_adjusted_time(mono), watts)
             for mono, watts in self._power_history
+        ]
+
+        hr_series = [
+            (_adjusted_time(mono), bpm)
+            for mono, bpm in self._hr_history
         ]
 
         interval_index = (
@@ -835,7 +886,7 @@ class WorkoutSessionController(QObject):
             else None
         )
 
-        self._screen.update_charts(elapsed, interval_index, power_series, list(self._hr_history))
+        self._screen.update_charts(elapsed, interval_index, power_series, hr_series)
 
     def _compute_normalized_power(self) -> int | None:
         samples = list(self._power_history)

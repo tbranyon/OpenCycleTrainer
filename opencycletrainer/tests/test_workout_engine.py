@@ -127,6 +127,38 @@ def test_skip_interval_jumps_to_current_interval_end():
     assert skipped_final.current_interval_index is None
 
 
+def test_skip_interval_riding_elapsed_excludes_skipped_time():
+    """riding_elapsed_seconds reflects only time actually ridden, not skipped intervals."""
+    engine = WorkoutEngine()
+    engine.load_workout(_build_workout())
+    engine.start()
+    engine.tick(0)
+    engine.tick(5)
+
+    # At t=5 in first interval (10 s long), skip it — skips 5 s remaining
+    snap = engine.skip_interval()
+    assert snap.elapsed_seconds == 10
+    assert snap.riding_elapsed_seconds == 5  # only the 5 s actually ridden
+
+    engine.tick(10)
+    # tick(10) advances from last_tick_time=5 by 5 s → elapsed=15
+    # skip remaining 15 s of interval 2 (15→30)
+    snap2 = engine.skip_interval()
+    assert snap2.elapsed_seconds == 30
+    assert snap2.riding_elapsed_seconds == 10  # 5 s from interval 1 + 5 s from interval 2
+
+
+def test_riding_elapsed_matches_elapsed_when_no_skips():
+    engine = WorkoutEngine()
+    engine.load_workout(_build_workout())
+    engine.start()
+    snap = engine.tick(0)
+    assert snap.riding_elapsed_seconds == snap.elapsed_seconds
+
+    snap2 = engine.tick(25)
+    assert snap2.riding_elapsed_seconds == snap2.elapsed_seconds
+
+
 def test_extend_interval_updates_duration_for_time_mode():
     engine = WorkoutEngine()
     engine.load_workout(_build_workout())

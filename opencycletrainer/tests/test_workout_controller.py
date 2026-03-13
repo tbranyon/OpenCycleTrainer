@@ -624,3 +624,183 @@ def test_trainer_bridge_dispatches_erg_and_resistance_commands_when_target_is_co
     )
 
     controller.shutdown()
+
+
+def test_cadence_tile_shows_dash_when_no_cadence():
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["cadence_rpm"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["cadence_rpm"].value_label.text() == "--"
+
+    controller.shutdown()
+
+
+def test_cadence_tile_shows_1s_averaged_rpm():
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["cadence_rpm"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.receive_cadence_rpm(90.0)
+    monotonic_now = 1.5
+    controller.receive_cadence_rpm(80.0)
+
+    monotonic_now = 2.0
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["cadence_rpm"].value_label.text() == "85 rpm"
+
+    controller.shutdown()
+
+
+def test_cadence_tile_excludes_readings_older_than_1s():
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["cadence_rpm"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 0.5
+    controller.receive_cadence_rpm(60.0)
+
+    monotonic_now = 2.0
+    controller.receive_cadence_rpm(90.0)
+
+    # At t=2.5, cutoff is 1.5 so t=0.5 reading is excluded
+    monotonic_now = 2.5
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["cadence_rpm"].value_label.text() == "90 rpm"
+
+    controller.shutdown()
+
+
+# ── Trainer control footer visibility ─────────────────────────────────────────
+
+
+def test_trainer_controls_hidden_by_default():
+    """Footer trainer controls should be hidden when no trainer is connected."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    assert screen.trainer_mode_label.isHidden()
+    assert screen.mode_selector.isHidden()
+    assert screen.opentrueup_label.isHidden()
+    assert screen.opentrueup_offset_value.isHidden()
+
+
+def test_trainer_controls_visible_when_ftms_trainer_connected():
+    """Footer trainer controls should appear when a controllable FTMS trainer is set."""
+    _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: transport,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+
+    assert not screen.trainer_mode_label.isHidden()
+    assert not screen.mode_selector.isHidden()
+    assert not screen.opentrueup_label.isHidden()
+    assert not screen.opentrueup_offset_value.isHidden()
+
+    controller.shutdown()
+
+
+def test_trainer_controls_hidden_when_power_only_trainer():
+    """Footer trainer controls should stay hidden when the transport factory returns None (power-only device)."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: None,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="power-meter-1")
+
+    assert screen.trainer_mode_label.isHidden()
+    assert screen.mode_selector.isHidden()
+    assert screen.opentrueup_label.isHidden()
+    assert screen.opentrueup_offset_value.isHidden()
+
+    controller.shutdown()
+
+
+def test_trainer_controls_hidden_when_trainer_disconnected():
+    """Footer trainer controls should hide again when trainer is removed (device_id set to None)."""
+    _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: transport,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    assert not screen.trainer_mode_label.isHidden()
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id=None)
+    assert screen.trainer_mode_label.isHidden()
+    assert screen.mode_selector.isHidden()
+
+    controller.shutdown()
