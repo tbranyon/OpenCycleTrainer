@@ -77,12 +77,12 @@ class WorkoutScreen:
                 ui.button(
                     "Load from Library",
                     icon="menu_book",
-                    on_click=self._on_load_library,
+                    on_click=lambda: self._on_load_library(),
                 ).classes("btn btn-secondary").props("no-caps flat")
                 ui.button(
                     "Load from File",
                     icon="file_open",
-                    on_click=self._on_load_file,
+                    on_click=lambda: self._on_load_file(),
                 ).classes("btn btn-primary").props("no-caps")
 
     def _build_mandatory_tiles(self) -> None:
@@ -123,22 +123,22 @@ class WorkoutScreen:
         """Start / Pause / Resume / Stop buttons plus the alert banner."""
         with ui.element("div").classes("controls-row"):
             self._start_btn = (
-                ui.button("Start", icon="play_arrow", on_click=self._on_start)
+                ui.button("Start", icon="play_arrow", on_click=lambda: self._on_start())
                 .classes("btn btn-primary btn-lg")
                 .props("no-caps")
             )
             self._pause_btn = (
-                ui.button("Pause", icon="pause", on_click=self._on_pause)
+                ui.button("Pause", icon="pause", on_click=lambda: self._on_pause())
                 .classes("btn btn-secondary btn-lg")
                 .props("no-caps")
             )
             self._resume_btn = (
-                ui.button("Resume", icon="play_arrow", on_click=self._on_resume)
+                ui.button("Resume", icon="play_arrow", on_click=lambda: self._on_resume())
                 .classes("btn btn-primary btn-lg")
                 .props("no-caps")
             )
             self._stop_btn = (
-                ui.button("Stop", icon="stop", on_click=self._on_stop)
+                ui.button("Stop", icon="stop", on_click=lambda: self._on_stop())
                 .classes("btn btn-destructive btn-lg")
                 .props("no-caps")
             )
@@ -190,12 +190,12 @@ class WorkoutScreen:
                 ui.button(
                     "Resume Now",
                     icon="play_arrow",
-                    on_click=self._on_resume,
+                    on_click=lambda: self._on_resume(),
                 ).classes("btn btn-primary btn-lg").props("no-caps")
                 ui.button(
                     "Stop Workout",
                     icon="stop",
-                    on_click=self._on_stop,
+                    on_click=lambda: self._on_stop(),
                 ).classes("btn btn-destructive btn-lg").props("no-caps")
 
         self._pause_overlay.set_visibility(False)
@@ -312,6 +312,62 @@ class WorkoutScreen:
                 self._on_resume()
             else:
                 self._on_pause()
+
+    def set_callbacks(
+        self,
+        *,
+        on_start=None,
+        on_pause=None,
+        on_resume=None,
+        on_stop=None,
+        on_load_file=None,
+        on_load_library=None,
+        on_mode_changed=None,
+        on_jog=None,
+        on_extend=None,
+        on_skip=None,
+    ) -> None:
+        """Replace callback references after construction (called by WorkoutSessionController)."""
+        if on_start is not None:
+            self._on_start = on_start
+        if on_pause is not None:
+            self._on_pause = on_pause
+        if on_resume is not None:
+            self._on_resume = on_resume
+        if on_stop is not None:
+            self._on_stop = on_stop
+        if on_load_file is not None:
+            self._on_load_file = on_load_file
+        if on_load_library is not None:
+            self._on_load_library = on_load_library
+        if on_mode_changed is not None:
+            self._on_mode_changed = on_mode_changed
+        if on_jog is not None:
+            self._on_jog = on_jog
+        if on_extend is not None:
+            self._on_extend = on_extend
+        if on_skip is not None:
+            self._on_skip = on_skip
+
+    # ── Chart stubs (replaced by ECharts in Phase 4) ─────────────────────
+
+    def load_workout_chart(self, workout: object, ftp: int) -> None:
+        """Placeholder — Phase 4 will render the interval chart."""
+
+    def update_charts(
+        self,
+        elapsed: float,
+        interval_index: int | None,
+        power_series: list,
+        hr_series: list,
+    ) -> None:
+        """Placeholder — Phase 4 will update live chart data."""
+
+    def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
+        """Placeholder — Phase 4 will draw skip markers on the chart."""
+
+    def export_chart_image(self, path: object) -> None:
+        """Placeholder — Phase 4 will export a chart PNG for Strava."""
 
     def _cycle_mode(self) -> None:
         try:
