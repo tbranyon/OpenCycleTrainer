@@ -11,6 +11,10 @@ DISPLAY_UNITS_METRIC = "metric"
 DISPLAY_UNITS_IMPERIAL = "imperial"
 SUPPORTED_DISPLAY_UNITS = {DISPLAY_UNITS_METRIC, DISPLAY_UNITS_IMPERIAL}
 
+THEME_DARK = "dark"
+THEME_LIGHT = "light"
+SUPPORTED_THEMES = {THEME_DARK, THEME_LIGHT}
+
 DEFAULT_WORKOUT_BEHAVIOR = "workout_mode"
 SUPPORTED_WORKOUT_BEHAVIORS = {
     DEFAULT_WORKOUT_BEHAVIOR,
@@ -31,6 +35,7 @@ class AppSettings:
     last_workout_dir: Path | None = None
     strava_auto_sync_enabled: bool = False
     strava_athlete_name: str = ""
+    theme: str = THEME_DARK
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +49,7 @@ class AppSettings:
             "last_workout_dir": str(self.last_workout_dir) if self.last_workout_dir else None,
             "strava_auto_sync_enabled": self.strava_auto_sync_enabled,
             "strava_athlete_name": self.strava_athlete_name,
+            "theme": self.theme,
         }
 
     @classmethod
@@ -69,6 +75,7 @@ class AppSettings:
             last_workout_dir=Path(data["last_workout_dir"]) if data.get("last_workout_dir") else None,
             strava_auto_sync_enabled=bool(data.get("strava_auto_sync_enabled", False)),
             strava_athlete_name=str(data.get("strava_athlete_name", "")),
+            theme=str(data.get("theme", THEME_DARK)) if data.get("theme") in SUPPORTED_THEMES else THEME_DARK,
         )
 
 
