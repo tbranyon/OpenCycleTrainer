@@ -585,6 +585,132 @@ html, body {
 .placeholder-icon { font-size: 48px !important; color: var(--text-muted) !important; opacity: 0.4; }
 .placeholder-label { font-size: 1rem; font-weight: 500; color: var(--text-muted); }
 .placeholder-sub   { font-size: 0.875rem; color: var(--text-disabled); }
+
+/* ── Workout screen ─────────────────────────────────────────────────────── */
+.workout-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6) var(--space-4);
+}
+
+.workout-load-buttons { display: flex; gap: var(--space-2); }
+
+.tiles-mandatory {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.tiles-configurable {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.chart-area {
+  flex: 1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chart-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  min-height: 80px;
+  color: var(--text-muted);
+}
+
+.controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+}
+
+.alert-area { flex-shrink: 0; }
+
+/* Trainer footer */
+.trainer-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: center;
+  padding: var(--space-3) var(--space-6);
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.resistance-display { display: flex; align-items: center; gap: var(--space-2); }
+.mode-select { min-width: 110px; }
+.mode-select .q-field__control { height: 32px !important; min-height: 32px !important; }
+.mode-select .q-field__native  { padding-top: 0 !important; padding-bottom: 0 !important; }
+
+/* Button height overrides for Quasar */
+.btn-lg.q-btn { min-height: var(--btn-h-lg) !important; }
+.btn-sm.q-btn { min-height: var(--btn-h-sm) !important; }
+
+/* ── Pause overlay ──────────────────────────────────────────────────────── */
+.pause-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 13, 17, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-5);
+  z-index: 200;
+  animation: fade-in var(--dur-base) var(--ease-out);
+}
+html.light .pause-overlay { background: rgba(245, 245, 250, 0.94); }
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.pause-heading {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pause-elapsed-group { text-align: center; }
+.pause-elapsed {
+  font-size: 2.25rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+.pause-elapsed-label { font-size: 0.75rem; color: var(--text-muted); }
+.pause-countdown {
+  font-size: 5rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--accent);
+  line-height: 1;
+  min-width: 5rem;
+  min-height: 5rem;
+  text-align: center;
+}
+.pause-actions { display: flex; gap: var(--space-4); margin-top: var(--space-2); }
 """
 
 
