@@ -8,5 +8,6 @@
   "windowed_power_window_seconds": 3,
   "last_workout_dir": null,
   "strava_auto_sync_enabled": false,
-  "strava_athlete_name": ""
+  "strava_athlete_name": "",
+  "theme": "dark"
 }
