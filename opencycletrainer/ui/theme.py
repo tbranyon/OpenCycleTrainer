@@ -620,17 +620,26 @@ html, body {
   gap: var(--space-2);
 }
 
-.chart-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
+/* ECharts wrapper divs */
+.chart-wrap {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
+  overflow: hidden;
   min-height: 80px;
-  color: var(--text-muted);
+}
+
+.chart-wrap-interval { flex: 3; }
+.chart-wrap-overview { flex: 2; }
+
+/* NiceGUI echart element fills its wrapper */
+.chart-echart {
+  width: 100% !important;
+  height: 100% !important;
+}
+.chart-echart > div {
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .controls-row {

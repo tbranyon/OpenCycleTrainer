@@ -1,4 +1,4 @@
-"""NiceGUI workout screen — Phase 2 static layout."""
+"""NiceGUI workout screen — Phase 4 (live ECharts charts)."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -8,6 +8,7 @@ from nicegui import ui
 from opencycletrainer.storage.settings import AppSettings
 from .components import AlertBanner, MetricTile
 from .tile_config import TILE_LABEL_BY_KEY, normalize_tile_selections
+from .workout_chart_ng import WorkoutEChartsManager, make_chart_options
 
 MODE_OPTIONS: tuple[str, ...] = ("ERG", "Resistance", "Hybrid")
 
@@ -52,6 +53,7 @@ class WorkoutScreen:
         self._on_skip = on_skip or (lambda: None)
 
         self._tile_by_key: dict[str, MetricTile] = {}
+        self._chart_manager: WorkoutEChartsManager | None = None
         self._build()
 
     # ── Layout construction ───────────────────────────────────────────────
@@ -106,18 +108,19 @@ class WorkoutScreen:
                 self._tile_by_key[key] = tile
 
     def _build_chart_area(self) -> None:
-        """Chart area — placeholder divs replaced by ECharts in Phase 4."""
+        """Two stacked ECharts instances: interval view (top) and overview (bottom)."""
         with ui.element("div").classes("chart-area"):
-            with ui.element("div").classes("chart-placeholder").style("flex: 3"):
-                ui.icon("show_chart").style(
-                    "font-size: 32px; color: var(--text-muted); opacity: 0.3"
+            with ui.element("div").classes("chart-wrap chart-wrap-interval"):
+                interval_chart = (
+                    ui.echart(make_chart_options(y_max=400.0, x_max=3600.0))
+                    .classes("chart-echart")
                 )
-                ui.label("Interval chart  ·  Phase 4").classes("text-small color-muted")
-            with ui.element("div").classes("chart-placeholder").style("flex: 2"):
-                ui.icon("bar_chart").style(
-                    "font-size: 32px; color: var(--text-muted); opacity: 0.3"
+            with ui.element("div").classes("chart-wrap chart-wrap-overview"):
+                overview_chart = (
+                    ui.echart(make_chart_options(y_max=400.0, x_max=3600.0))
+                    .classes("chart-echart")
                 )
-                ui.label("Overview chart  ·  Phase 4").classes("text-small color-muted")
+        self._chart_manager = WorkoutEChartsManager(interval_chart, overview_chart)
 
     def _build_controls(self) -> None:
         """Start / Pause / Resume / Stop buttons plus the alert banner."""
@@ -349,10 +352,12 @@ class WorkoutScreen:
         if on_skip is not None:
             self._on_skip = on_skip
 
-    # ── Chart stubs (replaced by ECharts in Phase 4) ─────────────────────
+    # ── Chart interface ───────────────────────────────────────────────────
 
     def load_workout_chart(self, workout: object, ftp: int) -> None:
-        """Placeholder — Phase 4 will render the interval chart."""
+        """Load *workout* into both ECharts instances."""
+        if self._chart_manager is not None:
+            self._chart_manager.load_workout(workout, ftp)  # type: ignore[arg-type]
 
     def update_charts(
         self,
@@ -361,13 +366,17 @@ class WorkoutScreen:
         power_series: list,
         hr_series: list,
     ) -> None:
-        """Placeholder — Phase 4 will update live chart data."""
+        """Push live power/HR data and cursor position to both charts."""
+        if self._chart_manager is not None:
+            self._chart_manager.update_charts(elapsed, interval_index, power_series, hr_series)
 
     def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
-        """Placeholder — Phase 4 will draw skip markers on the chart."""
+        """Add a yellow shaded skip region to both charts."""
+        if self._chart_manager is not None:
+            self._chart_manager.add_skip_marker(elapsed_before, elapsed_after)
 
     def export_chart_image(self, path: object) -> None:
-        """Placeholder — Phase 4 will export a chart PNG for Strava."""
+        """Chart PNG export is not supported in the browser-based ECharts implementation."""
 
     def _cycle_mode(self) -> None:
         try:
