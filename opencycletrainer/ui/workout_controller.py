@@ -120,6 +120,8 @@ class WorkoutSessionController(QObject):
 
         self._pause_dialog: PauseDialog | None = None
         self._chart_start_monotonic: float | None = None
+        self._pause_start_monotonic: float | None = None
+        self._total_paused_duration: float = 0.0
         self._hr_history: list[tuple[float, int]] = []
         self._skip_events: list[tuple[float, float, float]] = []
 
@@ -206,6 +208,10 @@ class WorkoutSessionController(QObject):
             target_power_text="-- W",
         )
 
+    def load_workout(self, path: Path) -> None:
+        """Load a workout from *path* without opening a file dialog."""
+        self._load_workout_from_file(path)
+
     def _request_load_workout_from_file(self) -> None:
         start_dir = str(self._settings.last_workout_dir or Path.home())
         file_path_str, _ = QFileDialog.getOpenFileName(
@@ -274,6 +280,8 @@ class WorkoutSessionController(QObject):
         self._last_power_watts = None
         self._last_hr_bpm = None
         self._chart_start_monotonic = None
+        self._pause_start_monotonic = None
+        self._total_paused_duration = 0.0
         self._hr_history = []
         self._skip_events = []
         self._start_recorder()
@@ -289,13 +297,17 @@ class WorkoutSessionController(QObject):
         self._handle_snapshot(snapshot, now_monotonic=now)
 
     def _pause_workout(self) -> None:
+        self._pause_start_monotonic = self._monotonic_clock()
         snapshot = self._engine.pause()
         self._handle_snapshot(snapshot, now_monotonic=None)
         self._pause_dialog = PauseDialog(self._screen)
-        self._pause_dialog.resume_confirmed.connect(self._resume_workout)
+        self._pause_dialog.resume_started.connect(self._resume_workout)
         self._pause_dialog.show()
 
     def _resume_workout(self) -> None:
+        # _pause_start_monotonic remains set intentionally: the cursor stays frozen
+        # through RAMP_IN. It is accumulated and cleared when RAMP_IN → RUNNING
+        # is detected in _handle_snapshot.
         snapshot = self._engine.resume()
         self._handle_snapshot(snapshot, now_monotonic=None)
 
@@ -373,6 +385,11 @@ class WorkoutSessionController(QObject):
         *,
         now_monotonic: float | None,
     ) -> None:
+        prev_state = self._last_snapshot.state if self._last_snapshot is not None else None
+        if prev_state == EngineState.RAMP_IN and snapshot.state == EngineState.RUNNING:
+            if self._pause_start_monotonic is not None:
+                self._total_paused_duration += self._monotonic_clock() - self._pause_start_monotonic
+                self._pause_start_monotonic = None
         self._last_snapshot = snapshot
         self._screen.set_session_state(snapshot.state.value)
         self._screen.set_mode_state(self._selected_mode)
@@ -900,7 +917,10 @@ class WorkoutSessionController(QObject):
 
         now = self._monotonic_clock()
         skip_offset = sum(after - before for _, before, after in self._skip_events)
-        elapsed = (now - self._chart_start_monotonic) + skip_offset
+        paused = self._total_paused_duration
+        if self._pause_start_monotonic is not None:
+            paused += now - self._pause_start_monotonic
+        elapsed = (now - self._chart_start_monotonic) + skip_offset - paused
 
         # Build elapsed-keyed series, adjusting timestamps to account for skips.
         # Samples taken after a skip are shifted forward by the cumulative skipped duration

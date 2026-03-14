@@ -54,3 +54,13 @@ def get_opentrueup_offsets_file_path() -> Path:
 
 def get_paired_devices_file_path() -> Path:
     return get_config_dir() / "paired_devices.json"
+
+
+def get_user_workouts_dir() -> Path:
+    """Return (and create) the platform-specific user workouts directory."""
+    return ensure_dir(get_data_dir() / "workouts")
+
+
+def get_prepackaged_workouts_dir() -> Path:
+    """Return the bundled workouts directory shipped alongside the application."""
+    return Path(__file__).parent.parent.parent / "workouts"

@@ -30,6 +30,7 @@ class PauseDialog(QDialog):
     """Dialog shown when the workout is paused. Provides a 3-2-1 countdown before resuming."""
 
     resume_confirmed = Signal()
+    resume_started = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -67,8 +68,9 @@ class PauseDialog(QDialog):
         self._countdown_timer.timeout.connect(self._tick_countdown)
 
     def _on_resume_clicked(self) -> None:
-        """Disable the resume button and start the 3-2-1 countdown."""
+        """Disable the resume button, signal resume start, and begin the 3-2-1 countdown."""
         self.resume_button.setEnabled(False)
+        self.resume_started.emit()
         self._countdown_value = 3
         self.countdown_label.setText(str(self._countdown_value))
         self._countdown_timer.start()
@@ -121,6 +123,7 @@ class WorkoutScreen(QWidget):
     jog_requested = Signal(int)
     pause_resume_requested = Signal()
     load_workout_requested = Signal()
+    load_from_library_requested = Signal()
 
     def __init__(
         self,
@@ -147,14 +150,26 @@ class WorkoutScreen(QWidget):
         title_font.setPointSize(title_font.pointSize() + 4)
         self.title_label.setFont(title_font)
         self.title_label.setAlignment(Qt.AlignCenter)
-        self.load_workout_button = QPushButton("Load Workout", self)
-        self.load_workout_button.setObjectName("loadWorkoutButton")
-        font = self.load_workout_button.font()
+
+        self.load_buttons_widget = QWidget(self)
+        load_buttons_layout = QVBoxLayout(self.load_buttons_widget)
+        load_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        load_buttons_layout.setSpacing(4)
+        self.load_from_library_button = QPushButton("Load from Library", self)
+        self.load_from_library_button.setObjectName("loadFromLibraryButton")
+        font = self.load_from_library_button.font()
         font.setPointSize(font.pointSize() + 2)
-        self.load_workout_button.setFont(font)
-        self.load_workout_button.clicked.connect(self.load_workout_requested)
+        self.load_from_library_button.setFont(font)
+        self.load_from_library_button.clicked.connect(self.load_from_library_requested)
+        self.load_from_file_button = QPushButton("Load from File", self)
+        self.load_from_file_button.setObjectName("loadFromFileButton")
+        self.load_from_file_button.setFont(font)
+        self.load_from_file_button.clicked.connect(self.load_workout_requested)
+        load_buttons_layout.addWidget(self.load_from_library_button)
+        load_buttons_layout.addWidget(self.load_from_file_button)
+
         self.title_widget.addWidget(self.title_label)
-        self.title_widget.addWidget(self.load_workout_button)
+        self.title_widget.addWidget(self.load_buttons_widget)
         self.title_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         root_layout.addWidget(self.title_widget)
 
@@ -194,7 +209,7 @@ class WorkoutScreen(QWidget):
             self.title_label.setText(name)
             self.title_widget.setCurrentWidget(self.title_label)
         else:
-            self.title_widget.setCurrentWidget(self.load_workout_button)
+            self.title_widget.setCurrentWidget(self.load_buttons_widget)
 
     def set_mandatory_metrics(
         self,

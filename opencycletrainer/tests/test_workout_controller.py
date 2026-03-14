@@ -100,7 +100,7 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     )
 
     assert controller.last_snapshot is None
-    assert screen.title_widget.currentWidget() == screen.load_workout_button
+    assert screen.title_widget.currentWidget() == screen.load_buttons_widget
 
     test_data_dir = Path(__file__).parent / "data"
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
@@ -1002,8 +1002,126 @@ def test_pause_dialog_resume_confirmed_resumes_workout():
     app.processEvents()
     assert controller.last_snapshot.state == EngineState.PAUSED
 
-    controller._pause_dialog.resume_confirmed.emit()
+    # resume_started is emitted immediately when Resume button is clicked
+    controller._pause_dialog.resume_started.emit()
     app.processEvents()
     assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    controller.shutdown()
+
+
+def test_resume_button_triggers_ramp_in_before_countdown_ends():
+    """Clicking Resume should start RAMP_IN immediately, not after the 3s countdown."""
+    app = _get_or_create_qapp()
+    controller, screen = _make_running_controller(app)
+
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller._pause_dialog.resume_button.click()
+    app.processEvents()
+    # Engine should be in RAMP_IN right away, without waiting for countdown
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    controller.shutdown()
+
+
+def test_chart_cursor_frozen_while_paused():
+    """Chart cursor elapsed should not advance while the workout is paused."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    received: list[float] = []
+    screen = WorkoutScreen(settings=AppSettings())
+    original_update = screen.update_charts
+
+    def _capture(elapsed, interval_index, power_series, hr_series):
+        received.append(elapsed)
+        original_update(elapsed, interval_index, power_series, hr_series)
+
+    screen.update_charts = _capture
+
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 5.0
+    controller._on_chart_tick()
+    assert received[-1] == pytest.approx(5.0)
+
+    # Pause at t=5
+    screen.pause_button.click()
+    app.processEvents()
+
+    # Clock advances 5 more seconds while paused
+    monotonic_now = 10.0
+    controller._on_chart_tick()
+    # Cursor must remain frozen at ~5.0
+    assert received[-1] == pytest.approx(5.0)
+
+    controller.shutdown()
+
+
+def test_chart_cursor_frozen_during_ramp_in():
+    """Chart cursor elapsed should not advance during RAMP_IN after resume."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    received: list[float] = []
+    screen = WorkoutScreen(settings=AppSettings())
+    original_update = screen.update_charts
+
+    def _capture(elapsed, interval_index, power_series, hr_series):
+        received.append(elapsed)
+        original_update(elapsed, interval_index, power_series, hr_series)
+
+    screen.update_charts = _capture
+
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    # Advance to t=5
+    monotonic_now = 5.0
+    controller._on_chart_tick()
+    assert received[-1] == pytest.approx(5.0)
+
+    # Pause at t=5
+    screen.pause_button.click()
+    app.processEvents()
+
+    # Resume at t=8 → 3s pause, engine enters RAMP_IN
+    monotonic_now = 8.0
+    controller._pause_dialog.resume_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    # Clock advances to t=10 during RAMP_IN — cursor must remain at 5
+    monotonic_now = 10.0
+    controller._on_chart_tick()
+    assert received[-1] == pytest.approx(5.0)
 
     controller.shutdown()

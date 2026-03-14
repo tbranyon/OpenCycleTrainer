@@ -24,7 +24,7 @@
 22. [DONE] ~~Need to display current resistance level when in resistance mode~~
 23. Errors in FTMS layer prevent writing FIT file on Stop apparently (sometimes). FIT file should be written on stop regardless of state.
 24. [DONE] ~~FIT file write message should be in green, not red.~~
-25. Add workout library tab/screen which lists all workouts both added by the user and prepackaged with the app. User should be able to load a workout from this screen by double clicking.
+25. [DONE] ~~Add workout library tab/screen which lists all workouts both added by the user and prepackaged with the app. User should be able to load a workout from this screen by double clicking.~~
 26. [DONE] ~~Power jog adjustments need to persist for the remainder of the interval. They currently seem to get overwritten after a moment~~
 27. [DONE] ~~Ramp doesn't work with Tempo 1x15 at least, just maintained the start power. Switching between resistance and back to ERG jumped to the current ramp target momentarily but then got overwritten again with original start power.~~
 28. [DONE] ~~Need cadence tile on display~~
@@ -33,4 +33,4 @@
 31. [DONE] ~~Strava sync Phase 5: Structured logging, duplicate upload prevention with local history, external_id on uploads, "already synced" alert, and Sync Now button wiring.~~
 32. [DONE] ~~Strava sync Phase 6: workout power chart image generated (matplotlib, 1080×1350 portrait) and attached to Strava activity after successful FIT upload, best-effort and non-blocking.~~
 33. Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.
-34. Cursor continues to advance on charts while paused. There also appears to be a 3-second countdown on the pause modal followed by a 3-second ramp in once returned from the modal--the correct sequence should be to do the ramp-in with the 3 second countdown on the pause modal.
+34. [DONE] ~~Cursor continues to advance on charts while paused. There also appears to be a 3-second countdown on the pause modal followed by a 3-second ramp in once returned from the modal--the correct sequence should be to do the ramp-in with the 3 second countdown on the pause modal.~~

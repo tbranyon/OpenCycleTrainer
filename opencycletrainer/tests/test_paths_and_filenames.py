@@ -76,3 +76,40 @@ def test_activity_filename_requires_extension():
 
     with pytest.raises(ValueError):
         build_activity_filename("Threshold", timestamp, " ")
+
+
+def test_get_user_workouts_dir_windows(monkeypatch, tmp_path):
+    appdata = tmp_path / "Roaming"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setattr(paths, "_system_name", lambda: "windows")
+
+    workouts_dir = paths.get_user_workouts_dir()
+
+    assert workouts_dir == appdata / "OpenCycleTrainer" / "workouts"
+    assert workouts_dir.exists()
+
+
+def test_get_user_workouts_dir_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "_system_name", lambda: "linux")
+    monkeypatch.setattr(paths, "_home_dir", lambda: tmp_path)
+
+    workouts_dir = paths.get_user_workouts_dir()
+
+    assert workouts_dir == tmp_path / ".local" / "share" / "opencycletrainer" / "workouts"
+    assert workouts_dir.exists()
+
+
+def test_get_user_workouts_dir_creates_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "_system_name", lambda: "linux")
+    monkeypatch.setattr(paths, "_home_dir", lambda: tmp_path)
+
+    workouts_dir = paths.get_user_workouts_dir()
+
+    assert workouts_dir.is_dir()
+
+
+def test_get_prepackaged_workouts_dir_is_workouts_subdir():
+    workouts_dir = paths.get_prepackaged_workouts_dir()
+
+    assert workouts_dir.name == "workouts"
+    assert (workouts_dir.parent / "opencycletrainer").is_dir()

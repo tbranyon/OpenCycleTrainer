@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QMainWindow
 from PySide6.QtWidgets import QTabWidget
 
 from opencycletrainer.core.sensors import SensorSample
+from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.devices.types import CPS_MEASUREMENT_CHARACTERISTIC_UUID
 from opencycletrainer.integrations.strava.sync_service import upload_fit_to_strava
 from opencycletrainer.integrations.strava.token_store import get_tokens
@@ -14,6 +15,7 @@ from opencycletrainer.storage.settings import AppSettings
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
 from .workout_controller import WorkoutSessionController
+from .workout_library_screen import WorkoutLibraryScreen
 from .workout_screen import WorkoutScreen
 
 
@@ -52,10 +54,22 @@ class MainWindow(QMainWindow):
         self.devices_screen = DevicesScreen(parent=self)
         self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
         self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
+        self._workout_library = WorkoutLibrary()
+        self.workout_library_screen = WorkoutLibraryScreen(
+            library=self._workout_library,
+            parent=self,
+        )
         self.tabs.addTab(self.workout_screen, "Workout")
+        self.tabs.addTab(self.workout_library_screen, "Library")
         self.tabs.addTab(self.devices_screen, "Devices")
         self.tabs.addTab(self.settings_screen, "Settings")
         self.setCentralWidget(self.tabs)
+
+        self._library_tab_index = self.tabs.indexOf(self.workout_library_screen)
+        self._workout_tab_index = self.tabs.indexOf(self.workout_screen)
+        self.workout_screen.load_from_library_requested.connect(self._navigate_to_library)
+        self.workout_library_screen.workout_selected.connect(self._on_library_workout_selected)
+
         self.workout_controller.set_trainer_control_target(
             backend=self.devices_screen.backend,
             trainer_device_id=self.devices_screen.connected_trainer_device_id(),
@@ -81,6 +95,13 @@ class MainWindow(QMainWindow):
             return
         self.workout_screen.apply_settings(settings)
         self.workout_controller.apply_settings(settings)
+
+    def _navigate_to_library(self) -> None:
+        self.tabs.setCurrentIndex(self._library_tab_index)
+
+    def _on_library_workout_selected(self, path: Path) -> None:
+        self.workout_controller.load_workout(path)
+        self.tabs.setCurrentIndex(self._workout_tab_index)
 
     def _on_trainer_device_changed(self, backend: object, trainer_device_id: object) -> None:
         trainer_id = trainer_device_id if isinstance(trainer_device_id, str) else None
