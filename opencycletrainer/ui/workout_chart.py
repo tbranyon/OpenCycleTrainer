@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 import numpy as np
@@ -234,6 +236,12 @@ class WorkoutChartWidget(QWidget):
                 new_y_max = (int(candidate / _Y_STEP) + 1) * _Y_STEP
                 for plot in (self._interval_plot, self._workout_plot):
                     _configure_y_axis(plot, float(new_y_max))
+
+    def export_image(self, path: Path) -> Path:
+        """Capture the workout overview chart as a PNG and save it to *path*."""
+        pixmap = self._workout_plot.grab()
+        pixmap.save(str(path), "PNG")
+        return path
 
     def clear(self) -> None:
         """Reset to idle state. Call before loading a new workout."""

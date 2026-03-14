@@ -128,3 +128,44 @@ def test_resistance_level_label_zero():
 
     assert screen.resistance_level_label.isHidden() is False
     assert screen.resistance_level_label.text() == "0 %"
+
+
+def test_pause_dialog_shows_paused_message():
+    _get_or_create_qapp()
+    from opencycletrainer.ui.workout_screen import PauseDialog
+
+    dialog = PauseDialog()
+    label_texts = {label.text() for label in dialog.findChildren(QLabel)}
+    assert any("Paused" in t for t in label_texts)
+
+
+def test_pause_dialog_has_resume_button():
+    _get_or_create_qapp()
+    from opencycletrainer.ui.workout_screen import PauseDialog
+
+    dialog = PauseDialog()
+    button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
+    assert "Resume" in button_texts
+
+
+def test_pause_dialog_resume_shows_countdown():
+    _get_or_create_qapp()
+    from opencycletrainer.ui.workout_screen import PauseDialog
+
+    dialog = PauseDialog()
+    dialog.resume_button.click()
+    assert dialog.countdown_label.text() == "3"
+
+
+def test_pause_dialog_emits_resume_confirmed_after_countdown():
+    _get_or_create_qapp()
+    from opencycletrainer.ui.workout_screen import PauseDialog
+
+    confirmed = []
+    dialog = PauseDialog()
+    dialog.resume_confirmed.connect(lambda: confirmed.append(True))
+    dialog.resume_button.click()
+    dialog._tick_countdown()  # 2
+    dialog._tick_countdown()  # 1
+    dialog._tick_countdown()  # 0 → emits resume_confirmed
+    assert confirmed == [True]

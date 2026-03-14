@@ -3,7 +3,7 @@
 1. .octw internal format support is not implemented (no parser/writer/schema in code).
 2. kJ-based workout completion is not implemented (engine explicitly marks kJ mode as stub). Evidence: workout_engine.py.
 3. Free Ride behavior is not implemented beyond a settings enum (no free-ride control logic/manual target workflow).
-4. Pause/resume ramp-in countdown user messaging is missing in UI.
+4. [DONE] ~~Pause/resume ramp-in countdown user messaging is missing in UI.~~
 5. [DONE] ~~Live workout charts are not implemented (explicit TODO placeholders). Evidence: workout_screen.py.~~
 6. [DONE] ~~Live metric computation/refresh for tiles is not implemented (tiles render, but no data-update path).~~
 7. [DONE] ~~Workout completion summary screen (“Great job!” with time/kJ/NP/TSS/avg HR) is not implemented.~~
@@ -33,3 +33,4 @@
 31. [DONE] ~~Strava sync Phase 5: Structured logging, duplicate upload prevention with local history, external_id on uploads, "already synced" alert, and Sync Now button wiring.~~
 32. [DONE] ~~Strava sync Phase 6: workout power chart image generated (matplotlib, 1080×1350 portrait) and attached to Strava activity after successful FIT upload, best-effort and non-blocking.~~
 33. Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.
+34. Cursor continues to advance on charts while paused. There also appears to be a 3-second countdown on the pause modal followed by a 3-second ramp in once returned from the modal--the correct sequence should be to do the ramp-in with the 3 second countdown on the pause modal.

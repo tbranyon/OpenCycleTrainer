@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -19,7 +18,7 @@ class DuplicateUploadError(Exception):
 
 def upload_fit_to_strava(
     fit_path: Path,
-    power_series: list[tuple[float, int]] | None = None,
+    chart_image_path: Path | None = None,
     *,
     _token_getter: Callable[[], StravaTokenBundle | None] | None = None,
     _token_saver: Callable[[StravaTokenBundle], None] | None = None,
@@ -27,13 +26,12 @@ def upload_fit_to_strava(
     _refresh_impl: Callable[[StravaTokenBundle], StravaTokenBundle] | None = None,
     _history_checker: Callable[[Path], bool] | None = None,
     _history_recorder: Callable[[Path], None] | None = None,
-    _image_generator: Callable[[list[tuple[float, int]], Path], Path] | None = None,
     _image_uploader: Callable[[str, Path, str], None] | None = None,
 ) -> None:
     """Upload a FIT file to Strava with duplicate detection, token refresh, and bounded retries.
 
-    If power_series is provided and the FIT upload returns an activity ID, a workout
-    chart image is generated and attached to the activity on a best-effort basis.
+    If chart_image_path is provided and the FIT upload returns an activity ID, the image
+    is attached to the activity on a best-effort basis.
 
     Raises:
         DuplicateUploadError: if this file has already been successfully uploaded.
@@ -47,7 +45,6 @@ def upload_fit_to_strava(
     refresh_fn = _refresh_impl if _refresh_impl is not None else _refresh_tokens
     history_checker = _history_checker if _history_checker is not None else is_already_uploaded
     history_recorder = _history_recorder if _history_recorder is not None else record_upload
-    image_generator = _image_generator if _image_generator is not None else _do_generate_image
     image_uploader = _image_uploader if _image_uploader is not None else _do_image_upload
 
     if history_checker(fit_path):
@@ -85,12 +82,11 @@ def upload_fit_to_strava(
             f"Strava upload failed after {_MAX_ATTEMPTS} attempts"
         ) from last_exc
 
-    if power_series and activity_id:
+    if chart_image_path and activity_id:
         _try_upload_chart_image(
             activity_id=activity_id,
-            power_series=power_series,
+            chart_image_path=chart_image_path,
             access_token=tokens.access_token,
-            image_generator=image_generator,
             image_uploader=image_uploader,
         )
 
@@ -98,17 +94,13 @@ def upload_fit_to_strava(
 def _try_upload_chart_image(
     *,
     activity_id: str,
-    power_series: list[tuple[float, int]],
+    chart_image_path: Path,
     access_token: str,
-    image_generator: Callable[[list[tuple[float, int]], Path], Path],
     image_uploader: Callable[[str, Path, str], None],
 ) -> None:
-    """Generate and upload a chart image to the activity, best-effort."""
+    """Upload a chart image to the activity, best-effort."""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-        image_path = image_generator(power_series, tmp_path)
-        image_uploader(activity_id, image_path, access_token)
+        image_uploader(activity_id, chart_image_path, access_token)
         _logger.info("Chart image uploaded to Strava activity %s", activity_id)
     except Exception as exc:  # noqa: BLE001
         _logger.warning("Strava chart image upload failed (non-blocking): %s", exc)
@@ -161,16 +153,6 @@ def _do_upload(fit_path: Path, access_token: str) -> str | None:
         raise
 
 
-def _do_generate_image(
-    power_series: list[tuple[float, int]],
-    output_path: Path,
-) -> Path:
-    """Generate a workout chart image using chart_export."""
-    from .chart_export import generate_workout_chart_image  # noqa: PLC0415
-
-    return generate_workout_chart_image(power_series, output_path)
-
-
 def _do_image_upload(activity_id: str, image_path: Path, access_token: str) -> None:
     """Upload a chart image to the Strava activity photo gallery."""
     import requests  # noqa: PLC0415
@@ -180,7 +162,7 @@ def _do_image_upload(activity_id: str, image_path: Path, access_token: str) -> N
         resp = requests.post(
             url,
             headers={"Authorization": f"Bearer {access_token}"},
-            files={"file": (image_path.name, f, "image/jpeg")},
+            files={"file": (image_path.name, f, "image/png")},
             data={"caption": "Workout Power Chart"},
             timeout=30,
         )

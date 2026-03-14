@@ -28,7 +28,7 @@ from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
-from .workout_screen import MODE_OPTIONS, WorkoutScreen
+from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
 from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, compute_tss
 
 RECOVERY_THRESHOLD_PERCENT = 56.0
@@ -52,7 +52,7 @@ class WorkoutSessionController(QObject):
         summary_dialog_factory: Callable[[WorkoutSummary, object], object] | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] | None = None,
-        strava_upload_fn: Callable[[Path, list[tuple[float, int]]], None] | None = None,
+        strava_upload_fn: Callable[[Path, Path | None], None] | None = None,
         tick_interval_ms: int = 250,
         parent: QObject | None = None,
     ) -> None:
@@ -118,6 +118,7 @@ class WorkoutSessionController(QObject):
         self._last_cadence_rpm: float | None = None
         self._last_speed_mps: float | None = None
 
+        self._pause_dialog: PauseDialog | None = None
         self._chart_start_monotonic: float | None = None
         self._hr_history: list[tuple[float, int]] = []
         self._skip_events: list[tuple[float, float, float]] = []
@@ -290,12 +291,18 @@ class WorkoutSessionController(QObject):
     def _pause_workout(self) -> None:
         snapshot = self._engine.pause()
         self._handle_snapshot(snapshot, now_monotonic=None)
+        self._pause_dialog = PauseDialog(self._screen)
+        self._pause_dialog.resume_confirmed.connect(self._resume_workout)
+        self._pause_dialog.show()
 
     def _resume_workout(self) -> None:
         snapshot = self._engine.resume()
         self._handle_snapshot(snapshot, now_monotonic=None)
 
     def _stop_workout(self) -> None:
+        if self._pause_dialog is not None:
+            self._pause_dialog.close()
+            self._pause_dialog = None
         snapshot = self._engine.stop()
         self._timer.stop()
         self._chart_timer.stop()
@@ -543,17 +550,18 @@ class WorkoutSessionController(QObject):
             alert_type="success",
         )
         if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
-            power_series = list(self._power_history)
-            self._enqueue_strava_upload(summary.fit_file_path, power_series)
+            chart_image_path = summary.fit_file_path.with_suffix(".png")
+            self._screen.export_chart_image(chart_image_path)
+            self._enqueue_strava_upload(summary.fit_file_path, chart_image_path)
 
-    def _enqueue_strava_upload(self, fit_path: Path, power_series: list[tuple[float, int]]) -> None:
+    def _enqueue_strava_upload(self, fit_path: Path, chart_image_path: Path | None) -> None:
         from concurrent.futures import Future  # noqa: PLC0415
         if self._upload_executor is None:
             self._upload_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="strava_upload",
             )
-        fut: Future[None] = self._upload_executor.submit(self._strava_upload_fn, fit_path, power_series)
+        fut: Future[None] = self._upload_executor.submit(self._strava_upload_fn, fit_path, chart_image_path)
         fut.add_done_callback(self._on_upload_done)
 
     def _on_upload_done(self, future: object) -> None:

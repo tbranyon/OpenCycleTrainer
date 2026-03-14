@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -23,6 +24,64 @@ from .tile_config import TILE_LABEL_BY_KEY, normalize_tile_selections
 from .workout_chart import WorkoutChartWidget
 
 MODE_OPTIONS = ("ERG", "Resistance", "Hybrid")
+
+
+class PauseDialog(QDialog):
+    """Dialog shown when the workout is paused. Provides a 3-2-1 countdown before resuming."""
+
+    resume_confirmed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Workout Paused")
+        self.setModal(False)
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(16)
+        layout.setContentsMargins(48, 32, 48, 32)
+
+        paused_label = QLabel("Workout Paused", self)
+        paused_label.setAlignment(Qt.AlignCenter)
+        font = paused_label.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 6)
+        paused_label.setFont(font)
+        layout.addWidget(paused_label)
+
+        self.countdown_label = QLabel("", self)
+        self.countdown_label.setAlignment(Qt.AlignCenter)
+        font = self.countdown_label.font()
+        font.setPointSize(font.pointSize() + 12)
+        self.countdown_label.setFont(font)
+        layout.addWidget(self.countdown_label)
+
+        self.resume_button = QPushButton("Resume", self)
+        self.resume_button.setDefault(True)
+        self.resume_button.clicked.connect(self._on_resume_clicked)
+        layout.addWidget(self.resume_button)
+
+        self._countdown_value = 0
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._tick_countdown)
+
+    def _on_resume_clicked(self) -> None:
+        """Disable the resume button and start the 3-2-1 countdown."""
+        self.resume_button.setEnabled(False)
+        self._countdown_value = 3
+        self.countdown_label.setText(str(self._countdown_value))
+        self._countdown_timer.start()
+
+    def _tick_countdown(self) -> None:
+        """Decrement the countdown; emit resume_confirmed and close when it reaches zero."""
+        self._countdown_value -= 1
+        if self._countdown_value <= 0:
+            self._countdown_timer.stop()
+            self.resume_confirmed.emit()
+            self.accept()
+        else:
+            self.countdown_label.setText(str(self._countdown_value))
 
 
 class MetricTile(QFrame):
@@ -308,6 +367,10 @@ class WorkoutScreen(QWidget):
 
     def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
         self.chart_widget.add_skip_marker(elapsed_before, elapsed_after)
+
+    def export_chart_image(self, path: Path) -> Path:
+        """Capture the workout overview chart as a PNG and save it to *path*."""
+        return self.chart_widget.export_image(path)
 
     def clear_charts(self) -> None:
         self.chart_widget.clear()

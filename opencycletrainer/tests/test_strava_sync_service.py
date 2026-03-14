@@ -249,15 +249,15 @@ def test_upload_does_not_record_history_on_failure(tmp_path: Path) -> None:
     assert recorded == []
 
 
-# ── Phase 6: chart image upload ───────────────────────────────────────────────
+# ── chart image upload ────────────────────────────────────────────────────────
 
 def test_image_upload_called_after_successful_fit_upload(tmp_path: Path) -> None:
     """Image uploader is called with the activity_id returned by the FIT upload."""
     fit_file = tmp_path / "ride.fit"
     fit_file.write_bytes(b"FIT")
     tokens = _make_tokens()
-    fake_image = tmp_path / "chart.jpg"
-    fake_image.write_bytes(b"JPEG")
+    chart_image = tmp_path / "chart.png"
+    chart_image.write_bytes(b"PNG")
     image_calls: list[tuple[str, Path, str]] = []
 
     def fake_upload(path: Path, access_token: str) -> str:  # noqa: ARG001
@@ -268,18 +268,18 @@ def test_image_upload_called_after_successful_fit_upload(tmp_path: Path) -> None
 
     upload_fit_to_strava(
         fit_file,
-        power_series=[(0.0, 200), (60.0, 250)],
+        chart_image_path=chart_image,
         _token_getter=lambda: tokens,
         _token_saver=lambda _: None,
         _upload_impl=fake_upload,
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
-        _image_generator=lambda _series, _out: fake_image,
         _image_uploader=fake_image_uploader,
     )
 
     assert len(image_calls) == 1
     assert image_calls[0][0] == "activity_123"
+    assert image_calls[0][1] == chart_image
     assert image_calls[0][2] == "acc_tok"
 
 
@@ -288,8 +288,8 @@ def test_image_upload_failure_does_not_fail_fit_upload(tmp_path: Path) -> None:
     fit_file = tmp_path / "ride.fit"
     fit_file.write_bytes(b"FIT")
     tokens = _make_tokens()
-    fake_image = tmp_path / "chart.jpg"
-    fake_image.write_bytes(b"JPEG")
+    chart_image = tmp_path / "chart.png"
+    chart_image.write_bytes(b"PNG")
 
     def always_fails_image(_activity_id: str, _image_path: Path, _access_token: str) -> None:
         raise RuntimeError("image upload failed")
@@ -297,19 +297,18 @@ def test_image_upload_failure_does_not_fail_fit_upload(tmp_path: Path) -> None:
     # Must not raise
     upload_fit_to_strava(
         fit_file,
-        power_series=[(0.0, 200)],
+        chart_image_path=chart_image,
         _token_getter=lambda: tokens,
         _token_saver=lambda _: None,
         _upload_impl=lambda _p, _t: "activity_123",
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
-        _image_generator=lambda _s, _o: fake_image,
         _image_uploader=always_fails_image,
     )
 
 
-def test_image_upload_skipped_when_no_power_series(tmp_path: Path) -> None:
-    """Image upload is not attempted when power_series is None."""
+def test_image_upload_skipped_when_no_chart_image_path(tmp_path: Path) -> None:
+    """Image upload is not attempted when chart_image_path is None."""
     fit_file = tmp_path / "ride.fit"
     fit_file.write_bytes(b"FIT")
     tokens = _make_tokens()
@@ -317,13 +316,12 @@ def test_image_upload_skipped_when_no_power_series(tmp_path: Path) -> None:
 
     upload_fit_to_strava(
         fit_file,
-        power_series=None,
+        chart_image_path=None,
         _token_getter=lambda: tokens,
         _token_saver=lambda _: None,
         _upload_impl=lambda _p, _t: "activity_123",
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
-        _image_generator=lambda _s, _o: Path("/fake/chart.jpg"),
         _image_uploader=lambda _id, _p, _t: image_calls.append(None),
     )
 
@@ -335,41 +333,19 @@ def test_image_upload_skipped_when_fit_upload_returns_no_activity_id(tmp_path: P
     fit_file = tmp_path / "ride.fit"
     fit_file.write_bytes(b"FIT")
     tokens = _make_tokens()
+    chart_image = tmp_path / "chart.png"
+    chart_image.write_bytes(b"PNG")
     image_calls: list[object] = []
 
     upload_fit_to_strava(
         fit_file,
-        power_series=[(0.0, 200)],
+        chart_image_path=chart_image,
         _token_getter=lambda: tokens,
         _token_saver=lambda _: None,
         _upload_impl=lambda _p, _t: None,  # no activity id
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
-        _image_generator=lambda _s, _o: Path("/fake/chart.jpg"),
         _image_uploader=lambda _id, _p, _t: image_calls.append(None),
     )
 
     assert image_calls == []
-
-
-def test_image_generator_failure_does_not_fail_fit_upload(tmp_path: Path) -> None:
-    """An image generation exception does not surface as a FIT upload failure."""
-    fit_file = tmp_path / "ride.fit"
-    fit_file.write_bytes(b"FIT")
-    tokens = _make_tokens()
-
-    def failing_generator(_series: object, _out: object) -> Path:
-        raise RuntimeError("matplotlib error")
-
-    # Must not raise
-    upload_fit_to_strava(
-        fit_file,
-        power_series=[(0.0, 200)],
-        _token_getter=lambda: tokens,
-        _token_saver=lambda _: None,
-        _upload_impl=lambda _p, _t: "activity_123",
-        _history_checker=_NO_HISTORY,
-        _history_recorder=_NO_RECORD,
-        _image_generator=failing_generator,
-        _image_uploader=lambda _id, _p, _t: None,
-    )

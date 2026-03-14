@@ -833,7 +833,7 @@ def test_finalize_recorder_enqueues_strava_upload_when_enabled():
     app = _get_or_create_qapp()
     uploaded: list[Path] = []
 
-    def fake_upload(path: Path, power_series: list) -> None:  # noqa: ARG001
+    def fake_upload(path: Path, chart_image_path: Path | None) -> None:  # noqa: ARG001
         uploaded.append(path)
 
     controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
@@ -847,23 +847,22 @@ def test_finalize_recorder_enqueues_strava_upload_when_enabled():
     controller.shutdown()
 
 
-def test_finalize_recorder_passes_power_series_to_upload_fn():
-    """Controller passes a captured power series snapshot to the upload function."""
+def test_finalize_recorder_passes_chart_image_path_to_upload_fn():
+    """Controller passes a PNG chart image path alongside the FIT path to the upload function."""
     app = _get_or_create_qapp()
-    received: list[list] = []
+    received: list[Path | None] = []
 
-    def fake_upload(_path: Path, power_series: list) -> None:
-        received.append(power_series)
+    def fake_upload(_path: Path, chart_image_path: Path | None) -> None:
+        received.append(chart_image_path)
 
     controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
-    controller.receive_power_watts(200)
-    controller.receive_power_watts(250)
 
     screen.end_button.click()
     app.processEvents()
 
     assert _wait_until(app, lambda: len(received) == 1)
-    assert isinstance(received[0], list)
+    assert received[0] is not None
+    assert received[0].suffix == ".png"
 
     controller.shutdown()
 
@@ -874,7 +873,7 @@ def test_finalize_recorder_skips_strava_upload_when_disabled():
 
     controller, screen = _make_controller_with_upload(
         app,
-        lambda p, _s: uploaded.append(p),
+        lambda p, _c: uploaded.append(p),
         strava_auto_sync_enabled=False,
     )
 
@@ -914,7 +913,7 @@ def test_finalize_recorder_no_error_when_upload_fn_is_none():
 def test_strava_upload_success_shows_success_alert():
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path, _series: list) -> None:
+    def fake_upload(_path: Path, _chart_image_path: Path | None) -> None:
         pass  # success
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -930,7 +929,7 @@ def test_strava_upload_success_shows_success_alert():
 def test_strava_upload_failure_shows_error_alert():
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path, _series: list) -> None:
+    def fake_upload(_path: Path, _chart_image_path: Path | None) -> None:
         raise RuntimeError("Strava upload failed after 3 attempts")
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -947,7 +946,7 @@ def test_strava_duplicate_upload_shows_already_synced_alert():
     from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path, _series: list) -> None:
+    def fake_upload(_path: Path, _chart_image_path: Path | None) -> None:
         raise DuplicateUploadError("already uploaded")
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -956,5 +955,55 @@ def test_strava_duplicate_upload_shows_already_synced_alert():
     app.processEvents()
 
     assert _wait_until(app, lambda: "already synced" in screen.alert_label.text())
+
+    controller.shutdown()
+
+
+def _make_running_controller(app):
+    """Helper: returns (controller, screen) with a workout loaded and started."""
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    return controller, screen
+
+
+def test_pause_shows_pause_dialog():
+    app = _get_or_create_qapp()
+    controller, screen = _make_running_controller(app)
+
+    screen.pause_button.click()
+    app.processEvents()
+
+    assert controller._pause_dialog is not None
+    assert controller._pause_dialog.isVisible()
+
+    controller.shutdown()
+
+
+def test_pause_dialog_resume_confirmed_resumes_workout():
+    app = _get_or_create_qapp()
+    controller, screen = _make_running_controller(app)
+
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller._pause_dialog.resume_confirmed.emit()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
 
     controller.shutdown()
