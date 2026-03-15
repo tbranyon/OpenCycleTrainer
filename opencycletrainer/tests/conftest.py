@@ -7,11 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 import pytest
-from PySide6.QtWidgets import QApplication
 
 
 @pytest.fixture(scope="session")
 def qapp():
+    from PySide6.QtWidgets import QApplication  # noqa: PLC0415
     app = QApplication.instance()
     if app is None:
         app = QApplication([])

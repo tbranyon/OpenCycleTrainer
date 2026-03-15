@@ -79,7 +79,9 @@ def _build_sidebar(
         # Theme toggle
         theme_icon = "light_mode" if is_dark else "dark_mode"
         theme_tip = "Switch to light mode" if is_dark else "Switch to dark mode"
-        with ui.element("div").classes("nav-item") as toggle_btn:
+        with ui.element("div").classes("nav-item").props(
+            f'role="button" aria-label="{theme_tip}" tabindex="0"'
+        ) as toggle_btn:
             ui.icon(theme_icon).classes("color-secondary")
             ui.tooltip(theme_tip)
         toggle_btn.on("click", lambda: _toggle_theme(dark_mode))
@@ -88,7 +90,9 @@ def _build_sidebar(
 def _nav_item(route: str, icon_name: str, label: str, *, active: bool) -> None:
     """Render a single sidebar navigation item."""
     cls = "nav-item active" if active else "nav-item"
-    with ui.element("div").classes(cls) as item:
+    with ui.element("div").classes(cls).props(
+        f'role="link" aria-label="{label}" tabindex="0"'
+    ) as item:
         ui.icon(icon_name)
         ui.tooltip(label)
     item.on("click", lambda r=route: ui.navigate.to(r))

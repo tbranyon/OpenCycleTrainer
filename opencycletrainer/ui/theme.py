@@ -674,6 +674,44 @@ html, body {
 .btn-lg.q-btn { min-height: var(--btn-h-lg) !important; }
 .btn-sm.q-btn { min-height: var(--btn-h-sm) !important; }
 
+/* ── Post-workout summary dialog ────────────────────────────────────────── */
+.summary-card {
+  min-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8);
+}
+
+.summary-heading {
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.strava-section {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: center;
+}
+
+.strava-status {
+  font-size: 0.875rem;
+}
+
+.summary-actions {
+  display: flex;
+  justify-content: center;
+}
+
 /* ── Pause overlay ──────────────────────────────────────────────────────── */
 .pause-overlay {
   position: fixed;

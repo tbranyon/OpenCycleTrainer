@@ -69,7 +69,11 @@ class WorkoutSessionController:
             if ftms_transport_factory is not None
             else self._default_ftms_transport_factory
         )
-        self._summary_dialog_factory = summary_dialog_factory or show_workout_summary
+        # None means use the default show_workout_summary (supports strava_fn kwarg).
+        # A non-None factory is an injected override (e.g. from tests) that accepts
+        # only (summary, on_done); strava support is skipped for those.
+        self._custom_summary_dialog_factory = summary_dialog_factory
+        self._last_fit_path: Path | None = None
         self._opentrueup: OpenTrueUpController | None = (
             opentrueup if opentrueup is not None else self._make_opentrueup(settings)
         )
@@ -551,6 +555,7 @@ class WorkoutSessionController:
         except RuntimeError as exc:
             _logger.warning("Recorder stop failed: %s", exc)
             return
+        self._last_fit_path = summary.fit_file_path
         self._screen.show_alert(
             f"Workout saved: {summary.fit_file_path.name}",
             alert_type="success",
@@ -603,7 +608,18 @@ class WorkoutSessionController:
             tss=tss,
             avg_hr=avg_hr,
         )
-        self._summary_dialog_factory(summary, self._set_no_workout_state)
+        if self._custom_summary_dialog_factory is not None:
+            self._custom_summary_dialog_factory(summary, self._set_no_workout_state)
+        else:
+            strava_fn = self._build_strava_dialog_fn()
+            show_workout_summary(summary, self._set_no_workout_state, strava_fn)
+
+    def _build_strava_dialog_fn(self) -> Callable[[], None] | None:
+        """Return a zero-arg callable that uploads the last saved FIT file, or None."""
+        if self._strava_upload_fn is None or self._last_fit_path is None:
+            return None
+        fit_path = self._last_fit_path
+        return lambda: self._enqueue_strava_upload(fit_path, None)
 
     def receive_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
         """Feed a live trainer power reading (W) into the metric computation pipeline."""
