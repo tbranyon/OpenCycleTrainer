@@ -32,7 +32,7 @@ from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
 from .workout_screen_ng import WorkoutScreen
-from .workout_summary_dialog import WorkoutSummary, compute_tss
+from ..core.workout_summary import WorkoutSummary, compute_tss
 from .workout_summary_dialog_ng import show_workout_summary
 
 _logger = logging.getLogger(__name__)

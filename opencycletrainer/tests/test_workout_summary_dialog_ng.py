@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from opencycletrainer.ui.workout_summary_dialog import WorkoutSummary
+from opencycletrainer.core.workout_summary import WorkoutSummary
 from opencycletrainer.ui.workout_summary_dialog_ng import fmt_time
 
 

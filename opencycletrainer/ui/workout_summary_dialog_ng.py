@@ -7,7 +7,7 @@ from collections.abc import Callable
 from nicegui import ui
 
 from .components import MetricTile
-from .workout_summary_dialog import WorkoutSummary
+from ..core.workout_summary import WorkoutSummary
 
 
 def fmt_time(elapsed: float) -> str:

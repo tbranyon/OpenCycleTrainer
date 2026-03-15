@@ -14,7 +14,6 @@ dependencies = [
   "keyring>=25.0",
   "nicegui>=2.0",
   "pywebview>=5.0",
-  "matplotlib>=3.8",
   "stravalib>=2.0",
 ]
 
