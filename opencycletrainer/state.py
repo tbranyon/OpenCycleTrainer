@@ -31,6 +31,13 @@ def save(updated: AppSettings) -> None:
     save_settings(updated, _settings_path)
 
 
+def get_settings_path() -> Path:
+    """Return the settings file path. Raises if not initialised."""
+    if _settings_path is None:
+        raise RuntimeError("state.init() has not been called")
+    return _settings_path
+
+
 def update(**kwargs) -> AppSettings:
     """Convenience: apply field overrides, persist, and return the new settings."""
     updated = replace(get(), **kwargs)

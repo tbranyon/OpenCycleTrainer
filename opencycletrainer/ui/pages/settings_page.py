@@ -1,19 +1,30 @@
-"""Settings page — Phase 7 placeholder."""
+"""Settings page — Phase 7: full application settings screen."""
 from __future__ import annotations
 
 from nicegui import ui
 
 from .. import shell
-from ..components import screen_header
+from ..settings_screen_ng import SettingsScreenNg
+from ... import state, singletons
+from ...integrations.strava.token_store import get_tokens
 
 
 @ui.page("/settings")
 def settings_page() -> None:
-    """Settings screen (stub — full implementation in Phase 7)."""
+    """Application settings: general options, metric tiles, Strava, and display."""
     content = shell.build("/settings")
+    settings = state.get()
+
+    strava_connected = get_tokens() is not None
+
+    def _on_save(updated_settings) -> None:
+        state.save(updated_settings)
+
     with content:
-        screen_header("Settings")
-        with ui.element("div").classes("placeholder-page"):
-            ui.icon("tune").classes("placeholder-icon")
-            ui.label("Settings").classes("placeholder-label")
-            ui.label("Full implementation coming in Phase 7").classes("placeholder-sub")
+        SettingsScreenNg(
+            settings=settings,
+            on_save=_on_save,
+            settings_path=state.get_settings_path(),
+            strava_connected=strava_connected,
+            strava_sync_fn=singletons.get_strava_upload_fn(),
+        )

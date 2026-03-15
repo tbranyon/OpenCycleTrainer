@@ -1,19 +1,25 @@
-"""Library page — Phase 5 placeholder."""
+"""Library page — Phase 5: full workout library screen."""
 from __future__ import annotations
 
-from nicegui import ui
+from pathlib import Path
+
+from nicegui import app, ui
 
 from .. import shell
-from ..components import screen_header
+from ..library_screen_ng import LibraryScreen
+from ... import singletons
 
 
 @ui.page("/library")
 def library_page() -> None:
-    """Workout library screen (stub — full implementation in Phase 5)."""
+    """Workout library screen with search, sort, and load capabilities."""
     content = shell.build("/library")
+    library = singletons.get_library()
+
+    def _on_load(path: Path) -> None:
+        """Queue the selected workout and navigate to the workout screen."""
+        app.storage.user["pending_workout_path"] = str(path)
+        ui.navigate.to("/workout")
+
     with content:
-        screen_header("Library")
-        with ui.element("div").classes("placeholder-page"):
-            ui.icon("menu_book").classes("placeholder-icon")
-            ui.label("Workout Library").classes("placeholder-label")
-            ui.label("Full implementation coming in Phase 5").classes("placeholder-sub")
+        LibraryScreen(library=library, on_load_workout=_on_load)
