@@ -29,7 +29,21 @@
       "Bash(python -m pytest opencycletrainer/tests/test_sensor_decoders.py::test_csc_crank_counter_rollover_produces_correct_cadence opencycletrainer/tests/test_sensor_decoders.py::test_csc_cadence_out_of_range_is_rejected opencycletrainer/tests/test_sensor_decoders.py::test_cps_cadence_out_of_range_is_rejected opencycletrainer/tests/test_sensor_decoders.py::test_ftms_cadence_out_of_range_is_rejected opencycletrainer/tests/test_recorder.py::test_recorder_stop_completes_gracefully_when_fit_export_fails -v)",
       "Bash(python -m pytest opencycletrainer/tests/test_opentrueup.py::test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset -v)",
       "Bash(python -m pytest opencycletrainer/tests/test_ftms_control.py::test_bridge_updates_erg_target_continuously_during_ramp_interval opencycletrainer/tests/test_ftms_control.py::test_bridge_resistance_ramp_updates_continuously -v)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python3 -c \"import gi; print\\(gi.__file__\\); print\\(dir\\(gi\\)\\)\")",
+      "Bash(python3 -c \"import sys; print\\(sys.executable\\); print\\(sys.path\\)\")",
+      "Bash(python3 -c \"import gi; print\\(gi.__path__\\)\")",
+      "Read(//usr/lib/python3.13/site-packages/**)",
+      "Read(//app/lib/python3.13/site-packages/gi/**)",
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0, ''/usr/lib/python3.13/site-packages''\\); import gi; print\\(gi.__file__\\); print\\(hasattr\\(gi, ''require_version''\\)\\)\")",
+      "Read(//app/lib/**)",
+      "Read(//usr/lib/**)",
+      "Bash(python3 -m pip show PyGObject)",
+      "Bash(python3 -c \"import sys; sys.path = [p for p in sys.path if ''''/app/'''' not in p]; import gi; print\\(gi.__file__\\); print\\(hasattr\\(gi, ''''require_version''''\\)\\)\")",
+      "Bash(rpm -q python3-gobject)",
+      "Bash(find /usr/lib/python3* -name _gi*)",
+      "Bash(dpkg -l python3-gi)",
+      "Bash(apt list:*)"
     ]
   }
 }

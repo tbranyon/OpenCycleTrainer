@@ -67,6 +67,7 @@ class WorkoutScreen:
             self._build_controls()
         self._build_trainer_footer()
         self._build_pause_overlay()
+        self.set_session_state("idle")
 
     def _build_header(self) -> None:
         """Screen header: toggles between workout name and load-file buttons."""
@@ -148,8 +149,6 @@ class WorkoutScreen:
         with ui.element("div").classes("alert-area"):
             self._alert = AlertBanner(timeout_s=5.0)
 
-        # Initial idle state: only Start is active
-        self.set_session_state("idle")
 
     def _build_trainer_footer(self) -> None:
         """Mode selector + resistance + OpenTrueUp footer (hidden until trainer connected)."""
