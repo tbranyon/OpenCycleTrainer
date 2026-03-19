@@ -104,9 +104,9 @@ def make_chart_options(y_max: float, x_max: float) -> dict:
             'min':  0,
             'max':  x_max,
             'axisLabel': {
-                'color':     _C_LABEL,
-                'formatter': _TIME_FMT,
-                'fontSize':  11,
+                'color':      _C_LABEL,
+                ':formatter': _TIME_FMT,
+                'fontSize':   11,
             },
             'splitLine': {'show': False},
             'axisLine': {'lineStyle': {'color': _C_AXIS}},
