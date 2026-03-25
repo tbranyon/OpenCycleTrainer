@@ -11,7 +11,7 @@ from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.devices.types import CPS_MEASUREMENT_CHARACTERISTIC_UUID
 from opencycletrainer.integrations.strava.sync_service import upload_fit_to_strava
 from opencycletrainer.integrations.strava.token_store import get_tokens
-from opencycletrainer.storage.settings import AppSettings
+from opencycletrainer.storage.settings import AppSettings, save_settings
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
 from .workout_controller import WorkoutSessionController
@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OpenCycleTrainer")
         self.resize(1024, 720)
+        self._settings_path = settings_path
 
         self.tabs = QTabWidget(self)
         self.workout_screen = WorkoutScreen(
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.settings_screen.settings_applied.connect(self._on_settings_applied)
+        self.workout_screen.tile_order_changed.connect(self._on_tile_order_changed)
         self.devices_screen = DevicesScreen(parent=self)
         self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
         self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
@@ -95,6 +97,12 @@ class MainWindow(QMainWindow):
             return
         self.workout_screen.apply_settings(settings)
         self.workout_controller.apply_settings(settings)
+
+    def _on_tile_order_changed(self, new_order: object) -> None:
+        """Persist the drag-reordered tile list to the settings file."""
+        if not isinstance(new_order, list):
+            return
+        save_settings(self.workout_screen._settings, self._settings_path)
 
     def _navigate_to_library(self) -> None:
         self.tabs.setCurrentIndex(self._library_tab_index)

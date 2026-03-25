@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -87,6 +89,12 @@ class PauseDialog(QDialog):
 
 
 class MetricTile(QFrame):
+    """A single metric display tile showing a title and live value. Supports drag-to-reorder."""
+
+    drag_requested = Signal(str)  # emits tile key when drag threshold is crossed
+
+    _DRAG_THRESHOLD = 6
+
     def __init__(
         self,
         *,
@@ -96,6 +104,8 @@ class MetricTile(QFrame):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.key = key
+        self._drag_start_pos: QPoint | None = None
         self.setFrameShape(QFrame.StyledPanel)
 
         layout = QVBoxLayout(self)
@@ -115,6 +125,23 @@ class MetricTile(QFrame):
         self.value_label.setFont(font)
         layout.addWidget(self.value_label)
 
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_start_pos is not None and event.buttons() & Qt.LeftButton:
+            delta = event.position().toPoint() - self._drag_start_pos
+            if delta.manhattanLength() >= self._DRAG_THRESHOLD:
+                self._drag_start_pos = None
+                self.drag_requested.emit(self.key)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
 
 class WorkoutScreen(QWidget):
     toggle_mode_requested = Signal(str)
@@ -124,6 +151,7 @@ class WorkoutScreen(QWidget):
     pause_resume_requested = Signal()
     load_workout_requested = Signal()
     load_from_library_requested = Signal()
+    tile_order_changed = Signal(list)  # emits new list[str] of tile keys after drag reorder
 
     def __init__(
         self,
@@ -137,6 +165,9 @@ class WorkoutScreen(QWidget):
         self._selected_tiles = normalize_tile_selections(self._settings.tile_selections)
         self._kj_mode_active = self._settings.default_workout_behavior == "kj_mode"
         self._paused_for_resume_hotkey = False
+        self._drag_source_key: str | None = None
+        self._drag_ghost: QLabel | None = None
+        self._drag_target_key: str | None = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
@@ -457,8 +488,132 @@ class WorkoutScreen(QWidget):
             row = index // 4
             column = index % 4
             tile = MetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
+            tile.drag_requested.connect(self._on_drag_started)
             self._tile_by_key[key] = tile
             self.tile_display_layout.addWidget(tile, row, column)
+
+    # --- Tile drag-to-reorder ---
+
+    _DRAG_TARGET_STYLE = (
+        "QFrame { border: 2px dashed #5b9bd5; background-color: rgba(91, 155, 213, 0.1); }"
+    )
+    _DRAG_FLASH_STYLE = "QFrame { background-color: rgba(91, 155, 213, 0.3); }"
+    _DRAG_FLASH_MS = 300
+
+    def reorder_tiles(self, from_key: str, to_key: str) -> None:
+        """Swap two tiles by key and emit tile_order_changed. No-op if keys are identical or not both present."""
+        if from_key == to_key:
+            return
+        if from_key not in self._selected_tiles or to_key not in self._selected_tiles:
+            return
+        src_idx = self._selected_tiles.index(from_key)
+        tgt_idx = self._selected_tiles.index(to_key)
+        self._selected_tiles[src_idx], self._selected_tiles[tgt_idx] = (
+            self._selected_tiles[tgt_idx],
+            self._selected_tiles[src_idx],
+        )
+        self._settings.tile_selections = list(self._selected_tiles)
+        self._render_selected_tiles()
+        self._flash_tile(from_key)
+        self.tile_order_changed.emit(list(self._selected_tiles))
+
+    def _on_drag_started(self, key: str) -> None:
+        """Begin a tile drag: create a ghost overlay, dim the source tile, and grab mouse input."""
+        if key not in self._tile_by_key:
+            return
+        self._drag_source_key = key
+        source_tile = self._tile_by_key[key]
+
+        pixmap = source_tile.grab()
+        self._drag_ghost = QLabel(self)
+        self._drag_ghost.setPixmap(pixmap)
+        self._drag_ghost.resize(source_tile.size())
+        self._drag_ghost.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        effect = QGraphicsOpacityEffect(self._drag_ghost)
+        effect.setOpacity(0.75)
+        self._drag_ghost.setGraphicsEffect(effect)
+
+        cursor_local = self.mapFromGlobal(QCursor.pos())
+        self._drag_ghost.move(
+            cursor_local - QPoint(self._drag_ghost.width() // 2, self._drag_ghost.height() // 2)
+        )
+        self._drag_ghost.raise_()
+        self._drag_ghost.show()
+
+        dim = QGraphicsOpacityEffect(source_tile)
+        dim.setOpacity(0.35)
+        source_tile.setGraphicsEffect(dim)
+
+        self.grabMouse()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_ghost is not None:
+            cursor_pos = event.position().toPoint()
+            self._drag_ghost.move(
+                cursor_pos - QPoint(self._drag_ghost.width() // 2, self._drag_ghost.height() // 2)
+            )
+            self._update_drag_target(cursor_pos)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._drag_ghost is not None and event.button() == Qt.LeftButton:
+            self._complete_drag(self._drag_target_key)
+        super().mouseReleaseEvent(event)
+
+    def _update_drag_target(self, cursor_pos: QPoint) -> None:
+        """Hit-test cursor against configurable tiles and update the drop-target highlight."""
+        child = self.childAt(cursor_pos)
+        new_target: str | None = None
+        widget = child
+        while widget is not None and not isinstance(widget, MetricTile):
+            widget = widget.parent() if hasattr(widget, "parent") else None
+        if isinstance(widget, MetricTile) and widget.key != self._drag_source_key:
+            new_target = widget.key
+
+        if new_target == self._drag_target_key:
+            return
+
+        if self._drag_target_key:
+            old_tile = self._tile_by_key.get(self._drag_target_key)
+            if old_tile:
+                old_tile.setStyleSheet("")
+        self._drag_target_key = new_target
+        if new_target:
+            new_tile = self._tile_by_key.get(new_target)
+            if new_tile:
+                new_tile.setStyleSheet(self._DRAG_TARGET_STYLE)
+
+    def _complete_drag(self, target_key: str | None) -> None:
+        """Finish the drag: clean up ghost, swap tiles if a valid target was found."""
+        source_key = self._drag_source_key
+
+        source_tile = self._tile_by_key.get(source_key) if source_key else None
+        if source_tile:
+            source_tile.setGraphicsEffect(None)
+
+        if self._drag_target_key:
+            target_tile = self._tile_by_key.get(self._drag_target_key)
+            if target_tile:
+                target_tile.setStyleSheet("")
+
+        if self._drag_ghost is not None:
+            self._drag_ghost.deleteLater()
+            self._drag_ghost = None
+
+        self._drag_source_key = None
+        self._drag_target_key = None
+        self.releaseMouse()
+
+        if source_key and target_key:
+            self.reorder_tiles(source_key, target_key)
+
+    def _flash_tile(self, key: str) -> None:
+        """Briefly highlight a tile to confirm a drop."""
+        tile = self._tile_by_key.get(key)
+        if tile is None:
+            return
+        tile.setStyleSheet(self._DRAG_FLASH_STYLE)
+        QTimer.singleShot(self._DRAG_FLASH_MS, lambda: tile.setStyleSheet("") if tile else None)
 
     def _set_paused(self, paused: bool) -> None:
         self._paused_for_resume_hotkey = bool(paused)

@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 from opencycletrainer.core.workout_library import WorkoutLibrary
+from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
 from opencycletrainer.ui.main_window import MainWindow
 from opencycletrainer.ui.workout_library_screen import WorkoutLibraryScreen
 
@@ -111,5 +112,32 @@ def test_load_workout_public_method_loads_without_dialog(qapp):
         window.workout_controller.load_workout(_STEP_MRC)
         assert window.workout_controller.last_snapshot is not None
         assert window.workout_screen.title_label.text() == "Step Session"
+    finally:
+        _close_window(window, qapp)
+
+
+def test_tile_drag_reorder_persists_to_settings_file(qapp, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    initial = AppSettings(tile_selections=["heart_rate", "cadence_rpm", "workout_avg_power"])
+    save_settings(initial, settings_path)
+
+    window = MainWindow(settings=initial, settings_path=settings_path)
+    try:
+        window.workout_screen.reorder_tiles("heart_rate", "workout_avg_power")
+        saved = load_settings(settings_path)
+        assert saved.tile_selections == ["workout_avg_power", "cadence_rpm", "heart_rate"]
+    finally:
+        _close_window(window, qapp)
+
+
+def test_tile_drag_reorder_updates_workout_screen_settings(qapp, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    initial = AppSettings(tile_selections=["heart_rate", "cadence_rpm"])
+    save_settings(initial, settings_path)
+
+    window = MainWindow(settings=initial, settings_path=settings_path)
+    try:
+        window.workout_screen.reorder_tiles("heart_rate", "cadence_rpm")
+        assert window.workout_screen._settings.tile_selections == ["cadence_rpm", "heart_rate"]
     finally:
         _close_window(window, qapp)
