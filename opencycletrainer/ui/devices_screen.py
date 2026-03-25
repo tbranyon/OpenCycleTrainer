@@ -6,7 +6,6 @@ from typing import Any
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
-    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -27,7 +26,6 @@ from opencycletrainer.devices.decoders import (
     decode_indoor_bike_data,
 )
 from opencycletrainer.devices.device_manager import DeviceManager
-from opencycletrainer.devices.mock_backend import MockDeviceBackend
 from opencycletrainer.devices.types import (
     CPS_MEASUREMENT_CHARACTERISTIC_UUID,
     CSC_MEASUREMENT_CHARACTERISTIC_UUID,
@@ -55,6 +53,7 @@ class DevicesScreen(QWidget):
     action_failed = Signal(str)
     sensor_sample_received = Signal(object)  # SensorSample
     trainer_device_changed = Signal(object, object)  # (backend, trainer_device_id | None)
+    opentrueup_availability_changed = Signal(bool)  # True when PM + trainer both connected
     _reading_received = Signal(str, str)  # (device_id, reading_text)
 
     def __init__(
@@ -63,7 +62,7 @@ class DevicesScreen(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._backend = backend if backend is not None else MockDeviceBackend()
+        self._backend = backend if backend is not None else BleakDeviceBackend(paired_device_store=PairedDeviceStore())
 
         self._calibrating: set[str] = set()
         self._calibration_offsets: dict[str, int | None] = {}
@@ -72,6 +71,7 @@ class DevicesScreen(QWidget):
         self._subscribed_devices: set[str] = set()
         self._decoders: dict[str, CyclingPowerDecoder | CyclingSpeedCadenceDecoder] = {}
         self._last_trainer_selection: tuple[int, str | None] | None = None
+        self._last_opentrueup_available: bool | None = None
 
         self.action_succeeded.connect(self._handle_action_succeeded)
         self.action_failed.connect(self._handle_action_failed)
@@ -83,15 +83,6 @@ class DevicesScreen(QWidget):
         layout.addWidget(title)
 
         controls_layout = QHBoxLayout()
-        controls_layout.addWidget(QLabel("Backend:"))
-        self.backend_selector = QComboBox(self)
-        self.backend_selector.addItems(["Mock", "Bleak"])
-        if isinstance(self._backend, BleakDeviceBackend):
-            self.backend_selector.setCurrentText("Bleak")
-        else:
-            self.backend_selector.setCurrentText("Mock")
-        controls_layout.addWidget(self.backend_selector)
-
         self.scan_button = QPushButton("Scan", self)
         self.scan_button.clicked.connect(self._scan_devices)
         controls_layout.addWidget(self.scan_button)
@@ -114,7 +105,6 @@ class DevicesScreen(QWidget):
         available_layout.addWidget(self.available_table)
         layout.addWidget(available_group)
 
-        self.backend_selector.currentTextChanged.connect(self._switch_backend)
         self.refresh()
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
@@ -137,6 +127,13 @@ class DevicesScreen(QWidget):
                 return device.device_id
         return None
 
+    def has_opentrueup_devices(self) -> bool:
+        """Return True when both a power meter and a trainer are connected."""
+        paired = self._backend.get_paired_devices()
+        has_trainer = any(d.device_type is DeviceType.TRAINER and d.connected for d in paired)
+        has_power_meter = any(d.device_type is DeviceType.POWER_METER and d.connected for d in paired)
+        return has_trainer and has_power_meter
+
     def _create_table(self) -> QTableWidget:
         table = QTableWidget(0, _NUM_COLS, self)
         table.setHorizontalHeaderLabels(
@@ -149,28 +146,6 @@ class DevicesScreen(QWidget):
         header = table.horizontalHeader()
         header.setStretchLastSection(True)
         return table
-
-    def _switch_backend(self, backend_name: str) -> None:
-        if backend_name == "Mock" and isinstance(self._backend, MockDeviceBackend):
-            return
-        if backend_name == "Bleak" and isinstance(self._backend, BleakDeviceBackend):
-            return
-
-        self._backend.shutdown()
-        if backend_name == "Bleak":
-            self._backend = BleakDeviceBackend(paired_device_store=PairedDeviceStore())
-        else:
-            self._backend = MockDeviceBackend()
-
-        self._calibrating.clear()
-        self._calibration_offsets.clear()
-        self._current_readings.clear()
-        self._reading_items.clear()
-        self._subscribed_devices.clear()
-        self._decoders.clear()
-
-        self.status_label.setText(f"Using {backend_name} backend.")
-        self.refresh()
 
     def _scan_devices(self) -> None:
         self.status_label.setText("Scanning for BLE devices...")
@@ -463,13 +438,19 @@ class DevicesScreen(QWidget):
 
     def _emit_trainer_device_change(self, paired_devices: list[DeviceInfo]) -> None:
         trainer_id: str | None = None
+        has_power_meter = False
         for device in paired_devices:
             if device.device_type is DeviceType.TRAINER and device.connected:
                 trainer_id = device.device_id
-                break
+            if device.device_type is DeviceType.POWER_METER and device.connected:
+                has_power_meter = True
 
         selection = (id(self._backend), trainer_id)
-        if selection == self._last_trainer_selection:
-            return
-        self._last_trainer_selection = selection
-        self.trainer_device_changed.emit(self._backend, trainer_id)
+        if selection != self._last_trainer_selection:
+            self._last_trainer_selection = selection
+            self.trainer_device_changed.emit(self._backend, trainer_id)
+
+        opentrueup_available = trainer_id is not None and has_power_meter
+        if opentrueup_available != self._last_opentrueup_available:
+            self._last_opentrueup_available = opentrueup_available
+            self.opentrueup_availability_changed.emit(opentrueup_available)

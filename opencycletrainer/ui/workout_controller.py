@@ -23,6 +23,7 @@ from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.recorder import RecorderSample, WorkoutRecorder
+from opencycletrainer.core.sensors import CadenceSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore
@@ -32,6 +33,7 @@ from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
 from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, compute_tss
 
 RECOVERY_THRESHOLD_PERCENT = 56.0
+_CADENCE_SOURCE_STALENESS_SECONDS = 3.0
 
 
 class WorkoutSessionController(QObject):
@@ -117,6 +119,7 @@ class WorkoutSessionController(QObject):
         self._last_hr_bpm: int | None = None
         self._last_cadence_rpm: float | None = None
         self._last_speed_mps: float | None = None
+        self._cadence_source_last_times: dict[CadenceSource, float] = {}
 
         self._pause_dialog: PauseDialog | None = None
         self._chart_start_monotonic: float | None = None
@@ -670,12 +673,35 @@ class WorkoutSessionController(QObject):
         if self._recorder_active and self._chart_start_monotonic is not None:
             self._hr_history.append((float(self._monotonic_clock()), int(bpm)))
 
-    def receive_cadence_rpm(self, rpm: float | None) -> None:
-        """Feed a live cadence reading (rpm) for inclusion in recorder samples."""
+    def receive_cadence_rpm(
+        self, rpm: float | None, source: CadenceSource = CadenceSource.TRAINER
+    ) -> None:
+        """Feed a live cadence reading (rpm), respecting source priority.
+
+        Sources are accepted in priority order: dedicated sensor > power meter > trainer.
+        A lower-priority source is only used when no higher-priority source has been heard
+        from within the last _CADENCE_SOURCE_STALENESS_SECONDS seconds.
+        """
+        now = float(self._monotonic_clock())
+        if rpm is None:
+            self._cadence_source_last_times.pop(source, None)
+            active = self._active_cadence_source(now)
+            if active is None or active == source:
+                self._last_cadence_rpm = None
+            return
+        self._cadence_source_last_times[source] = now
+        if self._active_cadence_source(now) != source:
+            return
         self._last_cadence_rpm = rpm
-        if rpm is not None:
-            now = float(self._monotonic_clock())
-            self._cadence_history.append((now, rpm))
+        self._cadence_history.append((now, rpm))
+
+    def _active_cadence_source(self, now: float) -> CadenceSource | None:
+        """Return the highest-priority cadence source with a non-stale reading."""
+        cutoff = now - _CADENCE_SOURCE_STALENESS_SECONDS
+        for source in sorted(self._cadence_source_last_times, key=lambda s: s.value):
+            if self._cadence_source_last_times[source] >= cutoff:
+                return source
+        return None
 
     def receive_speed_mps(self, mps: float | None) -> None:
         """Feed a live speed reading (m/s) for inclusion in recorder samples."""

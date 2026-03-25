@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 
 from opencycletrainer.devices.decoders import (
     CyclingPowerDecoder,
@@ -17,6 +18,13 @@ from opencycletrainer.devices.types import (
     HRS_MEASUREMENT_CHARACTERISTIC_UUID,
     normalize_uuid,
 )
+
+
+class CadenceSource(Enum):
+    """Priority-ordered cadence data sources (lower value = higher priority)."""
+    DEDICATED = 1   # dedicated cadence sensor (CSC)
+    POWER_METER = 2  # on-bike power meter (CPS)
+    TRAINER = 3      # smart trainer (FTMS)
 
 
 @dataclass(frozen=True)

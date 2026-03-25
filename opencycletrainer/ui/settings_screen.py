@@ -3,16 +3,20 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
-    QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -30,15 +34,59 @@ from opencycletrainer.storage.paths import get_data_dir
 from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
 from .tile_config import MAX_CONFIGURABLE_TILES, TILE_OPTIONS, normalize_tile_selections
 
-DISPLAY_UNITS_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("metric", "Metric"),
-    ("imperial", "Imperial"),
+OPENTRUEUP_TOOLTIP = (
+    "OpenTrueUp computes the offset between your on-bike power meter and your trainer "
+    "and adjusts the ERG target accordingly so that ERG holds the desired power target "
+    "according to your on-bike PM"
 )
-DEFAULT_BEHAVIOR_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("workout_mode", "Workout Mode"),
-    ("free_ride_mode", "Free Ride Mode"),
-    ("kj_mode", "kJ Mode"),
-)
+
+
+class _AuthUrlDialog(QDialog):
+    """Displays the Strava authorization URL so the user can open or copy it."""
+
+    def __init__(self, url: str, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Authorize Strava")
+        self.setMinimumWidth(560)
+        self._url = url
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Open this URL in a browser to authorize OpenCycleTrainer with Strava:"))
+
+        url_field = QLineEdit(url, self)
+        url_field.setReadOnly(True)
+        layout.addWidget(url_field)
+
+        btn_row = QHBoxLayout()
+
+        open_btn = QPushButton("Open in Browser", self)
+        open_btn.clicked.connect(self._open_in_browser)
+        btn_row.addWidget(open_btn)
+
+        self._copy_btn = QPushButton("Copy to Clipboard", self)
+        self._copy_btn.clicked.connect(self._copy_url)
+        btn_row.addWidget(self._copy_btn)
+
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Cancel", self)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        layout.addLayout(btn_row)
+
+    def _open_in_browser(self) -> None:
+        if not QDesktopServices.openUrl(QUrl(self._url)):
+            QMessageBox.warning(
+                self,
+                "Could Not Open Browser",
+                "No browser could be launched. Please copy the URL and open it manually.",
+            )
+
+    def _copy_url(self) -> None:
+        QApplication.clipboard().setText(self._url)
+        self._copy_btn.setText("Copied!")
+        QTimer.singleShot(2000, lambda: self._copy_btn.setText("Copy to Clipboard"))
 
 
 class _OAuthWorker(QObject):
@@ -46,6 +94,7 @@ class _OAuthWorker(QObject):
 
     succeeded = Signal(object)  # OAuthResult
     failed = Signal(str)
+    url_ready = Signal(str)  # authorization URL, for display if browser does not open
 
     def __init__(self, credentials: object) -> None:
         super().__init__()
@@ -53,7 +102,10 @@ class _OAuthWorker(QObject):
 
     def run(self) -> None:
         try:
-            result = run_oauth_flow(self._credentials)  # type: ignore[arg-type]
+            result = run_oauth_flow(  # type: ignore[arg-type]
+                self._credentials,
+                on_url_ready=self.url_ready.emit,
+            )
             self.succeeded.emit(result)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -70,6 +122,7 @@ class SettingsScreen(QWidget):
         settings_path: Path | None = None,
         strava_connected: bool = False,
         strava_sync_fn: object = None,
+        opentrueup_devices_available: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -110,29 +163,15 @@ class SettingsScreen(QWidget):
         self.windowed_power_window_spinbox = QSpinBox(general_group)
         self.windowed_power_window_spinbox.setRange(1, 10)
         self.windowed_power_window_spinbox.setValue(self._settings.windowed_power_window_seconds)
-        general_layout.addRow("Power Window (s)", self.windowed_power_window_spinbox)
+        general_layout.addRow("Power Averaging Time (s)", self.windowed_power_window_spinbox)
 
+        self.opentrueup_label = QLabel("OpenTrueUp", general_group)
+        self.opentrueup_label.setToolTip(OPENTRUEUP_TOOLTIP)
         self.opentrueup_checkbox = QCheckBox("Enable OpenTrueUp", general_group)
         self.opentrueup_checkbox.setChecked(self._settings.opentrueup_enabled)
-        general_layout.addRow("OpenTrueUp", self.opentrueup_checkbox)
+        self.opentrueup_checkbox.setToolTip(OPENTRUEUP_TOOLTIP)
+        general_layout.addRow(self.opentrueup_label, self.opentrueup_checkbox)
 
-        self.display_units_combo = QComboBox(general_group)
-        self.display_units_combo.addItems([label for _, label in DISPLAY_UNITS_OPTIONS])
-        self._set_combo_value(
-            self.display_units_combo,
-            DISPLAY_UNITS_OPTIONS,
-            self._settings.display_units,
-        )
-        general_layout.addRow("Display Units", self.display_units_combo)
-
-        self.default_behavior_combo = QComboBox(general_group)
-        self.default_behavior_combo.addItems([label for _, label in DEFAULT_BEHAVIOR_OPTIONS])
-        self._set_combo_value(
-            self.default_behavior_combo,
-            DEFAULT_BEHAVIOR_OPTIONS,
-            self._settings.default_workout_behavior,
-        )
-        general_layout.addRow("Default Workout Behavior", self.default_behavior_combo)
         root_layout.addWidget(general_group)
 
         tiles_group = QGroupBox("Visible Workout Tiles (max 8)", self)
@@ -183,17 +222,13 @@ class SettingsScreen(QWidget):
             self._settings.strava_athlete_name,
         )
 
-        buttons_row = QHBoxLayout()
-        buttons_row.addStretch(1)
-        self.save_button = QPushButton("Save Settings", self)
-        self.save_button.clicked.connect(self.save_current_settings)
-        buttons_row.addWidget(self.save_button)
-        root_layout.addLayout(buttons_row)
-
         self.status_label = QLabel("Ready.", self)
         self.status_label.setObjectName("settingsStatusLabel")
         root_layout.addWidget(self.status_label)
         root_layout.addStretch(1)
+
+        self._apply_opentrueup_state(opentrueup_devices_available)
+        self._connect_autosave_signals()
 
     def current_settings(self) -> AppSettings:
         return replace(
@@ -202,11 +237,6 @@ class SettingsScreen(QWidget):
             lead_time=self.lead_time_spinbox.value(),
             opentrueup_enabled=self.opentrueup_checkbox.isChecked(),
             tile_selections=list(self._selected_tiles),
-            display_units=self._combo_value(self.display_units_combo, DISPLAY_UNITS_OPTIONS),
-            default_workout_behavior=self._combo_value(
-                self.default_behavior_combo,
-                DEFAULT_BEHAVIOR_OPTIONS,
-            ),
             windowed_power_window_seconds=self.windowed_power_window_spinbox.value(),
             strava_auto_sync_enabled=self.strava_auto_sync_checkbox.isChecked(),
         )
@@ -217,12 +247,31 @@ class SettingsScreen(QWidget):
             return
         checkbox.setChecked(selected)
 
+    def set_opentrueup_devices_available(self, available: bool) -> None:
+        """Enable or disable the OpenTrueUp checkbox based on connected device availability."""
+        self._apply_opentrueup_state(available)
+
+    def _apply_opentrueup_state(self, available: bool) -> None:
+        self.opentrueup_checkbox.setEnabled(available)
+
     def save_current_settings(self) -> AppSettings:
+        self._autosave()
+        self.status_label.setText("Settings saved.")
+        return self._settings
+
+    def _autosave(self) -> None:
+        """Persist current widget values immediately and notify listeners."""
         self._settings = self.current_settings()
         save_settings(self._settings, self._settings_path)
-        self.status_label.setText("Settings saved.")
         self.settings_applied.emit(self._settings)
-        return self._settings
+
+    def _connect_autosave_signals(self) -> None:
+        """Wire every editable widget to _autosave so changes persist on the fly."""
+        self.ftp_spinbox.valueChanged.connect(self._autosave)
+        self.lead_time_spinbox.valueChanged.connect(self._autosave)
+        self.windowed_power_window_spinbox.valueChanged.connect(self._autosave)
+        self.opentrueup_checkbox.toggled.connect(self._autosave)
+        self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
 
     def disconnect_strava(self) -> None:
         """Clear stored tokens and update the UI to the disconnected state."""
@@ -237,28 +286,45 @@ class SettingsScreen(QWidget):
 
     def _on_strava_connect(self) -> None:
         if not is_available():
-            self.status_label.setText(
-                "Strava sync requires a system keychain. "
-                "Secure credential storage is not available on this system."
+            QMessageBox.warning(
+                self,
+                "Strava — Storage Unavailable",
+                "Secure credential storage is not available on this system.\n"
+                "Strava sync requires either a system keychain or a writable data directory.",
             )
             return
         if not has_app_credentials():
-            self.status_label.setText("Strava app credentials are not configured.")
+            QMessageBox.warning(
+                self,
+                "Strava — Credentials Not Configured",
+                "Strava app credentials are not configured.\n\n"
+                "Set the OCT_STRAVA_CLIENT_ID and OCT_STRAVA_CLIENT_SECRET environment "
+                "variables, or create opencycletrainer/integrations/strava/_app_secrets.py "
+                "with STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET.",
+            )
             return
 
         credentials = load_app_credentials()
         self.strava_connect_button.setEnabled(False)
-        self.status_label.setText("Opening Strava authorization in browser…")
+        self.status_label.setText("Preparing Strava authorization…")
 
         self._oauth_thread = QThread(self)
-        worker = _OAuthWorker(credentials)
-        worker.moveToThread(self._oauth_thread)
-        self._oauth_thread.started.connect(worker.run)
-        worker.succeeded.connect(self._on_oauth_succeeded)
-        worker.failed.connect(self._on_oauth_failed)
-        worker.succeeded.connect(self._oauth_thread.quit)
-        worker.failed.connect(self._oauth_thread.quit)
+        self._oauth_worker = _OAuthWorker(credentials)
+        self._oauth_worker.moveToThread(self._oauth_thread)
+        self._oauth_thread.started.connect(self._oauth_worker.run)
+        self._oauth_worker.url_ready.connect(self._on_oauth_url_ready)
+        self._oauth_worker.succeeded.connect(self._on_oauth_succeeded)
+        self._oauth_worker.failed.connect(self._on_oauth_failed)
+        self._oauth_worker.succeeded.connect(self._oauth_thread.quit)
+        self._oauth_worker.failed.connect(self._oauth_thread.quit)
         self._oauth_thread.start()
+
+    def _on_oauth_url_ready(self, url: str) -> None:
+        dialog = _AuthUrlDialog(url, self)
+        self._oauth_worker.succeeded.connect(dialog.accept)
+        if dialog.exec() == QDialog.DialogCode.Rejected and self._oauth_thread.isRunning():
+            # User cancelled before the flow completed; suppress the eventual timeout error.
+            self._oauth_cancelled = True
 
     def _on_oauth_succeeded(self, result: object) -> None:
         if not isinstance(result, OAuthResult):
@@ -271,7 +337,12 @@ class SettingsScreen(QWidget):
 
     def _on_oauth_failed(self, error_message: str) -> None:
         self.strava_connect_button.setEnabled(True)
-        self.status_label.setText(f"Strava connection failed: {error_message}")
+        if getattr(self, "_oauth_cancelled", False):
+            self._oauth_cancelled = False
+            self.status_label.setText("Strava authorization cancelled.")
+            return
+        self.status_label.setText("Strava connection failed.")
+        QMessageBox.warning(self, "Strava — Connection Failed", error_message)
 
     def _apply_strava_connected_state(self, connected: bool, athlete_name: str) -> None:
         self._strava_connected = connected
@@ -346,31 +417,10 @@ class SettingsScreen(QWidget):
                 return
             self._selected_tiles.remove(tile_key)
         self._update_selection_status()
+        self._autosave()
 
     def _update_selection_status(self) -> None:
         self.tile_selection_status_label.setText(
             f"Selected {len(self._selected_tiles)} of {MAX_CONFIGURABLE_TILES} tiles.",
         )
 
-    @staticmethod
-    def _set_combo_value(
-        combo: QComboBox,
-        options: tuple[tuple[str, str], ...],
-        value: str,
-    ) -> None:
-        keys = [key for key, _ in options]
-        try:
-            index = keys.index(value)
-        except ValueError:
-            index = 0
-        combo.setCurrentIndex(index)
-
-    @staticmethod
-    def _combo_value(
-        combo: QComboBox,
-        options: tuple[tuple[str, str], ...],
-    ) -> str:
-        index = combo.currentIndex()
-        if index < 0 or index >= len(options):
-            return options[0][0]
-        return options[index][0]

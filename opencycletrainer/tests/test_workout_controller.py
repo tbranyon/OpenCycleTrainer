@@ -11,6 +11,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
+from opencycletrainer.core.sensors import CadenceSource
 from opencycletrainer.core.workout_engine import EngineState
 from opencycletrainer.storage.settings import AppSettings
 from opencycletrainer.ui.workout_controller import WorkoutSessionController
@@ -1123,5 +1124,101 @@ def test_chart_cursor_frozen_during_ramp_in():
     monotonic_now = 10.0
     controller._on_chart_tick()
     assert received[-1] == pytest.approx(5.0)
+
+    controller.shutdown()
+
+
+def test_cadence_dedicated_sensor_overrides_power_meter():
+    """CSC (dedicated) cadence should take priority over CPS (power meter) cadence."""
+    _get_or_create_qapp()
+    monotonic_now = 0.0
+    controller = WorkoutSessionController(
+        screen=WorkoutScreen(settings=AppSettings()),
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: monotonic_now,
+    )
+
+    controller.receive_cadence_rpm(70.0, CadenceSource.POWER_METER)
+    controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
+    assert controller._last_cadence_rpm == 90.0
+
+    controller.shutdown()
+
+
+def test_cadence_power_meter_overrides_trainer():
+    """CPS (power meter) cadence should take priority over FTMS (trainer) cadence."""
+    _get_or_create_qapp()
+    monotonic_now = 0.0
+    controller = WorkoutSessionController(
+        screen=WorkoutScreen(settings=AppSettings()),
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: monotonic_now,
+    )
+
+    controller.receive_cadence_rpm(70.0, CadenceSource.TRAINER)
+    controller.receive_cadence_rpm(90.0, CadenceSource.POWER_METER)
+    assert controller._last_cadence_rpm == 90.0
+
+    controller.shutdown()
+
+
+def test_cadence_lower_priority_ignored_when_higher_priority_active():
+    """Trainer cadence should be ignored while a dedicated sensor is active."""
+    _get_or_create_qapp()
+    monotonic_now = 0.0
+    controller = WorkoutSessionController(
+        screen=WorkoutScreen(settings=AppSettings()),
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: monotonic_now,
+    )
+
+    controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
+    controller.receive_cadence_rpm(70.0, CadenceSource.TRAINER)
+    assert controller._last_cadence_rpm == 90.0
+
+    controller.shutdown()
+
+
+def test_cadence_falls_back_when_higher_priority_source_goes_stale():
+    """When the dedicated sensor goes stale, power meter cadence should take over."""
+    _get_or_create_qapp()
+    monotonic_now = 0.0
+    controller = WorkoutSessionController(
+        screen=WorkoutScreen(settings=AppSettings()),
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: monotonic_now,
+    )
+
+    controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
+    assert controller._last_cadence_rpm == 90.0
+
+    # Advance past the staleness threshold (3 s)
+    monotonic_now = 4.0
+    controller.receive_cadence_rpm(75.0, CadenceSource.POWER_METER)
+    assert controller._last_cadence_rpm == 75.0
+
+    controller.shutdown()
+
+
+def test_cadence_history_excludes_rejected_lower_priority_samples():
+    """Cadence history should only contain samples from the winning source."""
+    _get_or_create_qapp()
+    monotonic_now = 0.0
+    controller = WorkoutSessionController(
+        screen=WorkoutScreen(settings=AppSettings()),
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: monotonic_now,
+    )
+
+    controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
+    controller.receive_cadence_rpm(70.0, CadenceSource.TRAINER)  # should be rejected
+
+    assert len(controller._cadence_history) == 1
+    assert controller._cadence_history[0][1] == 90.0
 
     controller.shutdown()

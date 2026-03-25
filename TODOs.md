@@ -34,3 +34,10 @@
 32. [DONE] ~~Strava sync Phase 6: workout power chart image generated (matplotlib, 1080×1350 portrait) and attached to Strava activity after successful FIT upload, best-effort and non-blocking.~~
 33. Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.
 34. [DONE] ~~Cursor continues to advance on charts while paused. There also appears to be a 3-second countdown on the pause modal followed by a 3-second ramp in once returned from the modal--the correct sequence should be to do the ramp-in with the 3 second countdown on the pause modal.~~
+35. [DONE] ~~Settings and value changes on the Settings page should automatically be saved when changed, rather than requiring the user to click Save.~~
+36. [DONE] ~~OpenTrueUp enable should be grayed out whenever the user does not have both a power meter and a power-reporting trainer connected~~
+37. UI should show some indication that auto-reconnecting devices are in the process of connecting.
+38. [DONE] ~~Mock backend should only be a programmatic option for test scripts, the UI should not expose a backend toggle and should always use Bleak whenever we are not testing.~~
+39. [DONE] ~~Remove the display units toggle in settings, nothing uses it~~
+40. The Target Power tile should be modified to show "Current / Target Power" as the title and the values shown respectively (i.e. 151 / 153 W) in the box. This should use windowed average power for the current power, and Windowed Average Power should be removed from the configurable tile list.
+41. [DONE] ~~Remove "Default workout behavior" from the settings screen. This will be handled in other ways later.~~

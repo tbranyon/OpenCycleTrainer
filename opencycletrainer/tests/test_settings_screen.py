@@ -40,8 +40,6 @@ def test_settings_screen_persists_basic_fields_and_tile_limit():
     screen.ftp_spinbox.setValue(315)
     screen.lead_time_spinbox.setValue(7)
     screen.opentrueup_checkbox.setChecked(True)
-    screen.display_units_combo.setCurrentText("Imperial")
-    screen.default_behavior_combo.setCurrentText("Free Ride Mode")
 
     all_tile_keys = [key for key, _ in TILE_OPTIONS]
     for key in all_tile_keys[: MAX_CONFIGURABLE_TILES + 1]:
@@ -53,8 +51,6 @@ def test_settings_screen_persists_basic_fields_and_tile_limit():
     assert persisted.ftp == 315
     assert persisted.lead_time == 7
     assert persisted.opentrueup_enabled is True
-    assert persisted.display_units == "imperial"
-    assert persisted.default_workout_behavior == "free_ride_mode"
     assert len(persisted.tile_selections) == MAX_CONFIGURABLE_TILES
     assert all_tile_keys[MAX_CONFIGURABLE_TILES] not in persisted.tile_selections
 
@@ -317,3 +313,106 @@ def test_sync_now_failure_updates_status_label(tmp_path: Path) -> None:
         screen._on_strava_sync_now()
 
     assert _wait_until(app, lambda: "sync failed" in screen.status_label.text())
+
+
+# ── Auto-save ─────────────────────────────────────────────────────────────────
+
+def test_spinbox_change_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(ftp=200), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.ftp_spinbox.setValue(315)
+
+    assert load_settings(settings_path).ftp == 315
+
+
+def test_checkbox_change_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(opentrueup_enabled=False), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.opentrueup_checkbox.setChecked(True)
+
+    assert load_settings(settings_path).opentrueup_enabled is True
+
+
+def test_tile_checkbox_change_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(tile_selections=[]), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.set_tile_selected("heart_rate", True)
+
+    assert "heart_rate" in load_settings(settings_path).tile_selections
+
+
+# ── OpenTrueUp availability ───────────────────────────────────────────────────
+
+_OPENTRUEUP_TOOLTIP_FRAGMENT = "power meter"
+
+
+def test_opentrueup_checkbox_disabled_by_default():
+    """OpenTrueUp is unavailable when no paired devices are reported."""
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert not screen.opentrueup_checkbox.isEnabled()
+
+
+def test_opentrueup_checkbox_enabled_when_devices_available():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path, opentrueup_devices_available=True)
+
+    assert screen.opentrueup_checkbox.isEnabled()
+
+
+def test_set_opentrueup_devices_available_enables_checkbox():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.set_opentrueup_devices_available(True)
+
+    assert screen.opentrueup_checkbox.isEnabled()
+
+
+def test_set_opentrueup_devices_available_false_disables_checkbox():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path, opentrueup_devices_available=True)
+    screen.set_opentrueup_devices_available(False)
+
+    assert not screen.opentrueup_checkbox.isEnabled()
+
+
+def test_opentrueup_checkbox_has_tooltip():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert _OPENTRUEUP_TOOLTIP_FRAGMENT in screen.opentrueup_checkbox.toolTip().lower()
+
+
+def test_opentrueup_label_has_tooltip():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert _OPENTRUEUP_TOOLTIP_FRAGMENT in screen.opentrueup_label.toolTip().lower()

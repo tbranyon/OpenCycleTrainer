@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import http.server
+import logging
 import secrets
 import socket
+import subprocess
+import sys
 import threading
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urlencode, urlunparse
-
-import logging
+from urllib.parse import parse_qs, urlencode
 
 from .app_credentials import StravaAppCredentials
 from .token_store import StravaTokenBundle
@@ -181,6 +183,30 @@ def _fetch_athlete_name(access_token: str) -> str:
         return ""
 
 
+# ── browser launching ─────────────────────────────────────────────────────────
+
+
+def _open_browser(url: str) -> None:
+    """Open *url* in the system browser.
+
+    On Linux, prefers ``xdg-open`` directly (more reliable under both X11 and
+    Wayland) before falling back to the :mod:`webbrowser` module.  Raises
+    ``RuntimeError`` with the URL if no browser can be launched, so callers can
+    surface it to the user for manual copy-paste.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            subprocess.Popen(["xdg-open", url])  # noqa: S603, S607
+            return
+        except OSError:
+            pass
+    if not webbrowser.open(url):
+        raise RuntimeError(
+            "Could not open a browser automatically.\n"
+            "Please open this URL in a browser to authorize Strava:\n\n" + url
+        )
+
+
 # ── public entry point ────────────────────────────────────────────────────────
 
 
@@ -188,13 +214,22 @@ def run_oauth_flow(
     credentials: StravaAppCredentials,
     *,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    on_url_ready: Callable[[str], None] | None = None,
 ) -> OAuthResult:
     """Run the full loopback OAuth flow.
 
     Blocks the calling thread until the user authorizes in the browser or the
     timeout elapses.  Intended to be called from a background thread.
 
+    Args:
+        credentials: Strava app credentials.
+        timeout_seconds: Seconds to wait for the browser callback.
+        on_url_ready: Optional callback invoked with the authorization URL just
+            before the browser is opened.  Useful for surfacing the URL in the
+            UI so users can open it manually if the browser does not launch.
+
     Raises:
+        RuntimeError: if no browser can be launched.
         TimeoutError: if the browser callback is not received within ``timeout_seconds``.
         ValueError: if the OAuth state does not match.
         Exception: propagated from the Strava token exchange on failure.
@@ -205,7 +240,11 @@ def run_oauth_flow(
 
     _logger.info("Starting Strava OAuth flow (client_id=%s)", credentials.client_id)
     auth_url = build_auth_url(credentials, redirect_uri, state)
-    webbrowser.open(auth_url)
+
+    if on_url_ready is not None:
+        on_url_ready(auth_url)
+    else:
+        _open_browser(auth_url)
 
     received_code, received_state = _run_callback_server(port, timeout_seconds)
     validate_state(state, received_state)

@@ -6,9 +6,19 @@ from typing import Any
 from PySide6.QtWidgets import QMainWindow
 from PySide6.QtWidgets import QTabWidget
 
-from opencycletrainer.core.sensors import SensorSample
+from opencycletrainer.core.sensors import CadenceSource, SensorSample
 from opencycletrainer.core.workout_library import WorkoutLibrary
-from opencycletrainer.devices.types import CPS_MEASUREMENT_CHARACTERISTIC_UUID
+from opencycletrainer.devices.types import (
+    CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+    CSC_MEASUREMENT_CHARACTERISTIC_UUID,
+    FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
+)
+
+_CADENCE_SOURCE_BY_UUID: dict[str, CadenceSource] = {
+    CSC_MEASUREMENT_CHARACTERISTIC_UUID: CadenceSource.DEDICATED,
+    CPS_MEASUREMENT_CHARACTERISTIC_UUID: CadenceSource.POWER_METER,
+    FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID: CadenceSource.TRAINER,
+}
 from opencycletrainer.integrations.strava.sync_service import upload_fit_to_strava
 from opencycletrainer.integrations.strava.token_store import get_tokens
 from opencycletrainer.storage.settings import AppSettings, save_settings
@@ -37,11 +47,13 @@ class MainWindow(QMainWindow):
             settings_path=settings_path,
             parent=self,
         )
+        self.devices_screen = DevicesScreen(parent=self)
         self.settings_screen = SettingsScreen(
             settings=settings,
             settings_path=settings_path,
             strava_connected=get_tokens() is not None,
             strava_sync_fn=upload_fit_to_strava,
+            opentrueup_devices_available=self.devices_screen.has_opentrueup_devices(),
             parent=self,
         )
         self.workout_controller = WorkoutSessionController(
@@ -53,9 +65,11 @@ class MainWindow(QMainWindow):
         )
         self.settings_screen.settings_applied.connect(self._on_settings_applied)
         self.workout_screen.tile_order_changed.connect(self._on_tile_order_changed)
-        self.devices_screen = DevicesScreen(parent=self)
         self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
         self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
+        self.devices_screen.opentrueup_availability_changed.connect(
+            self.settings_screen.set_opentrueup_devices_available
+        )
         self._workout_library = WorkoutLibrary()
         self.workout_library_screen = WorkoutLibraryScreen(
             library=self._workout_library,
@@ -88,7 +102,10 @@ class MainWindow(QMainWindow):
         if sample.heart_rate_bpm is not None:
             self.workout_controller.receive_hr_bpm(sample.heart_rate_bpm)
         if sample.cadence_rpm is not None:
-            self.workout_controller.receive_cadence_rpm(sample.cadence_rpm)
+            source = _CADENCE_SOURCE_BY_UUID.get(
+                sample.source_characteristic_uuid, CadenceSource.TRAINER
+            )
+            self.workout_controller.receive_cadence_rpm(sample.cadence_rpm, source)
         if sample.speed_mps is not None:
             self.workout_controller.receive_speed_mps(sample.speed_mps)
 
