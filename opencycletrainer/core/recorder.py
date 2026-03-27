@@ -13,7 +13,13 @@ _logger = logging.getLogger(__name__)
 
 from opencycletrainer.core.fit_exporter import FitExportSample, FitExporter
 from opencycletrainer.storage.filenames import build_activity_filename
-from opencycletrainer.storage.paths import ensure_dir, get_data_dir
+from opencycletrainer.storage.paths import (
+    ensure_dir,
+    get_workout_data_root,
+    get_workout_fit_dir,
+    get_workout_json_dir,
+    get_workout_png_dir,
+)
 
 
 @dataclass(frozen=True)
@@ -73,7 +79,7 @@ class WorkoutRecorder:
         if flush_batch_size <= 0:
             raise ValueError("flush_batch_size must be greater than zero.")
 
-        self._data_dir = data_dir if data_dir is not None else get_data_dir()
+        self._data_root = get_workout_data_root(data_dir)
         self._flush_batch_size = flush_batch_size
         self._fit_exporter = fit_exporter if fit_exporter is not None else FitExporter()
 
@@ -100,6 +106,11 @@ class WorkoutRecorder:
     def session(self) -> RecorderSession | None:
         return self._session
 
+    def set_data_dir(self, data_dir: Path) -> None:
+        if self._session is not None:
+            raise RuntimeError("Cannot update recorder data directory while active.")
+        self._data_root = data_dir
+
     def get_recorded_samples(self) -> list[RecorderSample]:
         return list(self._recorded_samples)
 
@@ -108,12 +119,14 @@ class WorkoutRecorder:
             raise RuntimeError("Recorder is already active.")
 
         start_time_utc = _normalize_utc(started_at_utc or datetime.now(timezone.utc))
-        ensure_dir(self._data_dir)
+        fit_dir = get_workout_fit_dir(self._data_root)
+        json_dir = get_workout_json_dir(self._data_root)
+        get_workout_png_dir(self._data_root)
 
         fit_filename = build_activity_filename(workout_name, start_time_utc, "fit")
-        fit_file_path = self._data_dir / fit_filename
-        samples_file_path = fit_file_path.with_suffix(".samples.jsonl")
-        summary_file_path = fit_file_path.with_suffix(".json")
+        fit_file_path = fit_dir / fit_filename
+        samples_file_path = json_dir / Path(fit_filename).with_suffix(".samples.jsonl")
+        summary_file_path = json_dir / Path(fit_filename).with_suffix(".json")
 
         self._session = RecorderSession(
             workout_name=workout_name,

@@ -29,7 +29,14 @@
       "Bash(python -m pytest opencycletrainer/tests/test_sensor_decoders.py::test_csc_crank_counter_rollover_produces_correct_cadence opencycletrainer/tests/test_sensor_decoders.py::test_csc_cadence_out_of_range_is_rejected opencycletrainer/tests/test_sensor_decoders.py::test_cps_cadence_out_of_range_is_rejected opencycletrainer/tests/test_sensor_decoders.py::test_ftms_cadence_out_of_range_is_rejected opencycletrainer/tests/test_recorder.py::test_recorder_stop_completes_gracefully_when_fit_export_fails -v)",
       "Bash(python -m pytest opencycletrainer/tests/test_opentrueup.py::test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset -v)",
       "Bash(python -m pytest opencycletrainer/tests/test_ftms_control.py::test_bridge_updates_erg_target_continuously_during_ramp_interval opencycletrainer/tests/test_ftms_control.py::test_bridge_resistance_ramp_updates_continuously -v)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(grep -r MockDeviceBackend c:Usersthomas.branyonDocumentsPersonalOpenCycleTraineropencycletrainer --include=*.py)",
+      "Bash(head -10 /c/Users/thomas.branyon/Documents/Personal/OpenCycleTrainer/workouts/*.mrc)",
+      "Read(//c/Users/thomas.branyon/AppData/Roaming/**)",
+      "Read(//c/Users/thomas.branyon/AppData/Local/**)",
+      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Roaming'' | Where-Object Name -like ''*cycle*'' -or Where-Object Name -like ''*OCT*'' -or Where-Object Name -like ''*Open*''\")",
+      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Local\\\\Packages\\\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\\\LocalCache\\\\Roaming\\\\OpenCycleTrainer\\\\paired_devices.json''\")"
     ]
   }
 }

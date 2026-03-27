@@ -21,6 +21,17 @@ _POS_PEN      = (200, 200, 200, 180)      # light grey, slim
 _FTP_LINE_PEN = (150, 150, 150, 128)      # muted grey, dashed
 _FTP_TEXT_COL = (150, 150, 150)
 _SKIP_BRUSH   = (234, 179,   8,  80)      # yellow ~30 % alpha
+_AXIS_TEXT_LIGHT = (71, 85, 105)
+_AXIS_TEXT_DARK = (203, 213, 225)
+_PLOT_BACKGROUND_LIGHT = (255, 255, 255)
+_PLOT_BACKGROUND_DARK = (15, 23, 42)
+_POS_PEN_DARK = (148, 163, 184, 190)
+_FTP_LINE_PEN_DARK = (148, 163, 184, 170)
+_FTP_TEXT_COL_DARK = (148, 163, 184)
+_GRID_ALPHA_LIGHT = 0.2
+_GRID_ALPHA_DARK = 0.35
+_COLOR_THEME_LIGHT = "light"
+_COLOR_THEME_DARK = "dark"
 
 _Y_STEP = 50.0          # watts between horizontal grid lines
 _CONTEXT_SECONDS = 30   # padding on each side of interval chart
@@ -71,6 +82,9 @@ class WorkoutChartWidget(QWidget):
 
         self._workout: Workout | None = None
         self._ftp_watts: int = 200
+        self._free_ride_mode: bool = False
+        self._free_ride_x_window_seconds: int = 1800
+        self._color_theme: str = _COLOR_THEME_LIGHT
 
         self._interval_plot = _make_plot()
         self._workout_plot  = _make_plot()
@@ -118,6 +132,7 @@ class WorkoutChartWidget(QWidget):
                 self._workout_plot, self._workout_ftp_text,
             ),
         )
+        self.apply_color_theme(_COLOR_THEME_LIGHT)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -246,6 +261,8 @@ class WorkoutChartWidget(QWidget):
     def clear(self) -> None:
         """Reset to idle state. Call before loading a new workout."""
         self._workout = None
+        self._free_ride_mode = False
+        self._free_ride_x_window_seconds = 1800
         for item in (
             self._interval_target, self._interval_actual, self._interval_hr,
             self._workout_target,  self._workout_actual,  self._workout_hr,
@@ -256,6 +273,98 @@ class WorkoutChartWidget(QWidget):
         for text in (self._interval_ftp_text, self._workout_ftp_text):
             text.setText("")
         self._clear_skip_markers()
+
+    def set_interval_plot_visible(self, visible: bool) -> None:
+        """Show or hide the interval plot. When hidden the workout overview expands to fill the area."""
+        self._interval_plot.setVisible(visible)
+        layout = self.layout()
+        if visible:
+            layout.setStretchFactor(self._interval_plot, 6)
+            layout.setStretchFactor(self._workout_plot, 4)
+        else:
+            layout.setStretchFactor(self._interval_plot, 0)
+            layout.setStretchFactor(self._workout_plot, 1)
+
+    def apply_color_theme(self, color_theme: str) -> None:
+        self._color_theme = _COLOR_THEME_DARK if color_theme == _COLOR_THEME_DARK else _COLOR_THEME_LIGHT
+        settings = _theme_settings(self._color_theme)
+
+        for plot in (self._interval_plot, self._workout_plot):
+            plot.setBackground(settings["background"])
+            plot.showGrid(x=False, y=True, alpha=settings["grid_alpha"])
+            for axis_name in ("left", "bottom"):
+                axis = plot.getAxis(axis_name)
+                axis.setPen(pg.mkPen(settings["axis_color"]))
+                axis.setTextPen(pg.mkPen(settings["axis_color"]))
+
+        self._interval_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
+        self._workout_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
+        self._interval_ftp_line.setPen(
+            pg.mkPen(color=settings["ftp_line_pen"], width=1, style=Qt.PenStyle.DashLine),
+        )
+        self._workout_ftp_line.setPen(
+            pg.mkPen(color=settings["ftp_line_pen"], width=1, style=Qt.PenStyle.DashLine),
+        )
+        self._interval_ftp_text.setColor(pg.mkColor(settings["ftp_text_color"]))
+        self._workout_ftp_text.setColor(pg.mkColor(settings["ftp_text_color"]))
+
+    def load_free_ride(self) -> None:
+        """Prepare the chart for an open-ended free ride with no pre-planned target."""
+        self._free_ride_mode = True
+        self._free_ride_x_window_seconds = 1800
+        self._workout = None
+        for item in (
+            self._interval_target, self._interval_actual, self._interval_hr,
+            self._workout_target,  self._workout_actual,  self._workout_hr,
+        ):
+            item.setData([], [])
+        for pos in (self._interval_pos, self._workout_pos):
+            pos.setValue(0.0)
+        for text in (self._interval_ftp_text, self._workout_ftp_text):
+            text.setText("")
+        self._clear_skip_markers()
+        self._workout_plot.setXRange(0.0, float(self._free_ride_x_window_seconds), padding=0)
+        _configure_y_axis(self._workout_plot, 400.0)
+
+    def update_free_ride_charts(
+        self,
+        elapsed_seconds: float,
+        power_series: list[tuple[float, int]],
+        hr_series: list[tuple[float, int]],
+    ) -> None:
+        """Update live traces on the workout overview chart for free ride mode."""
+        while elapsed_seconds >= self._free_ride_x_window_seconds:
+            self._free_ride_x_window_seconds += 1800
+            self._workout_plot.setXRange(0.0, float(self._free_ride_x_window_seconds), padding=0)
+
+        self._workout_pos.setValue(float(elapsed_seconds))
+
+        if power_series:
+            pt = np.fromiter((p[0] for p in power_series), dtype=float, count=len(power_series))
+            pw = np.fromiter((p[1] for p in power_series), dtype=float, count=len(power_series))
+        else:
+            pt = pw = np.array([], dtype=float)
+
+        if hr_series:
+            ht = np.fromiter((h[0] for h in hr_series), dtype=float, count=len(hr_series))
+            hw = np.fromiter((h[1] for h in hr_series), dtype=float, count=len(hr_series))
+        else:
+            ht = hw = np.array([], dtype=float)
+
+        self._workout_actual.setData(pt, pw)
+        self._workout_hr.setData(ht, hw)
+
+        if pt.size or hw.size:
+            peaks = []
+            if pt.size:
+                peaks.append(float(pw.max()))
+            if hw.size:
+                peaks.append(float(hw.max()))
+            current_ceiling = self._workout_plot.getViewBox().viewRange()[1][1]
+            candidate = max(peaks) * 1.10
+            if candidate > current_ceiling:
+                new_y_max = (int(candidate / _Y_STEP) + 1) * _Y_STEP
+                _configure_y_axis(self._workout_plot, float(new_y_max))
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -292,8 +401,8 @@ class WorkoutChartWidget(QWidget):
 
 def _make_plot() -> pg.PlotWidget:
     plot = pg.PlotWidget(axisItems={"bottom": _TimeAxisItem("bottom")})
-    plot.setBackground("w")
-    plot.showGrid(x=False, y=True, alpha=0.2)
+    plot.setBackground(_PLOT_BACKGROUND_LIGHT)
+    plot.showGrid(x=False, y=True, alpha=_GRID_ALPHA_LIGHT)
     plot.getAxis("left").setTickSpacing(levels=[(_Y_STEP, 0.0)])
     plot.getAxis("left").setLabel("W")
     plot.setMouseEnabled(x=False, y=False)
@@ -336,6 +445,26 @@ def _make_ftp_line() -> pg.InfiniteLine:
 def _make_ftp_text() -> pg.TextItem:
     item = pg.TextItem(text="", color=_FTP_TEXT_COL, anchor=(1.0, 1.0))
     return item
+
+
+def _theme_settings(color_theme: str) -> dict[str, object]:
+    if color_theme == _COLOR_THEME_DARK:
+        return {
+            "background": _PLOT_BACKGROUND_DARK,
+            "grid_alpha": _GRID_ALPHA_DARK,
+            "axis_color": _AXIS_TEXT_DARK,
+            "position_pen": _POS_PEN_DARK,
+            "ftp_line_pen": _FTP_LINE_PEN_DARK,
+            "ftp_text_color": _FTP_TEXT_COL_DARK,
+        }
+    return {
+        "background": _PLOT_BACKGROUND_LIGHT,
+        "grid_alpha": _GRID_ALPHA_LIGHT,
+        "axis_color": _AXIS_TEXT_LIGHT,
+        "position_pen": _POS_PEN,
+        "ftp_line_pen": _FTP_LINE_PEN,
+        "ftp_text_color": _FTP_TEXT_COL,
+    }
 
 
 def _build_target_series(workout: Workout) -> tuple[np.ndarray, np.ndarray]:

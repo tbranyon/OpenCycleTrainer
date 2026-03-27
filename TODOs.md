@@ -2,7 +2,7 @@
 
 1. .octw internal format support is not implemented (no parser/writer/schema in code).
 2. kJ-based workout completion is not implemented (engine explicitly marks kJ mode as stub). Evidence: workout_engine.py.
-3. Free Ride behavior is not implemented beyond a settings enum (no free-ride control logic/manual target workflow).
+3. [DONE] ~~Free Ride behavior is not implemented beyond a settings enum (no free-ride control logic/manual target workflow).~~
 4. [DONE] ~~Pause/resume ramp-in countdown user messaging is missing in UI.~~
 5. [DONE] ~~Live workout charts are not implemented (explicit TODO placeholders). Evidence: workout_screen.py.~~
 6. [DONE] ~~Live metric computation/refresh for tiles is not implemented (tiles render, but no data-update path).~~
@@ -39,5 +39,11 @@
 37. UI should show some indication that auto-reconnecting devices are in the process of connecting.
 38. [DONE] ~~Mock backend should only be a programmatic option for test scripts, the UI should not expose a backend toggle and should always use Bleak whenever we are not testing.~~
 39. [DONE] ~~Remove the display units toggle in settings, nothing uses it~~
-40. The Target Power tile should be modified to show "Current / Target Power" as the title and the values shown respectively (i.e. 151 / 153 W) in the box. This should use windowed average power for the current power, and Windowed Average Power should be removed from the configurable tile list.
+40. [DONE] ~~The Target Power tile should be modified to show "Current / Target Power" as the title and the values shown respectively (i.e. 151 / 153 W) in the box. This should use windowed average power for the current power, and Windowed Average Power should be removed from the configurable tile list.~~
 41. [DONE] ~~Remove "Default workout behavior" from the settings screen. This will be handled in other ways later.~~
+42. Support ZWO file input
+43. [DONE] ~~Add setting for Dark mode - Light, Dark, or Use System Theme. When in Dark mode, the plots should go to dark mode as well.~~
+44. [DONE] ~~Populate workout library with workouts from workouts_lib.md (create the MRC files from the descriptions). These workouts should ship with OCT.~~
+45. [DONE] ~~Allow user to set workout data folder in Settings. OCT should create subfolders in this directory for each filetype (FIT, JSON, png).~~
+46. [DONE] ~~"Trainer A" and "Power Meter B" keep reappearing in the devices list after making updates. These should never appear as they are not real devices.~~
+47. Closing the app or maybe in cases disconnecting from a device, particularly an FTMS trainer, does not appear to always properly release the device. The app thinks the device is disconnected but the device still indicates it is connected and does not show up in scans as available for connection. Make sure we always properly release/disconnect devices.

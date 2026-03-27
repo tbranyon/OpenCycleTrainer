@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QMainWindow
 from PySide6.QtWidgets import QTabWidget
 
@@ -24,6 +25,7 @@ from opencycletrainer.integrations.strava.token_store import get_tokens
 from opencycletrainer.storage.settings import AppSettings, save_settings
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
+from .theme import apply_application_theme
 from .workout_controller import WorkoutSessionController
 from .workout_library_screen import WorkoutLibraryScreen
 from .workout_screen import WorkoutScreen
@@ -37,19 +39,21 @@ class MainWindow(QMainWindow):
         settings_path: Path | None = None,
     ) -> None:
         super().__init__()
+        self._settings = settings or AppSettings()
+        self._effective_theme_mode = "light"
         self.setWindowTitle("OpenCycleTrainer")
         self.resize(1024, 720)
         self._settings_path = settings_path
 
         self.tabs = QTabWidget(self)
         self.workout_screen = WorkoutScreen(
-            settings=settings,
+            settings=self._settings,
             settings_path=settings_path,
             parent=self,
         )
         self.devices_screen = DevicesScreen(parent=self)
         self.settings_screen = SettingsScreen(
-            settings=settings,
+            settings=self._settings,
             settings_path=settings_path,
             strava_connected=get_tokens() is not None,
             strava_sync_fn=upload_fit_to_strava,
@@ -58,7 +62,7 @@ class MainWindow(QMainWindow):
         )
         self.workout_controller = WorkoutSessionController(
             screen=self.workout_screen,
-            settings=settings or AppSettings(),
+            settings=self._settings,
             settings_path=settings_path,
             strava_upload_fn=upload_fit_to_strava,
             parent=self,
@@ -85,6 +89,10 @@ class MainWindow(QMainWindow):
         self._workout_tab_index = self.tabs.indexOf(self.workout_screen)
         self.workout_screen.load_from_library_requested.connect(self._navigate_to_library)
         self.workout_library_screen.workout_selected.connect(self._on_library_workout_selected)
+        QApplication.instance().styleHints().colorSchemeChanged.connect(
+            self._on_system_color_scheme_changed
+        )
+        self._apply_theme(self._settings)
 
         self.workout_controller.set_trainer_control_target(
             backend=self.devices_screen.backend,
@@ -112,6 +120,8 @@ class MainWindow(QMainWindow):
     def _on_settings_applied(self, settings: object) -> None:
         if not isinstance(settings, AppSettings):
             return
+        self._settings = settings
+        self._apply_theme(settings)
         self.workout_screen.apply_settings(settings)
         self.workout_controller.apply_settings(settings)
 
@@ -134,6 +144,16 @@ class MainWindow(QMainWindow):
             backend=backend,
             trainer_device_id=trainer_id,
         )
+
+    def _on_system_color_scheme_changed(self, _scheme: object) -> None:
+        self._apply_theme(self._settings)
+
+    def _apply_theme(self, settings: AppSettings) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        self._effective_theme_mode = apply_application_theme(settings.theme_mode, app)
+        self.workout_screen.apply_color_theme(self._effective_theme_mode)
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.workout_controller.shutdown()

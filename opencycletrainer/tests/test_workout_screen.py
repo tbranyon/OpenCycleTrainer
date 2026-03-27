@@ -25,7 +25,7 @@ def test_workout_screen_displays_mandatory_fields_controls_and_mode():
     button_texts = {button.text() for button in screen.findChildren(QPushButton)}
 
     assert "Time Elapsed" in label_texts
-    assert "Target Power" in label_texts
+    assert "Current / Target Power" in label_texts
     assert "Time Remaining" in label_texts
     assert "Interval Time/Work Remaining" in label_texts
     assert {"Start", "Pause", "Resume", "Stop"}.issubset(button_texts)
@@ -169,3 +169,122 @@ def test_pause_dialog_emits_resume_confirmed_after_countdown():
     dialog._tick_countdown()  # 1
     dialog._tick_countdown()  # 0 → emits resume_confirmed
     assert confirmed == [True]
+
+
+def test_workout_screen_has_free_ride_button():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    button_texts = {button.text() for button in screen.findChildren(QPushButton)}
+    assert "Free Ride" in button_texts
+
+
+def test_free_ride_button_emits_free_ride_requested():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    received = []
+    screen.free_ride_requested.connect(lambda: received.append(True))
+    screen.free_ride_button.click()
+
+    assert received == [True]
+
+
+def test_metric_tile_does_not_show_editor_when_editing_disabled():
+    _get_or_create_qapp()
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+
+    screen = WorkoutScreen(settings=AppSettings())
+    tile = screen.target_power_tile
+
+    assert tile.editing_enabled is False
+    QTest.mouseDClick(tile, Qt.LeftButton)
+
+    assert tile._edit_input is None
+
+
+def test_metric_tile_shows_inline_editor_on_double_click_when_enabled():
+    _get_or_create_qapp()
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLineEdit
+
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_free_ride_mode(True)
+    tile = screen.target_power_tile
+
+    assert tile.editing_enabled is True
+    QTest.mouseDClick(tile, Qt.LeftButton)
+
+    assert tile._edit_input is not None
+    assert isinstance(tile._edit_input, QLineEdit)
+    assert tile.value_label.isHidden()
+
+
+def test_erg_target_entered_emitted_on_valid_watt_input():
+    _get_or_create_qapp()
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_free_ride_mode(True)
+
+    received = []
+    screen.erg_target_entered.connect(lambda w: received.append(w))
+
+    tile = screen.target_power_tile
+    QTest.mouseDClick(tile, Qt.LeftButton)
+    tile._edit_input.setText("250")
+    tile._edit_input.returnPressed.emit()
+
+    assert received == [250]
+    assert tile._edit_input is None  # editor closed
+
+
+def test_erg_target_entered_not_emitted_on_non_integer_input():
+    _get_or_create_qapp()
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_free_ride_mode(True)
+
+    received = []
+    screen.erg_target_entered.connect(lambda w: received.append(w))
+
+    tile = screen.target_power_tile
+    QTest.mouseDClick(tile, Qt.LeftButton)
+    tile._edit_input.setText("abc")
+    tile._edit_input.returnPressed.emit()
+
+    assert received == []
+
+
+def test_metric_tile_escape_cancels_editor():
+    _get_or_create_qapp()
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_free_ride_mode(True)
+
+    tile = screen.target_power_tile
+    QTest.mouseDClick(tile, Qt.LeftButton)
+    assert tile._edit_input is not None
+
+    QTest.keyClick(tile._edit_input, Qt.Key_Escape)
+
+    assert tile._edit_input is None
+    assert tile.value_label.isHidden() is False
+
+
+def test_set_free_ride_mode_false_disables_editing():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.set_free_ride_mode(True)
+    assert screen.target_power_tile.editing_enabled is True
+
+    screen.set_free_ride_mode(False)
+    assert screen.target_power_tile.editing_enabled is False

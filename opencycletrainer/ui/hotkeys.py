@@ -33,6 +33,7 @@ class WorkoutHotkeys(QObject):
     ) -> None:
         super().__init__(widget)
         self._widget = widget
+        self._app = QApplication.instance()
         self._callbacks_by_key: dict[int, Callable[[], None]] = {
             Qt.Key_T: on_toggle_mode,
             Qt.Key_1: on_extend_short,
@@ -44,30 +45,45 @@ class WorkoutHotkeys(QObject):
             Qt.Key_Left: on_jog_large_down,
             Qt.Key_Space: on_pause_resume,
         }
-        QApplication.instance().installEventFilter(self)
+        if self._app is not None:
+            self._app.installEventFilter(self)
+        self._widget.destroyed.connect(self._remove_event_filter)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() != QEvent.KeyPress:
-            return super().eventFilter(watched, event)
-        if not self._widget.isVisible():
-            return super().eventFilter(watched, event)
+            return False
+        try:
+            if not self._widget.isVisible():
+                return False
+        except RuntimeError:
+            self._remove_event_filter()
+            return False
 
         focused = QApplication.focusWidget()
         if focused is None:
-            return super().eventFilter(watched, event)
+            return False
         if focused is not self._widget and not self._widget.isAncestorOf(focused):
-            return super().eventFilter(watched, event)
+            return False
 
         key = int(event.key())
         callback = self._callbacks_by_key.get(key)
         if callback is None:
-            return super().eventFilter(watched, event)
+            return False
         if event.modifiers() != Qt.NoModifier:
-            return super().eventFilter(watched, event)
+            return False
         if _focused_widget_is_text_input():
-            return super().eventFilter(watched, event)
+            return False
         callback()
         return True
+
+    def _remove_event_filter(self, *_args: object) -> None:
+        if self._app is None:
+            return
+        try:
+            self._app.removeEventFilter(self)
+        except RuntimeError:
+            pass
+        self._app = None
 
 
 def _focused_widget_is_text_input() -> bool:

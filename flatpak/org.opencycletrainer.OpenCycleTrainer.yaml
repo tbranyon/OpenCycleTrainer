@@ -19,6 +19,9 @@ modules:
     buildsystem: simple
     build-commands:
       - python3 -m pip install --verbose --exists-action=i --prefix=/app --no-build-isolation .
+      - install -Dm644 res/icon_nobg.png /app/share/opencycletrainer/res/icon_nobg.png
+      - install -d /app/share/opencycletrainer/workouts
+      - install -m644 workouts/*.mrc /app/share/opencycletrainer/workouts/
     sources:
       - type: dir
         path: ..

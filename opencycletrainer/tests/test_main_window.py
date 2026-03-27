@@ -141,3 +141,21 @@ def test_tile_drag_reorder_updates_workout_screen_settings(qapp, tmp_path):
         assert window.workout_screen._settings.tile_selections == ["cadence_rpm", "heart_rate"]
     finally:
         _close_window(window, qapp)
+
+
+def test_main_window_applies_dark_theme_to_chart_when_configured(qapp):
+    window = _make_window(qapp)
+    try:
+        window._on_settings_applied(AppSettings(theme_mode="dark"))
+        assert window.workout_screen.chart_widget._color_theme == "dark"
+    finally:
+        _close_window(window, qapp)
+
+
+def test_main_window_applies_light_theme_to_chart_when_configured(qapp):
+    window = _make_window(qapp)
+    try:
+        window._on_settings_applied(AppSettings(theme_mode="light"))
+        assert window.workout_screen.chart_widget._color_theme == "light"
+    finally:
+        _close_window(window, qapp)

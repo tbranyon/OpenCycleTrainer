@@ -3,7 +3,6 @@ from __future__ import annotations
 MAX_CONFIGURABLE_TILES = 8
 
 TILE_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("windowed_avg_power", "Windowed Avg Power"),
     ("windowed_avg_ftp", "Windowed Avg %FTP"),
     ("interval_avg_power", "Interval Avg Power"),
     ("workout_avg_power", "Workout Avg Power"),

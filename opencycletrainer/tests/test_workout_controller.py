@@ -50,6 +50,15 @@ class _FakeRecorder:
         return SimpleNamespace(fit_file_path=Path("Quick_Start_20260311_1200.fit"))
 
 
+class _FakeRecorderWithDataDir(_FakeRecorder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.data_dirs: list[Path] = []
+
+    def set_data_dir(self, data_dir: Path) -> None:
+        self.data_dirs.append(data_dir)
+
+
 class _FakeFTMSTransport:
     def __init__(self) -> None:
         self.writes: list[bytes] = []
@@ -141,6 +150,29 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     assert controller.last_snapshot.state == EngineState.STOPPED
     assert fake_recorder.stop_calls == 1
     assert fake_recorder.samples
+
+    controller.shutdown()
+
+
+def test_start_uses_workout_data_dir_setting_for_recorder(tmp_path: Path):
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorderWithDataDir()
+    settings = AppSettings(workout_data_dir=tmp_path)
+
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    assert fake_recorder.data_dirs == [tmp_path]
 
     controller.shutdown()
 
@@ -864,6 +896,7 @@ def test_finalize_recorder_passes_chart_image_path_to_upload_fn():
     assert _wait_until(app, lambda: len(received) == 1)
     assert received[0] is not None
     assert received[0].suffix == ".png"
+    assert received[0].parent.name == "png"
 
     controller.shutdown()
 
@@ -1220,5 +1253,207 @@ def test_cadence_history_excludes_rejected_lower_priority_samples():
 
     assert len(controller._cadence_history) == 1
     assert controller._cadence_history[0][1] == 90.0
+
+    controller.shutdown()
+
+
+def test_target_power_tile_title_is_current_slash_target():
+    """Target power tile title is 'Current / Target Power'."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    assert screen.target_power_tile.title_label.text() == "Current / Target Power"
+
+
+def test_target_power_tile_shows_windowed_avg_and_target():
+    """Target power tile shows 'windowed_avg / target W' when power data is available."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(windowed_power_window_seconds=3)
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_power_watts(150, now_monotonic=0.5)
+    controller.receive_power_watts(152, now_monotonic=1.0)
+
+    monotonic_now = 1.0
+    controller.process_tick(monotonic_now)
+
+    tile_text = screen.target_power_tile.value_label.text()
+    assert tile_text.startswith("151 / ")
+    assert " / " in tile_text
+    assert tile_text.endswith(" W")
+
+    controller.shutdown()
+
+
+def test_target_power_tile_shows_dashes_when_no_power_received():
+    """Target power tile shows '-- / X W' when no power data has been received."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(windowed_power_window_seconds=3)
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.process_tick(monotonic_now)
+
+    tile_text = screen.target_power_tile.value_label.text()
+    assert tile_text.startswith("-- / ")
+    assert tile_text.endswith(" W")
+
+    controller.shutdown()
+
+
+def test_windowed_avg_power_not_in_tile_options():
+    """Windowed Avg Power is removed from the configurable tile list."""
+    from opencycletrainer.ui.tile_config import TILE_OPTIONS
+    keys = [key for key, _ in TILE_OPTIONS]
+    assert "windowed_avg_power" not in keys
+
+
+def _make_free_ride_controller(app):
+    """Helper to build a screen+controller pair ready for free ride testing."""
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic():
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+    return screen, controller, fake_recorder, _monotonic
+
+
+def test_free_ride_starts_engine_in_running_state():
+    app = _get_or_create_qapp()
+    screen, controller, fake_recorder, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    assert controller.last_snapshot is not None
+    assert controller.last_snapshot.state == EngineState.RUNNING
+    assert fake_recorder.started is True
+
+    controller.shutdown()
+
+
+def test_free_ride_starts_in_resistance_mode():
+    app = _get_or_create_qapp()
+    screen, controller, _, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    assert screen.mode_selector.currentText() == "Resistance"
+
+    controller.shutdown()
+
+
+def test_free_ride_time_remaining_shows_dash():
+    app = _get_or_create_qapp()
+    screen, controller, _, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    assert screen.remaining_tile.value_label.text() == "\u2014"
+    assert screen.interval_remaining_tile.value_label.text() == "\u2014"
+
+    controller.shutdown()
+
+
+def test_free_ride_target_power_shows_dash_in_resistance_mode():
+    app = _get_or_create_qapp()
+    screen, controller, _, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    tile_text = screen.target_power_tile.value_label.text()
+    assert "/ \u2014" in tile_text or tile_text == "\u2014 / \u2014 W"
+
+    controller.shutdown()
+
+
+def test_free_ride_erg_target_entry_switches_to_erg_mode():
+    app = _get_or_create_qapp()
+    screen, controller, _, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    screen.erg_target_entered.emit(250)
+    app.processEvents()
+
+    assert screen.mode_selector.currentText() == "ERG"
+    assert controller._free_ride_erg_target_watts == 250
+
+    controller.shutdown()
+
+
+def test_free_ride_erg_target_reflected_in_target_power_tile():
+    app = _get_or_create_qapp()
+    screen, controller, _, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    screen.erg_target_entered.emit(200)
+    app.processEvents()
+
+    tile_text = screen.target_power_tile.value_label.text()
+    assert "200" in tile_text
+
+    controller.shutdown()
+
+
+def test_free_ride_does_not_start_if_already_running():
+    app = _get_or_create_qapp()
+    screen, controller, _, _ = _make_free_ride_controller(app)
+
+    screen.free_ride_button.click()
+    app.processEvents()
+    first_snapshot = controller.last_snapshot
+
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
 
     controller.shutdown()

@@ -73,6 +73,10 @@ def test_recorder_logs_at_1hz_and_writes_summary_with_matching_fit_stem():
 
     assert summary.fit_file_path.stem == summary.summary_file_path.stem
     assert summary.fit_file_path.stem == session.fit_file_path.stem
+    assert summary.fit_file_path.parent == data_dir / "FIT"
+    assert summary.samples_file_path.parent == data_dir / "JSON"
+    assert summary.summary_file_path.parent == data_dir / "JSON"
+    assert (data_dir / "png").is_dir()
     assert summary.fit_file_path.exists()
     assert summary.sample_count == 3
     assert summary.duration_seconds == 3

@@ -40,6 +40,7 @@ def test_settings_screen_persists_basic_fields_and_tile_limit():
     screen.ftp_spinbox.setValue(315)
     screen.lead_time_spinbox.setValue(7)
     screen.opentrueup_checkbox.setChecked(True)
+    screen.theme_mode_combo.setCurrentIndex(screen.theme_mode_combo.findData("dark"))
 
     all_tile_keys = [key for key, _ in TILE_OPTIONS]
     for key in all_tile_keys[: MAX_CONFIGURABLE_TILES + 1]:
@@ -51,6 +52,7 @@ def test_settings_screen_persists_basic_fields_and_tile_limit():
     assert persisted.ftp == 315
     assert persisted.lead_time == 7
     assert persisted.opentrueup_enabled is True
+    assert persisted.theme_mode == "dark"
     assert len(persisted.tile_selections) == MAX_CONFIGURABLE_TILES
     assert all_tile_keys[MAX_CONFIGURABLE_TILES] not in persisted.tile_selections
 
@@ -339,6 +341,17 @@ def test_checkbox_change_autosaves():
     assert load_settings(settings_path).opentrueup_enabled is True
 
 
+def test_theme_mode_change_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(theme_mode="system"), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.theme_mode_combo.setCurrentIndex(screen.theme_mode_combo.findData("dark"))
+
+    assert load_settings(settings_path).theme_mode == "dark"
+
+
 def test_tile_checkbox_change_autosaves():
     _get_or_create_qapp()
     settings_path = _test_settings_path()
@@ -416,3 +429,35 @@ def test_opentrueup_label_has_tooltip():
     screen = SettingsScreen(settings_path=settings_path)
 
     assert _OPENTRUEUP_TOOLTIP_FRAGMENT in screen.opentrueup_label.toolTip().lower()
+
+def test_workout_data_dir_change_autosaves(tmp_path: Path):
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(workout_data_dir=None), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.workout_data_dir_edit.setText(str(tmp_path))
+    screen.workout_data_dir_edit.editingFinished.emit()
+
+    assert load_settings(settings_path).workout_data_dir == tmp_path
+
+
+def test_sync_now_defaults_to_fit_subfolder_under_workout_data_dir(tmp_path: Path) -> None:
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(workout_data_dir=tmp_path), settings_path)
+
+    screen = SettingsScreen(
+        settings_path=settings_path,
+        strava_connected=True,
+        strava_sync_fn=lambda _p: None,
+    )
+
+    with patch(
+        "opencycletrainer.ui.settings_screen.QFileDialog.getOpenFileName",
+        return_value=("", ""),
+    ) as picker:
+        screen._on_strava_sync_now()
+
+    assert picker.call_count == 1
+    assert picker.call_args[0][2] == str(tmp_path / "FIT")

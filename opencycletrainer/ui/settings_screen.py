@@ -8,6 +8,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -30,14 +31,27 @@ from opencycletrainer.integrations.strava.app_credentials import (
 from opencycletrainer.integrations.strava.oauth_flow import OAuthResult, run_oauth_flow
 from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
 from opencycletrainer.integrations.strava.token_store import clear_tokens, is_available, save_tokens
-from opencycletrainer.storage.paths import get_data_dir
-from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
+from opencycletrainer.storage.paths import get_workout_fit_dir
+from opencycletrainer.storage.settings import (
+    AppSettings,
+    THEME_MODE_DARK,
+    THEME_MODE_LIGHT,
+    THEME_MODE_SYSTEM,
+    load_settings,
+    save_settings,
+)
 from .tile_config import MAX_CONFIGURABLE_TILES, TILE_OPTIONS, normalize_tile_selections
 
 OPENTRUEUP_TOOLTIP = (
     "OpenTrueUp computes the offset between your on-bike power meter and your trainer "
     "and adjusts the ERG target accordingly so that ERG holds the desired power target "
     "according to your on-bike PM"
+)
+
+THEME_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Use System Theme", THEME_MODE_SYSTEM),
+    ("Light", THEME_MODE_LIGHT),
+    ("Dark", THEME_MODE_DARK),
 )
 
 
@@ -165,6 +179,28 @@ class SettingsScreen(QWidget):
         self.windowed_power_window_spinbox.setValue(self._settings.windowed_power_window_seconds)
         general_layout.addRow("Power Averaging Time (s)", self.windowed_power_window_spinbox)
 
+        self.theme_mode_combo = QComboBox(general_group)
+        for label, value in THEME_OPTIONS:
+            self.theme_mode_combo.addItem(label, value)
+        selected_theme_index = self.theme_mode_combo.findData(self._settings.theme_mode)
+        if selected_theme_index < 0:
+            selected_theme_index = self.theme_mode_combo.findData(THEME_MODE_SYSTEM)
+        self.theme_mode_combo.setCurrentIndex(selected_theme_index)
+        general_layout.addRow("Theme", self.theme_mode_combo)
+
+        self.workout_data_dir_edit = QLineEdit(general_group)
+        if self._settings.workout_data_dir is not None:
+            self.workout_data_dir_edit.setText(str(self._settings.workout_data_dir))
+        self.workout_data_dir_button = QPushButton("Browse...", general_group)
+        self.workout_data_dir_button.clicked.connect(self._browse_workout_data_dir)
+        workout_dir_row = QHBoxLayout()
+        workout_dir_row.setContentsMargins(0, 0, 0, 0)
+        workout_dir_row.addWidget(self.workout_data_dir_edit, 1)
+        workout_dir_row.addWidget(self.workout_data_dir_button, 0)
+        workout_dir_widget = QWidget(general_group)
+        workout_dir_widget.setLayout(workout_dir_row)
+        general_layout.addRow("Workout Data Folder", workout_dir_widget)
+
         self.opentrueup_label = QLabel("OpenTrueUp", general_group)
         self.opentrueup_label.setToolTip(OPENTRUEUP_TOOLTIP)
         self.opentrueup_checkbox = QCheckBox("Enable OpenTrueUp", general_group)
@@ -231,13 +267,16 @@ class SettingsScreen(QWidget):
         self._connect_autosave_signals()
 
     def current_settings(self) -> AppSettings:
+        workout_data_dir_text = self.workout_data_dir_edit.text().strip()
         return replace(
             self._settings,
             ftp=self.ftp_spinbox.value(),
             lead_time=self.lead_time_spinbox.value(),
             opentrueup_enabled=self.opentrueup_checkbox.isChecked(),
             tile_selections=list(self._selected_tiles),
+            theme_mode=str(self.theme_mode_combo.currentData()),
             windowed_power_window_seconds=self.windowed_power_window_spinbox.value(),
+            workout_data_dir=Path(workout_data_dir_text) if workout_data_dir_text else None,
             strava_auto_sync_enabled=self.strava_auto_sync_checkbox.isChecked(),
         )
 
@@ -270,8 +309,23 @@ class SettingsScreen(QWidget):
         self.ftp_spinbox.valueChanged.connect(self._autosave)
         self.lead_time_spinbox.valueChanged.connect(self._autosave)
         self.windowed_power_window_spinbox.valueChanged.connect(self._autosave)
+        self.theme_mode_combo.currentIndexChanged.connect(self._autosave)
+        self.workout_data_dir_edit.editingFinished.connect(self._autosave)
         self.opentrueup_checkbox.toggled.connect(self._autosave)
         self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
+
+    def _browse_workout_data_dir(self) -> None:
+        start_dir_text = self.workout_data_dir_edit.text().strip()
+        start_dir = start_dir_text if start_dir_text else str(Path.home())
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Select Workout Data Folder",
+            start_dir,
+        )
+        if not selected:
+            return
+        self.workout_data_dir_edit.setText(selected)
+        self._autosave()
 
     def disconnect_strava(self) -> None:
         """Clear stored tokens and update the UI to the disconnected state."""
@@ -359,7 +413,7 @@ class SettingsScreen(QWidget):
 
     def _on_strava_sync_now(self) -> None:
         """Open a FIT file picker and enqueue the selected file for Strava upload."""
-        default_dir = str(get_data_dir())
+        default_dir = str(get_workout_fit_dir(self.current_settings().workout_data_dir))
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select FIT File to Sync",

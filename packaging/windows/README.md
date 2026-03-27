@@ -13,6 +13,10 @@ This directory contains the Windows packaging toolchain for Task 15.
 - `OpenCycleTrainer.wxs`: WiX MSI definition
 - `../../scripts/build_windows_msi.ps1`: end-to-end build script
 
+The PyInstaller spec bundles:
+- Prepackaged workouts (`workouts/*.mrc`)
+- In-use app icon (`res/icon_nobg.png`)
+
 ## Prerequisites
 
 1. Windows 10/11

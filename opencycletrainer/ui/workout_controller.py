@@ -25,8 +25,9 @@ from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.recorder import RecorderSample, WorkoutRecorder
 from opencycletrainer.core.sensors import CadenceSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
-from opencycletrainer.core.workout_model import Workout
+from opencycletrainer.core.workout_model import Workout, WorkoutInterval
 from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore
+from opencycletrainer.storage.paths import get_workout_data_root, get_workout_png_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
 from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
@@ -121,6 +122,9 @@ class WorkoutSessionController(QObject):
         self._last_speed_mps: float | None = None
         self._cadence_source_last_times: dict[CadenceSource, float] = {}
 
+        self._is_free_ride: bool = False
+        self._free_ride_erg_target_watts: int | None = None
+
         self._pause_dialog: PauseDialog | None = None
         self._chart_start_monotonic: float | None = None
         self._pause_start_monotonic: float | None = None
@@ -159,6 +163,7 @@ class WorkoutSessionController(QObject):
     def apply_settings(self, settings: AppSettings) -> None:
         self._settings = settings
         self._engine.kj_mode = settings.default_workout_behavior == "kj_mode"
+        self._configure_recorder_data_dir()
         was_enabled = self._opentrueup is not None
         now_enabled = settings.opentrueup_enabled
         if not was_enabled and now_enabled:
@@ -199,9 +204,16 @@ class WorkoutSessionController(QObject):
         self._screen.jog_requested.connect(self._jog_target)
         self._screen.mode_selector.currentTextChanged.connect(self._mode_selected)
         self._screen.load_workout_requested.connect(self._request_load_workout_from_file)
+        self._screen.free_ride_requested.connect(self._start_free_ride)
+        self._screen.erg_target_entered.connect(self._on_erg_target_entered)
 
     def _set_no_workout_state(self) -> None:
         self._workout = None
+        if self._is_free_ride:
+            self._is_free_ride = False
+            self._free_ride_erg_target_watts = None
+            self._screen.set_free_ride_mode(False)
+            self._screen.set_interval_plot_visible(True)
         self._screen.set_workout_name(None)
         self._screen.set_session_state("idle")
         self._screen.set_mandatory_metrics(
@@ -299,6 +311,79 @@ class WorkoutSessionController(QObject):
         self._chart_timer.start()
         self._handle_snapshot(snapshot, now_monotonic=now)
 
+    def _start_free_ride(self) -> None:
+        if self._engine.state in {EngineState.RUNNING, EngineState.RAMP_IN, EngineState.PAUSED}:
+            return
+
+        self._is_free_ride = True
+        self._free_ride_erg_target_watts = None
+        self._total_kj = 0.0
+        self._interval_extra_seconds = {}
+        self._manual_erg_jog_watts = 0.0
+        self._last_energy_tick_monotonic = None
+        self._power_history.clear()
+        self._interval_power_sum = 0.0
+        self._interval_power_count = 0
+        self._workout_power_sum = 0.0
+        self._workout_power_count = 0
+        self._interval_actual_kj = 0.0
+        self._workout_actual_kj = 0.0
+        self._last_actual_power_tick = None
+        self._interval_hr_sum = 0.0
+        self._interval_hr_count = 0
+        self._workout_hr_sum = 0.0
+        self._workout_hr_count = 0
+        self._active_interval_index = None
+        self._last_power_watts = None
+        self._last_hr_bpm = None
+        self._chart_start_monotonic = None
+        self._pause_start_monotonic = None
+        self._total_paused_duration = 0.0
+        self._hr_history = []
+        self._skip_events = []
+
+        ftp = max(1, int(self._settings.ftp))
+        interval = WorkoutInterval(
+            start_offset_seconds=0,
+            duration_seconds=86400,
+            start_percent_ftp=0.0,
+            end_percent_ftp=0.0,
+            start_target_watts=0,
+            end_target_watts=0,
+        )
+        synthetic = Workout(name="Free Ride", ftp_watts=ftp, intervals=(interval,))
+        self._workout = synthetic
+        self._engine.load_workout(synthetic)
+
+        self._selected_mode = "Resistance"
+        self._screen.set_mode_state("Resistance")
+        self._screen.set_free_ride_mode(True)
+        self._screen.set_interval_plot_visible(False)
+        self._screen.load_free_ride_chart()
+        self._screen.set_workout_name("Free Ride")
+
+        self._start_recorder()
+        self._engine.start()
+        now = float(self._monotonic_clock())
+        self._chart_start_monotonic = now
+        snapshot = self._engine.tick(now)
+        self._timer.start()
+        self._chart_timer.start()
+        self._handle_snapshot(snapshot, now_monotonic=now)
+
+    def _on_erg_target_entered(self, watts: int) -> None:
+        """Switch to ERG mode with the given watt target entered by the user in free ride."""
+        self._free_ride_erg_target_watts = watts
+        self._selected_mode = "ERG"
+        self._manual_erg_jog_watts = 0.0
+        self._screen.set_mode_state("ERG")
+        jog_offset = 0.0
+        self._submit_ftms_bridge_action(
+            lambda bridge: bridge.set_erg_jog_offset_watts(jog_offset)
+        )
+        if self._last_snapshot:
+            self._handle_snapshot(self._last_snapshot, now_monotonic=None)
+
     def _pause_workout(self) -> None:
         self._pause_start_monotonic = self._monotonic_clock()
         snapshot = self._engine.pause()
@@ -321,6 +406,11 @@ class WorkoutSessionController(QObject):
         snapshot = self._engine.stop()
         self._timer.stop()
         self._chart_timer.stop()
+        if self._is_free_ride:
+            self._is_free_ride = False
+            self._free_ride_erg_target_watts = None
+            self._screen.set_free_ride_mode(False)
+            self._screen.set_interval_plot_visible(True)
         self._handle_snapshot(snapshot, now_monotonic=None)
         self._finalize_recorder()
         self._show_workout_summary()
@@ -410,14 +500,31 @@ class WorkoutSessionController(QObject):
             self._manual_erg_jog_watts = 0.0
 
         elapsed_seconds = int(round(snapshot.riding_elapsed_seconds))
-        remaining_seconds = max(int(snapshot.total_duration_seconds) - int(round(snapshot.elapsed_seconds)), 0)
-        interval_remaining_seconds = self._interval_remaining_seconds(snapshot)
-        target_watts = self._resolve_target_watts(snapshot) or self._workout_target_watts(snapshot)
+        window = max(1, int(self._settings.windowed_power_window_seconds))
+        windowed_avg = self._windowed_avg_power(self._monotonic_clock(), window)
+        current_str = str(windowed_avg) if windowed_avg is not None else "--"
+
+        if self._is_free_ride:
+            remaining_text = "\u2014"
+            interval_remaining_text = "\u2014"
+            if self._active_control_mode(snapshot) == "ERG" and self._free_ride_erg_target_watts is not None:
+                target_watts = self._free_ride_erg_target_watts + int(round(self._manual_erg_jog_watts))
+                target_str = str(target_watts)
+            else:
+                target_str = "\u2014"
+        else:
+            remaining_seconds = max(int(snapshot.total_duration_seconds) - int(round(snapshot.elapsed_seconds)), 0)
+            interval_remaining_seconds = self._interval_remaining_seconds(snapshot)
+            target_watts = self._resolve_target_watts(snapshot) or self._workout_target_watts(snapshot)
+            remaining_text = _format_hh_mm_ss(remaining_seconds)
+            interval_remaining_text = _format_hh_mm_ss(interval_remaining_seconds)
+            target_str = str(target_watts) if target_watts is not None else "--"
+
         self._screen.set_mandatory_metrics(
             elapsed_text=_format_hh_mm_ss(elapsed_seconds),
-            remaining_text=_format_hh_mm_ss(remaining_seconds),
-            interval_remaining_text=_format_hh_mm_ss(interval_remaining_seconds),
-            target_power_text=f"{target_watts} W" if target_watts is not None else "-- W",
+            remaining_text=remaining_text,
+            interval_remaining_text=interval_remaining_text,
+            target_power_text=f"{current_str} / {target_str} W",
         )
 
         self._update_tiles(snapshot)
@@ -510,12 +617,18 @@ class WorkoutSessionController(QObject):
     def _resolve_target_watts(self, snapshot: WorkoutEngineSnapshot) -> int | None:
         if self._workout is None:
             return None
+        if self._active_control_mode(snapshot) != "ERG":
+            return None
+
+        if self._is_free_ride:
+            if self._free_ride_erg_target_watts is None:
+                return None
+            return int(round(max(0, self._free_ride_erg_target_watts + self._manual_erg_jog_watts)))
+
         index = snapshot.current_interval_index
         if index is None:
             return None
         if index < 0 or index >= len(self._workout.intervals):
-            return None
-        if self._active_control_mode(snapshot) != "ERG":
             return None
 
         interval = self._workout.intervals[index]
@@ -548,6 +661,7 @@ class WorkoutSessionController(QObject):
     def _start_recorder(self) -> None:
         if self._workout is None or self._recorder_started:
             return
+        self._configure_recorder_data_dir()
         self._recorder.start(
             workout_name=self._workout.name,
             started_at_utc=self._utc_now(),
@@ -570,9 +684,24 @@ class WorkoutSessionController(QObject):
             alert_type="success",
         )
         if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
-            chart_image_path = summary.fit_file_path.with_suffix(".png")
+            chart_image_path = get_workout_png_dir(self._workout_data_root()) / (
+                f"{summary.fit_file_path.stem}.png"
+            )
             self._screen.export_chart_image(chart_image_path)
             self._enqueue_strava_upload(summary.fit_file_path, chart_image_path)
+
+    def _workout_data_root(self) -> Path:
+        return get_workout_data_root(self._settings.workout_data_dir)
+
+    def _configure_recorder_data_dir(self) -> None:
+        set_data_dir = getattr(self._recorder, "set_data_dir", None)
+        if not callable(set_data_dir):
+            return
+        try:
+            set_data_dir(self._workout_data_root())
+        except RuntimeError:
+            # Recorder is active; it will pick up the updated setting next session.
+            return
 
     def _enqueue_strava_upload(self, fit_path: Path, chart_image_path: Path | None) -> None:
         from concurrent.futures import Future  # noqa: PLC0415
@@ -975,7 +1104,10 @@ class WorkoutSessionController(QObject):
             else None
         )
 
-        self._screen.update_charts(elapsed, interval_index, power_series, hr_series)
+        if self._is_free_ride:
+            self._screen.update_free_ride_charts(elapsed, power_series, hr_series)
+        else:
+            self._screen.update_charts(elapsed, interval_index, power_series, hr_series)
 
     def _compute_normalized_power(self) -> int | None:
         samples = list(self._power_history)

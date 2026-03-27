@@ -140,8 +140,11 @@ def test_bleak_backend_scan_connect_and_subscribe_plumbing(monkeypatch, tmp_path
         backend.shutdown()
 
 
-def test_bleak_ftms_transport_subscribes_and_writes_control_point(monkeypatch):
-    backend = BleakDeviceBackend(scan_timeout_seconds=0.1)
+def test_bleak_ftms_transport_subscribes_and_writes_control_point(monkeypatch, tmp_path):
+    # Always pass a tmp_path store — omitting it writes fake device names to the real
+    # user data file, which then reappear in the UI on subsequent app launches.
+    store = PairedDeviceStore(path=tmp_path / "paired.json")
+    backend = BleakDeviceBackend(scan_timeout_seconds=0.1, paired_device_store=store)
     monkeypatch.setattr(
         BleakDeviceBackend,
         "_load_bleak_classes",
@@ -171,8 +174,11 @@ def test_bleak_ftms_transport_subscribes_and_writes_control_point(monkeypatch):
         backend.shutdown()
 
 
-def test_bleak_backend_shutdown_stops_notifications_before_disconnect(monkeypatch):
-    backend = BleakDeviceBackend(scan_timeout_seconds=0.1)
+def test_bleak_backend_shutdown_stops_notifications_before_disconnect(monkeypatch, tmp_path):
+    # Always pass a tmp_path store — omitting it writes fake device names to the real
+    # user data file, which then reappear in the UI on subsequent app launches.
+    store = PairedDeviceStore(path=tmp_path / "paired.json")
+    backend = BleakDeviceBackend(scan_timeout_seconds=0.1, paired_device_store=store)
     monkeypatch.setattr(
         BleakDeviceBackend,
         "_load_bleak_classes",

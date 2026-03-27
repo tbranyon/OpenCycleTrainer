@@ -337,3 +337,15 @@ def test_clear_removes_skip_markers():
 
     widget.clear()
     assert len(widget._skip_markers) == 0
+
+
+def test_widget_apply_color_theme_switches_between_light_and_dark():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.apply_color_theme("dark")
+    assert widget._color_theme == "dark"
+
+    widget.apply_color_theme("light")
+    assert widget._color_theme == "light"

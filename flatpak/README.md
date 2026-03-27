@@ -6,6 +6,10 @@ This directory contains the Linux Flatpak manifest for OpenCycleTrainer.
 
 - `org.opencycletrainer.OpenCycleTrainer.yaml`: application manifest
 
+The Flatpak build installs bundled app assets to `/app/share/opencycletrainer`:
+- Prepackaged workouts in `/app/share/opencycletrainer/workouts`
+- In-use icon at `/app/share/opencycletrainer/res/icon_nobg.png`
+
 ## Prerequisites
 
 Install Flatpak tooling and add the Flathub remote.

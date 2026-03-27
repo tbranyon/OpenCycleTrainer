@@ -35,6 +35,9 @@ class BleakDeviceBackend(DeviceManager):
         paired_device_store: PairedDeviceStore | None = None,
     ) -> None:
         self._scan_timeout_seconds = scan_timeout_seconds
+        # WARNING: omitting paired_device_store uses the real user data file. Tests MUST
+        # pass PairedDeviceStore(path=tmp_path/...) or fake device entries will persist
+        # to disk and reappear in the UI. This bug has bitten us three times.
         self._paired_device_store = paired_device_store if paired_device_store is not None else PairedDeviceStore()
         self._runner = AsyncioRunner()
         self._lock = threading.Lock()

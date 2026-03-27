@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from .logging_config import configure_logging
-from .storage.paths import ensure_dir, get_config_dir, get_data_dir, get_settings_file_path
+from .storage.paths import (
+    ensure_dir,
+    get_app_icon_path,
+    get_config_dir,
+    get_data_dir,
+    get_settings_file_path,
+)
 from .storage.settings import AppSettings, load_settings
 from .ui.main_window import MainWindow
-
-_RES_DIR = Path(__file__).parent.parent / "res"
 
 
 def initialize_environment() -> AppSettings:
@@ -28,7 +31,7 @@ def main() -> int:
     settings = initialize_environment()
     app = QApplication(sys.argv)
     app.setApplicationName("OpenCycleTrainer")
-    app.setWindowIcon(QIcon(str(_RES_DIR / "icon_nobg.png")))
+    app.setWindowIcon(QIcon(str(get_app_icon_path())))
     window = MainWindow(settings=settings, settings_path=get_settings_file_path())
     window.show()
     return app.exec()

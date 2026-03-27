@@ -6,6 +6,7 @@ __pycache__/
 .coverage
 dist/
 build/
+.tmp_runtime/
 
 # Strava app credentials — never commit
 opencycletrainer/integrations/strava/_app_secrets.py

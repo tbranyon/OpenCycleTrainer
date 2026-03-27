@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -92,6 +93,7 @@ class MetricTile(QFrame):
     """A single metric display tile showing a title and live value. Supports drag-to-reorder."""
 
     drag_requested = Signal(str)  # emits tile key when drag threshold is crossed
+    value_committed = Signal(str)  # emits entered text when inline editor is confirmed
 
     _DRAG_THRESHOLD = 6
 
@@ -105,7 +107,9 @@ class MetricTile(QFrame):
     ) -> None:
         super().__init__(parent)
         self.key = key
+        self.editing_enabled: bool = False
         self._drag_start_pos: QPoint | None = None
+        self._edit_input: QLineEdit | None = None
         self.setFrameShape(QFrame.StyledPanel)
 
         layout = QVBoxLayout(self)
@@ -124,6 +128,50 @@ class MetricTile(QFrame):
         font.setPointSize(font.pointSize() + (4 if prominent else 1))
         self.value_label.setFont(font)
         layout.addWidget(self.value_label)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if not self.editing_enabled or self._edit_input is not None:
+            super().mouseDoubleClickEvent(event)
+            return
+        self._open_edit()
+        super().mouseDoubleClickEvent(event)
+
+    def _open_edit(self) -> None:
+        """Show an inline QLineEdit over the value label for direct watt input."""
+        self._edit_input = QLineEdit(self)
+        self._edit_input.setAlignment(Qt.AlignCenter)
+        self._edit_input.setFont(self.value_label.font())
+        self._edit_input.installEventFilter(self)
+        self._edit_input.returnPressed.connect(self._commit_edit)
+        self.value_label.hide()
+        self.layout().addWidget(self._edit_input)
+        self._edit_input.show()
+        self._edit_input.setFocus()
+        self._edit_input.selectAll()
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """Intercept Escape on the edit input to cancel editing."""
+        if obj is self._edit_input and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self._cancel_edit()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _commit_edit(self) -> None:
+        text = self._edit_input.text() if self._edit_input else ""
+        self._close_edit()
+        self.value_committed.emit(text)
+
+    def _cancel_edit(self) -> None:
+        self._close_edit()
+
+    def _close_edit(self) -> None:
+        if self._edit_input is not None:
+            self._edit_input.removeEventFilter(self)
+            self.layout().removeWidget(self._edit_input)
+            self._edit_input.deleteLater()
+            self._edit_input = None
+        self.value_label.show()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -151,6 +199,8 @@ class WorkoutScreen(QWidget):
     pause_resume_requested = Signal()
     load_workout_requested = Signal()
     load_from_library_requested = Signal()
+    free_ride_requested = Signal()
+    erg_target_entered = Signal(int)
     tile_order_changed = Signal(list)  # emits new list[str] of tile keys after drag reorder
 
     def __init__(
@@ -196,8 +246,13 @@ class WorkoutScreen(QWidget):
         self.load_from_file_button.setObjectName("loadFromFileButton")
         self.load_from_file_button.setFont(font)
         self.load_from_file_button.clicked.connect(self.load_workout_requested)
+        self.free_ride_button = QPushButton("Free Ride", self)
+        self.free_ride_button.setObjectName("freeRideButton")
+        self.free_ride_button.setFont(font)
+        self.free_ride_button.clicked.connect(self.free_ride_requested)
         load_buttons_layout.addWidget(self.load_from_library_button)
         load_buttons_layout.addWidget(self.load_from_file_button)
+        load_buttons_layout.addWidget(self.free_ride_button)
 
         self.title_widget.addWidget(self.title_label)
         self.title_widget.addWidget(self.load_buttons_widget)
@@ -233,6 +288,9 @@ class WorkoutScreen(QWidget):
         self._selected_tiles = normalize_tile_selections(settings.tile_selections)
         self._kj_mode_active = settings.default_workout_behavior == "kj_mode"
         self._render_selected_tiles()
+
+    def apply_color_theme(self, color_theme: str) -> None:
+        self.chart_widget.apply_color_theme(color_theme)
 
     def set_workout_name(self, workout_name: str | None) -> None:
         name = str(workout_name or "").strip()
@@ -334,7 +392,7 @@ class WorkoutScreen(QWidget):
         mandatory_row = QHBoxLayout()
         mandatory_row.setSpacing(8)
         self.elapsed_time_tile = MetricTile(title="Time Elapsed", key="time_elapsed", parent=self)
-        self.target_power_tile = MetricTile(title="Target Power", key="target_power", parent=self)
+        self.target_power_tile = MetricTile(title="Current / Target Power", key="target_power", parent=self)
         self.interval_remaining_tile = MetricTile(
             title="Interval Time/Work Remaining",
             key="interval_remaining",
@@ -420,6 +478,40 @@ class WorkoutScreen(QWidget):
 
     def clear_charts(self) -> None:
         self.chart_widget.clear()
+
+    def set_interval_plot_visible(self, visible: bool) -> None:
+        """Show or hide the interval plot; workout overview expands when hidden."""
+        self.chart_widget.set_interval_plot_visible(visible)
+
+    def load_free_ride_chart(self) -> None:
+        """Prepare the chart widget for a free ride (no target series, dynamic x-axis)."""
+        self.chart_widget.load_free_ride()
+
+    def update_free_ride_charts(
+        self,
+        elapsed_seconds: float,
+        power_series: list,
+        hr_series: list,
+    ) -> None:
+        self.chart_widget.update_free_ride_charts(elapsed_seconds, power_series, hr_series)
+
+    def set_free_ride_mode(self, active: bool) -> None:
+        """Enable or disable inline ERG target editing on the target power tile."""
+        self.target_power_tile.editing_enabled = active
+        if active:
+            self.target_power_tile.value_committed.connect(self._on_erg_value_committed)
+        else:
+            try:
+                self.target_power_tile.value_committed.disconnect(self._on_erg_value_committed)
+            except RuntimeError:
+                pass
+
+    def _on_erg_value_committed(self, text: str) -> None:
+        try:
+            watts = int(text.strip())
+        except ValueError:
+            return
+        self.erg_target_entered.emit(watts)
 
     def _build_chart_scaffolding(self, root_layout: QVBoxLayout) -> None:
         self.chart_widget = WorkoutChartWidget(self)

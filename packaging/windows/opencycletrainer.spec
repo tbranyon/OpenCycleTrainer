@@ -7,7 +7,10 @@ a = Analysis(
     ["opencycletrainer\\__main__.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ("res\\icon_nobg.png", "res"),
+        ("workouts\\*.mrc", "workouts"),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
