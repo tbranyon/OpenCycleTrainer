@@ -14,6 +14,7 @@ _logger = logging.getLogger(__name__)
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController, OpenTrueUpStatus
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+from opencycletrainer.devices.decoders.ftms import ResistanceLevelRange
 from opencycletrainer.devices.types import FTMS_CONTROL_POINT_CHARACTERISTIC_UUID
 
 _OPCODE_REQUEST_CONTROL = 0x00
@@ -78,6 +79,9 @@ class FTMSControlTransport(Protocol):
     def set_indication_handler(self, handler: Callable[[bytes], None]) -> None:
         """Register a callback for FTMS control-point indications."""
 
+    def read_resistance_level_range(self) -> ResistanceLevelRange | None:
+        """Return trainer's supported resistance range, or None if unavailable."""
+
 
 @dataclass
 class _PendingAck:
@@ -102,6 +106,8 @@ class FTMSControl:
         self._pending_lock = threading.Lock()
         self._pending_ack: _PendingAck | None = None
         self._has_control = False
+        self._resistance_range: ResistanceLevelRange | None = None
+        self._resistance_range_loaded: bool = False
 
         self._transport.set_indication_handler(self.handle_control_point_indication)
 
@@ -125,20 +131,33 @@ class FTMSControl:
             payload=payload,
         )
 
-    def set_resistance_level(self, percent_or_unit: float) -> FTMSControlAck:
-        level = float(percent_or_unit)
-        if level < 0 or level > 100:
-            raise ValueError("Resistance level must be between 0 and 100%.")
-        resistance_units = int(round(level * 10.0))
-        payload = bytes([_OPCODE_SET_TARGET_RESISTANCE]) + resistance_units.to_bytes(
-            2,
-            "little",
-            signed=True,
-        )
+    def set_resistance_level(self, level: float) -> FTMSControlAck:
+        """Set resistance level (0–100%), normalized to the trainer's supported range.
+
+        Maps 0–100 linearly onto [range.minimum, range.maximum] from the trainer's
+        Supported Resistance Level Range characteristic (0x2AD6). Falls back to
+        raw 0–100 if the range is unavailable. Encoded as UINT8 per FTMS spec (opcode 0x04).
+        """
+        level_f = float(level)
+        if level_f < 0 or level_f > 100:
+            raise ValueError("Resistance level must be between 0 and 100.")
+        raw = _normalize_resistance(level_f, self._ensure_resistance_range())
+        payload = bytes([_OPCODE_SET_TARGET_RESISTANCE, raw])
         return self._send_command_with_ack(
             request_opcode=_OPCODE_SET_TARGET_RESISTANCE,
             payload=payload,
         )
+
+    def _ensure_resistance_range(self) -> ResistanceLevelRange | None:
+        if self._resistance_range_loaded:
+            return self._resistance_range
+        try:
+            self._resistance_range = self._transport.read_resistance_level_range()
+        except Exception as exc:
+            _logger.warning("Could not read resistance level range: %s. Using raw 0–100.", exc)
+            self._resistance_range = None
+        self._resistance_range_loaded = True
+        return self._resistance_range
 
     def handle_control_point_indication(self, payload: bytes) -> None:
         if len(payload) < 3:
@@ -499,6 +518,17 @@ def _interpolate_interval(
     elapsed_clamped = min(max(float(elapsed_seconds), 0.0), float(duration_seconds))
     ratio = elapsed_clamped / float(duration_seconds)
     return start_value + (end_value - start_value) * ratio
+
+
+def _normalize_resistance(level_percent: float, range_: ResistanceLevelRange | None) -> int:
+    """Map 0–100% onto the trainer's raw UINT8 range. Falls back to round(level) if unavailable."""
+    if range_ is None or range_.maximum <= range_.minimum:
+        return int(round(level_percent))
+    raw_float = (
+        range_.minimum * 10
+        + (level_percent / 100.0) * (range_.maximum - range_.minimum) * 10
+    )
+    return max(0, min(255, int(round(raw_float))))
 
 
 def _opcode_label(opcode: int) -> str:

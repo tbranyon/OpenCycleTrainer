@@ -84,6 +84,7 @@ class WorkoutSessionController(QObject):
         self._upload_executor: ThreadPoolExecutor | None = None
         self._trainer_backend: object | None = None
         self._trainer_device_id: str | None = None
+        self._last_known_trainer_id: str | None = None
         self._ftms_bridge: WorkoutEngineFTMSBridge | None = None
         self._ftms_bridge_executor: ThreadPoolExecutor | None = None
 
@@ -92,7 +93,8 @@ class WorkoutSessionController(QObject):
         )
         self._workout: Workout | None = None
         self._selected_mode = self._screen.mode_selector.currentText()
-        self._manual_resistance_offset_percent = 0.0
+        self._trainer_resistance_step_count: int | None = None
+        self._manual_resistance_offset_percent = 33.0
         self._manual_erg_jog_watts = 0.0
         self._total_kj = 0.0
         self._interval_extra_seconds: dict[int, int] = {}
@@ -156,9 +158,24 @@ class WorkoutSessionController(QObject):
         backend: object,
         trainer_device_id: str | None,
     ) -> None:
+        old_id = self._trainer_device_id
         self._trainer_backend = backend
         self._trainer_device_id = trainer_device_id
+        self._notify_trainer_connection_change(old_id, trainer_device_id)
         self._reconfigure_ftms_bridge()
+
+    def _notify_trainer_connection_change(
+        self, old_id: str | None, new_id: str | None
+    ) -> None:
+        """Show a subtle alert when the trainer connects or disconnects during an active workout."""
+        if not self._timer.isActive():
+            return
+        if old_id is not None and new_id is None:
+            self._screen.show_alert("Trainer disconnected. Reconnecting...", "info")
+        elif old_id is None and new_id is not None and self._last_known_trainer_id is not None:
+            self._screen.show_alert("Trainer reconnected", "success")
+        if new_id is not None:
+            self._last_known_trainer_id = new_id
 
     def apply_settings(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -255,7 +272,7 @@ class WorkoutSessionController(QObject):
 
         self._workout = workout
         self._interval_extra_seconds = {}
-        self._manual_resistance_offset_percent = 0.0
+        self._manual_resistance_offset_percent = 33.0
         self._manual_erg_jog_watts = 0.0
         self._chart_timer.stop()
         self._screen.load_workout_chart(workout, ftp)
@@ -489,7 +506,8 @@ class WorkoutSessionController(QObject):
 
         active_mode = self._active_control_mode(snapshot)
         if active_mode == "Resistance":
-            self._screen.set_resistance_level(int(self._manual_resistance_offset_percent))
+            value, show_percent = self._resistance_display()
+            self._screen.set_resistance_level(value, show_percent=show_percent)
         else:
             self._screen.set_resistance_level(None)
 
@@ -640,6 +658,18 @@ class WorkoutSessionController(QObject):
         ) * ratio
         final_target = target + self._manual_erg_jog_watts
         return int(round(max(0, final_target)))
+
+    def _resistance_display(self) -> tuple[int, bool]:
+        """Return (display_value, show_percent) for the current resistance level.
+
+        When the trainer has fewer than 100 discrete steps, returns the raw step
+        number (no percent sign) so each UI step maps to a real trainer step.
+        """
+        percent = self._manual_resistance_offset_percent
+        step_count = self._trainer_resistance_step_count
+        if step_count is not None and step_count < 100:
+            return round(step_count * percent / 100), False
+        return int(percent), True
 
     def _active_control_mode(self, snapshot: WorkoutEngineSnapshot) -> str:
         if self._selected_mode == "ERG":
@@ -903,6 +933,13 @@ class WorkoutSessionController(QObject):
             self._screen.set_trainer_controls_visible(False)
             return
 
+        resistance_range = transport.read_resistance_level_range()
+        if resistance_range is not None:
+            step_count = resistance_range.step_count
+            self._trainer_resistance_step_count = step_count if step_count > 0 else None
+        else:
+            self._trainer_resistance_step_count = None
+
         initial_snapshot = self._last_snapshot if self._last_snapshot is not None else self._engine.snapshot()
         initial_mode = (
             ControlMode.RESISTANCE
@@ -938,6 +975,7 @@ class WorkoutSessionController(QObject):
         executor = self._ftms_bridge_executor
         self._ftms_bridge_executor = None
         self._ftms_bridge = None
+        self._trainer_resistance_step_count = None
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 

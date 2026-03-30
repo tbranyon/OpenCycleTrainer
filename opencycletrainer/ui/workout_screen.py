@@ -264,6 +264,7 @@ class WorkoutScreen(QWidget):
         self._build_alert_banner(root_layout)
         self._build_metrics_section(root_layout)
         self._build_chart_scaffolding(root_layout)
+        self.chart_widget.set_interval_plot_visible(self._settings.show_interval_plot)
         self._build_mode_footer(root_layout)
         self._render_selected_tiles()
         self._wire_button_state_tracking()
@@ -288,6 +289,7 @@ class WorkoutScreen(QWidget):
         self._selected_tiles = normalize_tile_selections(settings.tile_selections)
         self._kj_mode_active = settings.default_workout_behavior == "kj_mode"
         self._render_selected_tiles()
+        self.chart_widget.set_interval_plot_visible(settings.show_interval_plot)
 
     def apply_color_theme(self, color_theme: str) -> None:
         self.chart_widget.apply_color_theme(color_theme)
@@ -331,12 +333,17 @@ class WorkoutScreen(QWidget):
         if self.mode_selector.currentText() != mode:
             self.mode_selector.setCurrentText(mode)
 
-    def set_resistance_level(self, level: int | None) -> None:
-        """Show the resistance level label with the given percentage, or hide it if None."""
+    def set_resistance_level(self, level: int | None, *, show_percent: bool = True) -> None:
+        """Show the resistance level label, or hide it if None.
+
+        When show_percent is False (trainer with discrete steps < 100), the label
+        shows the raw step number without a percent sign.
+        """
         if level is None:
             self.resistance_level_label.setVisible(False)
             return
-        self.resistance_level_label.setText(f"{level} %")
+        text = f"{level} %" if show_percent else str(level)
+        self.resistance_level_label.setText(text)
         self.resistance_level_label.setVisible(True)
 
     def set_opentrueup_offset_watts(self, offset_watts: int | None) -> None:
@@ -364,10 +371,20 @@ class WorkoutScreen(QWidget):
             "padding: 6px;"
             "}"
         ),
+        "info": (
+            "QLabel#workoutAlertLabel {"
+            "color: #5c4a00;"
+            "background-color: #fff8e1;"
+            "border: 1px solid #e0a800;"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "}"
+        ),
     }
 
     def show_alert(self, message: str, alert_type: str = "error") -> None:
-        """Show a banner alert. alert_type is 'error' or 'success'. Auto-dismisses after 5s; click to dismiss early."""
+        """Show a banner alert. alert_type is 'error', 'success', or 'info'.
+        Error and success auto-dismiss after 5s; info persists until replaced or clicked."""
         message_clean = message.strip()
         if not message_clean:
             self.clear_alert()
@@ -376,7 +393,10 @@ class WorkoutScreen(QWidget):
         self.alert_label.setStyleSheet(style)
         self.alert_label.setText(message_clean)
         self.alert_label.setVisible(True)
-        self._alert_timer.start()
+        if alert_type == "info":
+            self._alert_timer.stop()
+        else:
+            self._alert_timer.start()
 
     def clear_alert(self) -> None:
         self._alert_timer.stop()

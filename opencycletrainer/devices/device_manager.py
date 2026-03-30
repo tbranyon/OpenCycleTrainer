@@ -99,5 +99,9 @@ class DeviceManager(ABC):
     ) -> Future[None]:
         """Subscribe to notifications for the given device."""
 
+    @abstractmethod
+    def read_gatt_characteristic(self, device_id: str, characteristic_uuid: str) -> Future[bytes]:
+        """Read a GATT characteristic from a connected device."""
+
     def shutdown(self) -> None:
         """Optional lifecycle hook for backend cleanup."""

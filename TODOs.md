@@ -11,7 +11,7 @@
 9. [DONE] ~~Device pairing persistence is not implemented (pair state is in-memory backend state, not saved to storage).~~
 10. [DONE] ~~OpenTrueUp is implemented as a module, but not integrated into runtime app flow/settings wiring (offset display method exists but is not fed by app logic). Evidence: opentrueup.py, workout_screen.py.~~
 11. [DONE] ~~Recorder/FIT export are implemented modules but not wired to workout lifecycle in the running app.~~
-12. Display units/date/time formatting behavior from spec is not implemented in UI behavior.
+12. [N/A] ~~Display units/date/time formatting behavior from spec is not implemented in UI behavior.~~
 13. CI build pipelines for Windows/Linux are not present in repo (no workflow configuration found).
 14. [DONE] ~~Graphs should load with workout file (currently don't display until workout is started)~~
 15. Switch to resistance mode doesn't work (FTMS command failure)
@@ -32,11 +32,11 @@
 30. [DONE] ~~Strava sync Phases 1-4: OAuth connect/disconnect, secure token storage, and automatic FIT upload on workout completion.~~
 31. [DONE] ~~Strava sync Phase 5: Structured logging, duplicate upload prevention with local history, external_id on uploads, "already synced" alert, and Sync Now button wiring.~~
 32. [DONE] ~~Strava sync Phase 6: workout power chart image generated (matplotlib, 1080×1350 portrait) and attached to Strava activity after successful FIT upload, best-effort and non-blocking.~~
-33. Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.
+33. [DONE] ~~Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.~~
 34. [DONE] ~~Cursor continues to advance on charts while paused. There also appears to be a 3-second countdown on the pause modal followed by a 3-second ramp in once returned from the modal--the correct sequence should be to do the ramp-in with the 3 second countdown on the pause modal.~~
 35. [DONE] ~~Settings and value changes on the Settings page should automatically be saved when changed, rather than requiring the user to click Save.~~
 36. [DONE] ~~OpenTrueUp enable should be grayed out whenever the user does not have both a power meter and a power-reporting trainer connected~~
-37. UI should show some indication that auto-reconnecting devices are in the process of connecting.
+37. [DONE] ~~UI should show some indication that auto-reconnecting devices are in the process of connecting.~~
 38. [DONE] ~~Mock backend should only be a programmatic option for test scripts, the UI should not expose a backend toggle and should always use Bleak whenever we are not testing.~~
 39. [DONE] ~~Remove the display units toggle in settings, nothing uses it~~
 40. [DONE] ~~The Target Power tile should be modified to show "Current / Target Power" as the title and the values shown respectively (i.e. 151 / 153 W) in the box. This should use windowed average power for the current power, and Windowed Average Power should be removed from the configurable tile list.~~
@@ -46,4 +46,5 @@
 44. [DONE] ~~Populate workout library with workouts from workouts_lib.md (create the MRC files from the descriptions). These workouts should ship with OCT.~~
 45. [DONE] ~~Allow user to set workout data folder in Settings. OCT should create subfolders in this directory for each filetype (FIT, JSON, png).~~
 46. [DONE] ~~"Trainer A" and "Power Meter B" keep reappearing in the devices list after making updates. These should never appear as they are not real devices.~~
-47. Closing the app or maybe in cases disconnecting from a device, particularly an FTMS trainer, does not appear to always properly release the device. The app thinks the device is disconnected but the device still indicates it is connected and does not show up in scans as available for connection. Make sure we always properly release/disconnect devices.
+47. [DONE] ~~Closing the app or maybe in cases disconnecting from a device, particularly an FTMS trainer, does not appear to always properly release the device. The app thinks the device is disconnected but the device still indicates it is connected and does not show up in scans as available for connection. Make sure we always properly release/disconnect devices.~~
+48. Double clicking a connected device in the device list should fetch and display its capabilities (as reported by its relevant service characteristics, but transposed to human-readable form) in a modal. 48a. [DONE] ~~FTMS trainers~~, 48b. CPS Power Meters, 48c. Heart Rate Monitors

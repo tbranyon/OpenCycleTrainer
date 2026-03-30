@@ -229,6 +229,13 @@ class SettingsScreen(QWidget):
         root_layout.addWidget(tiles_group)
         self._update_selection_status()
 
+        charts_group = QGroupBox("Charts", self)
+        charts_layout = QFormLayout(charts_group)
+        self.show_interval_plot_checkbox = QCheckBox("Show interval plot", charts_group)
+        self.show_interval_plot_checkbox.setChecked(self._settings.show_interval_plot)
+        charts_layout.addRow(self.show_interval_plot_checkbox)
+        root_layout.addWidget(charts_group)
+
         strava_group = QGroupBox("Strava", self)
         strava_layout = QFormLayout(strava_group)
 
@@ -278,6 +285,7 @@ class SettingsScreen(QWidget):
             windowed_power_window_seconds=self.windowed_power_window_spinbox.value(),
             workout_data_dir=Path(workout_data_dir_text) if workout_data_dir_text else None,
             strava_auto_sync_enabled=self.strava_auto_sync_checkbox.isChecked(),
+            show_interval_plot=self.show_interval_plot_checkbox.isChecked(),
         )
 
     def set_tile_selected(self, tile_key: str, selected: bool) -> None:
@@ -313,6 +321,7 @@ class SettingsScreen(QWidget):
         self.workout_data_dir_edit.editingFinished.connect(self._autosave)
         self.opentrueup_checkbox.toggled.connect(self._autosave)
         self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
+        self.show_interval_plot_checkbox.toggled.connect(self._autosave)
 
     def _browse_workout_data_dir(self) -> None:
         start_dir_text = self.workout_data_dir_edit.text().strip()

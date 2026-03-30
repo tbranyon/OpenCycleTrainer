@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self._workout_library = WorkoutLibrary()
         self.workout_library_screen = WorkoutLibraryScreen(
             library=self._workout_library,
+            ftp_getter=lambda: self._settings.ftp,
             parent=self,
         )
         self.tabs.addTab(self.workout_screen, "Workout")

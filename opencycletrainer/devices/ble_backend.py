@@ -12,11 +12,13 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 
 from .device_manager import AsyncioRunner, DeviceManager, NotificationCallback, completed_future
+from .decoders.ftms import ResistanceLevelRange, decode_resistance_level_range
 from .types import (
     CPS_CONTROL_POINT_CHARACTERISTIC_UUID,
     DeviceInfo,
     DeviceType,
     FTMS_CONTROL_POINT_CHARACTERISTIC_UUID,
+    FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID,
     NOTIFICATION_CHARACTERISTIC_UUIDS,
     infer_device_type,
 )
@@ -33,17 +35,26 @@ class BleakDeviceBackend(DeviceManager):
         self,
         scan_timeout_seconds: float = 5.0,
         paired_device_store: PairedDeviceStore | None = None,
+        reconnect_delay_seconds: float = 3.0,
+        max_reconnect_attempts: int = 10,
+        device_connection_changed_callback: Callable[[str, bool], None] | None = None,
     ) -> None:
         self._scan_timeout_seconds = scan_timeout_seconds
         # WARNING: omitting paired_device_store uses the real user data file. Tests MUST
         # pass PairedDeviceStore(path=tmp_path/...) or fake device entries will persist
         # to disk and reappear in the UI. This bug has bitten us three times.
         self._paired_device_store = paired_device_store if paired_device_store is not None else PairedDeviceStore()
+        self._reconnect_delay_seconds = reconnect_delay_seconds
+        self._max_reconnect_attempts = max_reconnect_attempts
+        self.device_connection_changed_callback = device_connection_changed_callback
         self._runner = AsyncioRunner()
         self._lock = threading.Lock()
         self._devices: dict[str, DeviceInfo] = {}
         self._paired_ids: set[str] = set()
         self._clients: dict[str, Any] = {}
+        self._subscribed_uuids: dict[str, set[str]] = {}
+        self._reconnecting_ids: set[str] = set()
+        self._intentional_disconnects: set[str] = set()
         self._load_paired_ids_from_store()
 
     def scan(self) -> Future[list[DeviceInfo]]:
@@ -101,6 +112,11 @@ class BleakDeviceBackend(DeviceManager):
                 payload,
                 response=response,
             ),
+        )
+
+    def read_gatt_characteristic(self, device_id: str, characteristic_uuid: str) -> Future[bytes]:
+        return self._runner.submit(
+            self._read_gatt_characteristic_async(device_id, characteristic_uuid)
         )
 
     def subscribe_characteristic(
@@ -218,7 +234,29 @@ class BleakDeviceBackend(DeviceManager):
         if existing_client is not None and getattr(existing_client, "is_connected", False):
             return
 
-        client = client_cls(address)
+        def _on_disconnect(_: Any) -> None:
+            intentional = device_id in self._intentional_disconnects
+            with self._lock:
+                self._intentional_disconnects.discard(device_id)
+                self._clients.pop(device_id, None)
+                self._subscribed_uuids.pop(device_id, None)
+                if device_id in self._devices:
+                    dev = self._devices[device_id]
+                    self._devices[device_id] = replace(dev, connected=False)
+            _logger.info("Device '%s' disconnected (intentional=%s)", device_id, intentional)
+            cb = self.device_connection_changed_callback
+            if cb is not None:
+                try:
+                    cb(device_id, False)
+                except Exception:
+                    pass
+            if not intentional:
+                with self._lock:
+                    still_paired = device_id in self._paired_ids
+                if still_paired:
+                    self._runner.submit(self._reconnect_loop_async(device_id))
+
+        client = client_cls(address, disconnected_callback=_on_disconnect)
         await client.connect()
 
         with self._lock:
@@ -229,8 +267,10 @@ class BleakDeviceBackend(DeviceManager):
     async def _disconnect_async(self, device_id: str) -> None:
         with self._lock:
             client = self._clients.get(device_id)
+            uuids_to_unsub = list(self._subscribed_uuids.pop(device_id, set()))
+            self._intentional_disconnects.add(device_id)
         if client is not None:
-            for uuid in NOTIFICATION_CHARACTERISTIC_UUIDS:
+            for uuid in uuids_to_unsub:
                 try:
                     await client.stop_notify(uuid)
                 except Exception:
@@ -246,6 +286,40 @@ class BleakDeviceBackend(DeviceManager):
             device_ids = list(self._clients.keys())
         for device_id in device_ids:
             await self._disconnect_async(device_id)
+
+    async def _reconnect_loop_async(self, device_id: str) -> None:
+        """Retry connecting a paired device that dropped unexpectedly.
+
+        Runs in the background asyncio loop. Stops when the device reconnects,
+        is unpaired, or the maximum number of attempts is exhausted.
+        """
+        with self._lock:
+            if device_id in self._reconnecting_ids:
+                return
+            self._reconnecting_ids.add(device_id)
+        try:
+            for _ in range(self._max_reconnect_attempts):
+                await asyncio.sleep(self._reconnect_delay_seconds)
+                with self._lock:
+                    still_paired = device_id in self._paired_ids
+                    already_connected = device_id in self._clients
+                if not still_paired or already_connected:
+                    return
+                try:
+                    await self._connect_async(device_id)
+                    _logger.info("Device '%s' reconnected successfully", device_id)
+                    cb = self.device_connection_changed_callback
+                    if cb is not None:
+                        try:
+                            cb(device_id, True)
+                        except Exception:
+                            pass
+                    return
+                except Exception as exc:
+                    _logger.warning("Reconnect attempt failed for '%s': %s", device_id, exc)
+        finally:
+            with self._lock:
+                self._reconnecting_ids.discard(device_id)
 
     async def _calibrate_async(self, device_id: str) -> int | None:
         with self._lock:
@@ -322,6 +396,8 @@ class BleakDeviceBackend(DeviceManager):
                         callback=callback,
                     ),
                 )
+                with self._lock:
+                    self._subscribed_uuids.setdefault(device_id, set()).add(characteristic_uuid)
             except Exception as exc:
                 _logger.warning(
                     "Failed to subscribe to characteristic %s for device '%s': %s",
@@ -349,6 +425,13 @@ class BleakDeviceBackend(DeviceManager):
             response=response,
         )
 
+    async def _read_gatt_characteristic_async(self, device_id: str, characteristic_uuid: str) -> bytes:
+        with self._lock:
+            client = self._clients.get(device_id)
+        if client is None or not getattr(client, "is_connected", False):
+            raise RuntimeError(f"Device {device_id} is not connected")
+        return bytes(await client.read_gatt_char(characteristic_uuid))
+
     async def _subscribe_characteristic_async(
         self,
         device_id: str,
@@ -363,6 +446,8 @@ class BleakDeviceBackend(DeviceManager):
             characteristic_uuid,
             self._build_payload_notification_handler(callback),
         )
+        with self._lock:
+            self._subscribed_uuids.setdefault(device_id, set()).add(characteristic_uuid)
 
     def _build_notification_handler(
         self,
@@ -485,6 +570,8 @@ class BleakFTMSControlTransport:
         self._indication_handler: Callable[[bytes], None] = lambda _: None
         self._subscribe_future: Future[None] | None = None
         self._lock = threading.Lock()
+        self._resistance_range_cache: ResistanceLevelRange | None = None
+        self._resistance_range_cache_loaded: bool = False
 
     def write_control_point(self, payload: bytes) -> Future[None]:
         try:
@@ -494,6 +581,27 @@ class BleakFTMSControlTransport:
             failed.set_exception(exc)
             return failed
         return self._backend.write_ftms_control_point(self._device_id, payload)
+
+    def read_resistance_level_range(self) -> ResistanceLevelRange | None:
+        """Read and decode Supported Resistance Level Range (0x2AD6), cached after first read.
+
+        Returns None on any failure (characteristic not present, malformed payload, etc.).
+        """
+        if self._resistance_range_cache_loaded:
+            return self._resistance_range_cache
+        try:
+            payload = self._backend.read_gatt_characteristic(
+                self._device_id,
+                FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID,
+            ).result(timeout=self._subscribe_timeout_seconds)
+            self._resistance_range_cache = decode_resistance_level_range(payload)
+        except Exception as exc:
+            _logger.warning(
+                "Failed to read resistance level range for '%s': %s", self._device_id, exc
+            )
+            self._resistance_range_cache = None
+        self._resistance_range_cache_loaded = True
+        return self._resistance_range_cache
 
     def set_indication_handler(self, handler: Callable[[bytes], None]) -> None:
         self._indication_handler = handler

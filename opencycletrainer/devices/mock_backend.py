@@ -97,6 +97,11 @@ class MockDeviceBackend(DeviceManager):
         self._get_device(device_id)
         return completed_future(None)
 
+    def read_gatt_characteristic(self, device_id: str, characteristic_uuid: str) -> Future[bytes]:  # noqa: ARG002
+        """Return empty bytes; override in subclasses to return test data."""
+        self._get_device(device_id)
+        return completed_future(bytes())
+
     def _get_device(self, device_id: str) -> MockDevice:
         if device_id not in self._devices:
             raise KeyError(f"Unknown device id: {device_id}")

@@ -11,17 +11,35 @@ from opencycletrainer.core.control.ftms_control import (
     FTMSControlAckTimeoutError,
     FTMSControlError,
     WorkoutEngineFTMSBridge,
+    _normalize_resistance,
 )
 from opencycletrainer.core.workout_engine import WorkoutEngine
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+from opencycletrainer.devices.decoders.ftms import (
+    FTMSFeatures,
+    FTMSCapabilities,
+    ResistanceLevelRange,
+    SupportedPowerRange,
+    decode_ftms_fitness_machine_features,
+    decode_ftms_supported_power_range,
+    decode_resistance_level_range,
+)
 
 
 class _FakeFTMSTransport:
-    def __init__(self, *, auto_ack: bool = True, ack_result_code: int = 0x01) -> None:
+    def __init__(
+        self,
+        *,
+        auto_ack: bool = True,
+        ack_result_code: int = 0x01,
+        resistance_range: ResistanceLevelRange | None = None,
+    ) -> None:
         self.auto_ack = auto_ack
         self.ack_result_code = ack_result_code
+        self.resistance_range = resistance_range
         self.writes: list[bytes] = []
         self._handler = lambda _: None
+        self.range_read_count: int = 0
 
     def write_control_point(self, payload: bytes) -> Future[None]:
         self.writes.append(payload)
@@ -33,6 +51,10 @@ class _FakeFTMSTransport:
 
     def set_indication_handler(self, handler):
         self._handler = handler
+
+    def read_resistance_level_range(self) -> ResistanceLevelRange | None:
+        self.range_read_count += 1
+        return self.resistance_range
 
 
 class _StubControl:
@@ -93,7 +115,7 @@ def test_ftms_control_encodes_erg_and_resistance_commands_and_waits_for_ack():
     assert transport.writes == [
         b"\x00",
         b"\x05\xfa\x00",
-        b"\x04\xa7\x01",
+        b"\x04\x2a",  # opcode 0x04 + UINT8(42) for 42.3 rounded
     ]
 
 
@@ -315,3 +337,132 @@ def test_bridge_reports_control_errors_to_alert_callback():
 
     assert alerts
     assert "Error communicating with trainer" in alerts[0]
+
+
+# --- ResistanceLevelRange decoder tests ---
+
+def test_decode_resistance_level_range_parses_three_bytes():
+    result = decode_resistance_level_range(bytes([0, 100, 1]))
+    assert result == ResistanceLevelRange(minimum=0.0, maximum=10.0, minimum_increment=0.1)
+    assert result.step_count == 100
+
+
+def test_decode_resistance_level_range_small_step_count():
+    result = decode_resistance_level_range(bytes([0, 10, 1]))
+    assert result.step_count == 10
+
+
+def test_decode_resistance_level_range_raises_on_short_payload():
+    with pytest.raises(ValueError, match="too short"):
+        decode_resistance_level_range(bytes([0, 100]))
+
+
+# --- _normalize_resistance tests ---
+
+def test_normalize_resistance_no_range_returns_rounded_level():
+    assert _normalize_resistance(50.0, None) == 50
+    assert _normalize_resistance(42.3, None) == 42
+
+
+def test_normalize_resistance_with_range_maps_linearly():
+    # range [0.0, 10.0] → 100 steps, level 50% → raw 50
+    range_ = ResistanceLevelRange(minimum=0.0, maximum=10.0, minimum_increment=0.1)
+    assert _normalize_resistance(0.0, range_) == 0
+    assert _normalize_resistance(50.0, range_) == 50
+    assert _normalize_resistance(100.0, range_) == 100
+
+
+def test_normalize_resistance_clamps_to_uint8_bounds():
+    range_ = ResistanceLevelRange(minimum=0.0, maximum=25.5, minimum_increment=0.1)
+    assert _normalize_resistance(100.0, range_) == 255
+
+
+def test_normalize_resistance_degenerate_range_falls_back():
+    degenerate = ResistanceLevelRange(minimum=5.0, maximum=5.0, minimum_increment=0.1)
+    assert _normalize_resistance(50.0, degenerate) == 50
+
+
+# --- FTMSControl normalization integration tests ---
+
+def test_ftms_control_normalizes_resistance_with_range():
+    range_ = ResistanceLevelRange(minimum=0.0, maximum=10.0, minimum_increment=0.1)
+    transport = _FakeFTMSTransport(resistance_range=range_)
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    control.set_resistance_level(50.0)
+
+    # opcode 0x04 + raw byte 50
+    assert transport.writes[-1] == bytes([0x04, 50])
+
+
+def test_ftms_control_resistance_range_read_only_once():
+    range_ = ResistanceLevelRange(minimum=0.0, maximum=10.0, minimum_increment=0.1)
+    transport = _FakeFTMSTransport(resistance_range=range_)
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    control.set_resistance_level(25.0)
+    control.set_resistance_level(75.0)
+
+    assert transport.range_read_count == 1
+
+
+def test_ftms_control_resistance_fallback_without_range():
+    transport = _FakeFTMSTransport(resistance_range=None)
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    control.set_resistance_level(42.3)
+
+    assert transport.writes[-1] == bytes([0x04, 42])
+
+
+# --- FTMSFeatures decoder tests ---
+
+def test_decode_ftms_fitness_machine_features_decodes_power_and_cadence():
+    fitness = (1 << 14) | (1 << 1)  # Power Measurement + Cadence
+    target = 1 << 3                  # Power Target Setting
+    payload = fitness.to_bytes(4, "little") + target.to_bytes(4, "little")
+    result = decode_ftms_fitness_machine_features(payload)
+    assert "Power Measurement" in result.fitness_feature_names()
+    assert "Cadence" in result.fitness_feature_names()
+    assert "Power Target Setting" in result.target_setting_names()
+
+
+def test_decode_ftms_fitness_machine_features_empty_returns_no_names():
+    result = decode_ftms_fitness_machine_features(bytes(8))
+    assert result.fitness_feature_names() == []
+    assert result.target_setting_names() == []
+
+
+def test_decode_ftms_fitness_machine_features_raises_on_short_payload():
+    with pytest.raises(ValueError, match="too short"):
+        decode_ftms_fitness_machine_features(bytes(4))
+
+
+def test_ftms_features_all_feature_labels_contains_all_bits():
+    fitness = (1 << 14) | (1 << 1)
+    result = decode_ftms_fitness_machine_features(fitness.to_bytes(4, "little") + bytes(4))
+    labels = result.all_feature_labels()
+    supported = [name for name, supported in labels if supported]
+    assert "Power Measurement" in supported
+    assert "Cadence" in supported
+    unsupported = [name for name, supported in labels if not supported]
+    assert "Resistance Level" in unsupported
+
+
+# --- SupportedPowerRange decoder tests ---
+
+def test_decode_ftms_supported_power_range_parses_fields():
+    payload = (
+        (-10).to_bytes(2, "little", signed=True)
+        + (2000).to_bytes(2, "little", signed=True)
+        + (1).to_bytes(2, "little")
+    )
+    result = decode_ftms_supported_power_range(payload)
+    assert result.minimum_watts == -10
+    assert result.maximum_watts == 2000
+    assert result.minimum_increment_watts == 1
+
+
+def test_decode_ftms_supported_power_range_raises_on_short_payload():
+    with pytest.raises(ValueError, match="too short"):
+        decode_ftms_supported_power_range(bytes(5))

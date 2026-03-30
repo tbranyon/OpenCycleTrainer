@@ -64,10 +64,10 @@ def _ramp_workout(ftp: int = 200) -> Workout:
 # ── _build_target_series ──────────────────────────────────────────────────────
 
 def test_build_target_series_flat_step():
-    from opencycletrainer.ui.workout_chart import _build_target_series
+    from opencycletrainer.ui.workout_chart import build_target_series
 
     workout = _flat_workout()
-    t, w = _build_target_series(workout)
+    t, w = build_target_series(workout)
 
     # Two intervals × 2 points each = 4 points total
     assert len(t) == 4
@@ -88,10 +88,10 @@ def test_build_target_series_flat_step():
 
 
 def test_build_target_series_ramp():
-    from opencycletrainer.ui.workout_chart import _build_target_series
+    from opencycletrainer.ui.workout_chart import build_target_series
 
     workout = _ramp_workout()
-    t, w = _build_target_series(workout)
+    t, w = build_target_series(workout)
 
     assert len(t) == 2
     assert t[0] == pytest.approx(0.0)
@@ -103,16 +103,16 @@ def test_build_target_series_ramp():
 # ── _compute_y_max ────────────────────────────────────────────────────────────
 
 def test_compute_y_max_rounds_up_to_next_50():
-    from opencycletrainer.ui.workout_chart import _compute_y_max
+    from opencycletrainer.ui.workout_chart import compute_y_max
 
     workout = _flat_workout(ftp=200)
     # target_peak=180, ftp=200 → raw = 200 * 1.10 = 220 → rounded up = 250
-    y_max = _compute_y_max(workout, 200)
+    y_max = compute_y_max(workout, 200)
     assert y_max == pytest.approx(250.0)
 
 
 def test_compute_y_max_uses_target_peak_when_above_ftp():
-    from opencycletrainer.ui.workout_chart import _compute_y_max
+    from opencycletrainer.ui.workout_chart import compute_y_max
 
     workout = Workout(
         name="Hard",
@@ -129,7 +129,7 @@ def test_compute_y_max_uses_target_peak_when_above_ftp():
         ),
     )
     # target_peak=300, ftp=200 → raw = 300 * 1.10 = 330 → rounded up = 350
-    y_max = _compute_y_max(workout, 200)
+    y_max = compute_y_max(workout, 200)
     assert y_max == pytest.approx(350.0)
 
 
@@ -140,13 +140,26 @@ def test_time_axis_tick_count_near_8():
     from opencycletrainer.ui.workout_chart import _TimeAxisItem
 
     axis = _TimeAxisItem("bottom")
-    # 3600 s span → raw = 3600/7 ≈ 514 → rounded to 515... actually round(514/5)*5
-    # round(102.8)*5 = 103*5 = 515. 3600/515 ≈ 6.99 → 7 intervals = 8 ticks (0..7)
+    # 3600 s (1 hour) span → raw ≈ 514 s ≥ 150, snaps to 5-min boundary:
+    # round(514/300)*300 = 600 s → ticks at 0, 600, …, 3600 → 7 ticks
     levels = axis.tickValues(0.0, 3600.0, 800.0)
     assert len(levels) == 1
     _, ticks = levels[0]
-    # Should be approximately 8 ticks
     assert 7 <= len(ticks) <= 9
+
+
+def test_time_axis_large_span_snaps_to_5_min():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import _TimeAxisItem
+
+    axis = _TimeAxisItem("bottom")
+    # 2700 s (45 min) → raw ≈ 386 s → snaps to 300 s (5 min)
+    levels = axis.tickValues(0.0, 2700.0, 800.0)
+    spacing, ticks = levels[0]
+    assert spacing == pytest.approx(300.0)
+    # All ticks should fall on 5-minute (300 s) boundaries
+    for t in ticks:
+        assert t % 300 == pytest.approx(0.0)
 
 
 def test_time_axis_tick_starts_at_minval():
@@ -164,7 +177,7 @@ def test_time_axis_tick_spacing_rounds_to_nearest_5():
     from opencycletrainer.ui.workout_chart import _TimeAxisItem
 
     axis = _TimeAxisItem("bottom")
-    # span = 700; raw = 100; rounds to 100 (which is a multiple of 5)
+    # Short span (700 s, interval view): raw = 100 s < 150 → 5-second rounding
     levels = axis.tickValues(0.0, 700.0, 800.0)
     spacing, _ = levels[0]
     assert spacing % 5 == 0

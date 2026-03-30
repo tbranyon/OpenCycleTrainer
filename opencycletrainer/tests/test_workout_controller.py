@@ -74,6 +74,9 @@ class _FakeFTMSTransport:
     def set_indication_handler(self, handler) -> None:
         self._handler = handler
 
+    def read_resistance_level_range(self):
+        return None
+
 
 def _get_or_create_qapp() -> QApplication:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1457,3 +1460,113 @@ def test_free_ride_does_not_start_if_already_running():
     assert controller.last_snapshot.state == EngineState.RUNNING
 
     controller.shutdown()
+
+
+# ── Device reconnect notifications ───────────────────────────────────────────
+
+def test_trainer_disconnect_during_active_workout_shows_reconnecting_alert():
+    """When a trainer disconnects while a workout is running, an info-style 'Reconnecting'
+    alert should appear on the workout screen."""
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: transport,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    # Trainer was connected
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    # Now it disconnects unexpectedly
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id=None)
+    app.processEvents()
+
+    assert "Reconnecting" in screen.alert_label.text()
+
+    controller.shutdown()
+
+
+def test_trainer_reconnect_during_active_workout_shows_reconnected_alert():
+    """When a trainer reconnects after a disconnect during an active workout, a success
+    alert should appear on the workout screen."""
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: transport,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    # Trainer connects, then disconnects, then reconnects
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id=None)
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    app.processEvents()
+
+    assert "reconnected" in screen.alert_label.text().lower()
+
+    controller.shutdown()
+
+
+def test_trainer_no_reconnect_alert_before_workout_starts():
+    """Trainer connection changes before the workout timer is running must not show alerts."""
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: transport,
+        monotonic_clock=lambda: 0.0,
+    )
+
+    # Change trainer before workout starts — timer is not active
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id=None)
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    app.processEvents()
+
+    assert screen.alert_label.text() == ""
+
+
+# ── Interval plot visibility ──────────────────────────────────────────────────
+
+
+def test_interval_plot_visible_by_default():
+    """Interval plot is not explicitly hidden when show_interval_plot defaults to True."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    assert not screen.chart_widget._interval_plot.isHidden()
+
+
+def test_apply_settings_hides_interval_plot_when_disabled():
+    """apply_settings with show_interval_plot=False hides the interval plot."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.apply_settings(AppSettings(show_interval_plot=False))
+    assert screen.chart_widget._interval_plot.isHidden()
+
+
+def test_apply_settings_shows_interval_plot_when_enabled():
+    """apply_settings with show_interval_plot=True un-hides the interval plot."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings(show_interval_plot=False))
+    screen.apply_settings(AppSettings(show_interval_plot=True))
+    assert not screen.chart_widget._interval_plot.isHidden()

@@ -5,7 +5,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from opencycletrainer.core.mrc_parser import parse_mrc_file
+from opencycletrainer.core.mrc_parser import parse_mrc_file, parse_mrc_header
 from opencycletrainer.storage.paths import get_prepackaged_workouts_dir, get_user_workouts_dir
 
 _logger = logging.getLogger(__name__)
@@ -20,6 +20,7 @@ class WorkoutLibraryEntry:
     name: str
     path: Path
     duration_seconds: int
+    category: str = ""
 
 
 class WorkoutLibrary:
@@ -59,14 +60,26 @@ class WorkoutLibrary:
                 return entry
         raise RuntimeError(f"Added workout not found after refresh: {dest}")
 
+    def add_workout_from_text(self, text: str, filename: str) -> WorkoutLibraryEntry:
+        """Write MRC text directly to user workouts dir and return the entry."""
+        dest = self._user_dir / filename
+        dest.write_text(text, encoding="utf-8")
+        self.refresh()
+        for entry in self.entries:
+            if entry.path == dest:
+                return entry
+        raise RuntimeError(f"Added workout not found after refresh: {dest}")
+
     def _try_parse(self, path: Path) -> WorkoutLibraryEntry | None:
         try:
             workout = parse_mrc_file(path, ftp_watts=_DUMMY_FTP)
         except Exception:
             _logger.warning("Skipping unparseable workout file: %s", path)
             return None
+        header = parse_mrc_header(path)
         return WorkoutLibraryEntry(
             name=path.stem,
             path=path,
             duration_seconds=workout.total_duration_seconds,
+            category=header.get("category", ""),
         )

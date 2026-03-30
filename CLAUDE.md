@@ -15,7 +15,7 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 python -m pytest
 
 ## Conventions
-Comment classes and methods succinctly. Do not comment method code inline unless something atypical or counterintuitive is being done. Follow existing structure and style. If in doubt, follow PEP-8 guidelines.
+Comment classes and methods succinctly. Do not comment method code inline unless something atypical or counterintuitive is being done. Follow existing structure and style. If in doubt, follow PEP-8 guidelines. Avoid magic numbers in code and extract these to named constants.
 
 ## Agent Delegation
 - Use the `codebase-explorer` agent for open-ended exploration, discovery, and structural understanding — e.g. "where is X implemented?", "how does Y work?", "summarize this module". The agent reads broadly and returns only a summary, saving main-thread tokens.
@@ -32,4 +32,5 @@ Comment classes and methods succinctly. Do not comment method code inline unless
 - Ask clarifying questions if a feature or request is insufficiently defined and there is no clear logical interpretation that can be inferred.
 
 ## Documentation
-When implementing items from TODOs.md, **always** mark them done once completed and passing tests.
+When implementing items from TODOs.md, **always** mark them done once completed and passing tests.  
+If BLE specifics are needed, the specifications for the CPS and FTMS services are available in PDF form in the Docs folder.

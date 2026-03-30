@@ -35,20 +35,30 @@ _COLOR_THEME_DARK = "dark"
 
 _Y_STEP = 50.0          # watts between horizontal grid lines
 _CONTEXT_SECONDS = 30   # padding on each side of interval chart
+_5_MIN_SECONDS = 300.0  # five minutes in seconds
 
 
 # ── Time axis ─────────────────────────────────────────────────────────────────
 
 class _TimeAxisItem(pg.AxisItem):
-    """Bottom axis that formats seconds as MM:SS with ~8 ticks across the span."""
+    """Bottom axis that formats seconds as MM:SS with ~8 ticks across the span.
+
+    For spans where ticks would be >= 2.5 minutes apart, snaps to 5-minute
+    boundaries (05:00, 10:00, …).  For shorter spans (interval view) it snaps
+    to the nearest 5-second increment instead.
+    """
 
     def tickValues(self, minVal: float, maxVal: float, size: float) -> list:
         span = maxVal - minVal
         if span < 1:
             return []
         raw = span / 7.0
-        # Round to nearest 5 s, minimum 5 s
-        spacing = max(5.0, round(raw / 5.0) * 5.0)
+        if raw >= _5_MIN_SECONDS / 2:
+            # Large span: snap to 5-minute multiples
+            spacing = max(_5_MIN_SECONDS, round(raw / _5_MIN_SECONDS) * _5_MIN_SECONDS)
+        else:
+            # Short span (interval view): snap to nearest 5 s, minimum 5 s
+            spacing = max(5.0, round(raw / 5.0) * 5.0)
         ticks: list[float] = []
         t = minVal
         while t <= maxVal + 1e-6:
@@ -141,11 +151,11 @@ class WorkoutChartWidget(QWidget):
         self._workout   = workout
         self._ftp_watts = max(1, int(ftp_watts))
 
-        t, w = _build_target_series(workout)
+        t, w = build_target_series(workout)
         self._interval_target.setData(t, w)
         self._workout_target.setData(t, w)
 
-        y_max = _compute_y_max(workout, self._ftp_watts)
+        y_max = compute_y_max(workout, self._ftp_watts)
         for plot in (self._interval_plot, self._workout_plot):
             _configure_y_axis(plot, y_max)
 
@@ -467,7 +477,7 @@ def _theme_settings(color_theme: str) -> dict[str, object]:
     }
 
 
-def _build_target_series(workout: Workout) -> tuple[np.ndarray, np.ndarray]:
+def build_target_series(workout: Workout) -> tuple[np.ndarray, np.ndarray]:
     """
     Build the target power polyline as (t, w) arrays.
 
@@ -488,7 +498,7 @@ def _build_target_series(workout: Workout) -> tuple[np.ndarray, np.ndarray]:
     return np.array(t, dtype=float), np.array(w, dtype=float)
 
 
-def _compute_y_max(workout: Workout, ftp_watts: int) -> float:
+def compute_y_max(workout: Workout, ftp_watts: int) -> float:
     """Return a y ceiling rounded up to the next 50 W grid line."""
     target_peak = max(
         (max(iv.start_target_watts, iv.end_target_watts) for iv in workout.intervals),

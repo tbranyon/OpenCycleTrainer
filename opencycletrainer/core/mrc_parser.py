@@ -11,6 +11,59 @@ class MRCParseError(ValueError):
     """Raised when an MRC file cannot be parsed."""
 
 
+def parse_mrc_header(path_or_text: str | Path) -> dict[str, str]:
+    """Return the [COURSE HEADER] key-value pairs as a lowercase-keyed dict.
+
+    Accepts either a file path or raw MRC text.
+    """
+    if isinstance(path_or_text, Path) or (
+        isinstance(path_or_text, str) and not path_or_text.lstrip().startswith("[")
+        and Path(path_or_text).exists()
+    ):
+        text = Path(path_or_text).read_text(encoding="utf-8")
+    else:
+        text = str(path_or_text)
+
+    result: dict[str, str] = {}
+    in_header = False
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        lowered = stripped.lower()
+        if lowered == "[course header]":
+            in_header = True
+            continue
+        if lowered == "[end course header]":
+            break
+        if in_header and "=" in stripped:
+            key, value = stripped.split("=", 1)
+            result[key.strip().lower()] = value.strip()
+    return result
+
+
+def inject_category_into_mrc_text(text: str, category: str) -> str:
+    """Insert or replace a CATEGORY line in [COURSE HEADER].
+
+    If CATEGORY already exists, replace it. Otherwise insert it before
+    [END COURSE HEADER]. Returns modified text.
+    """
+    lines = text.splitlines(keepends=True)
+    new_lines: list[str] = []
+    injected = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.upper().startswith("CATEGORY") and "=" in stripped:
+            new_lines.append(f"CATEGORY = {category}\n")
+            injected = True
+            continue
+        if stripped.upper() == "[END COURSE HEADER]" and not injected:
+            new_lines.append(f"CATEGORY = {category}\n")
+            injected = True
+        new_lines.append(line)
+
+    return "".join(new_lines)
+
+
 def parse_mrc_file(path: str | Path, ftp_watts: int) -> Workout:
     source_path = Path(path)
     text = source_path.read_text(encoding="utf-8")

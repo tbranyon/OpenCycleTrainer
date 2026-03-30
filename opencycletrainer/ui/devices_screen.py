@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from concurrent.futures import Future
 from functools import partial
 from typing import Any
@@ -25,13 +26,22 @@ from opencycletrainer.devices.decoders import (
     decode_heart_rate_measurement,
     decode_indoor_bike_data,
 )
+from opencycletrainer.devices.decoders.ftms import (
+    FTMSCapabilities,
+    decode_ftms_fitness_machine_features,
+    decode_ftms_supported_power_range,
+    decode_resistance_level_range,
+)
 from opencycletrainer.devices.device_manager import DeviceManager
 from opencycletrainer.devices.types import (
     CPS_MEASUREMENT_CHARACTERISTIC_UUID,
     CSC_MEASUREMENT_CHARACTERISTIC_UUID,
     DeviceInfo,
     DeviceType,
+    FTMS_FITNESS_MACHINE_FEATURE_CHARACTERISTIC_UUID,
     FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
+    FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID,
+    FTMS_SUPPORTED_POWER_RANGE_CHARACTERISTIC_UUID,
     HRS_MEASUREMENT_CHARACTERISTIC_UUID,
 )
 
@@ -55,6 +65,8 @@ class DevicesScreen(QWidget):
     trainer_device_changed = Signal(object, object)  # (backend, trainer_device_id | None)
     opentrueup_availability_changed = Signal(bool)  # True when PM + trainer both connected
     _reading_received = Signal(str, str)  # (device_id, reading_text)
+    _capabilities_ready = Signal(str, object)  # (device_name, FTMSCapabilities)
+    _device_connection_changed = Signal(str, bool)  # (device_id, connected) from BLE thread
 
     def __init__(
         self,
@@ -72,10 +84,15 @@ class DevicesScreen(QWidget):
         self._decoders: dict[str, CyclingPowerDecoder | CyclingSpeedCadenceDecoder] = {}
         self._last_trainer_selection: tuple[int, str | None] | None = None
         self._last_opentrueup_available: bool | None = None
+        self._paired_device_ids: list[str] = []
 
         self.action_succeeded.connect(self._handle_action_succeeded)
         self.action_failed.connect(self._handle_action_failed)
         self._reading_received.connect(self._on_reading_received)
+        self._capabilities_ready.connect(self._show_ftms_capabilities_dialog)
+        self._device_connection_changed.connect(self._on_device_connection_changed)
+        if isinstance(self._backend, BleakDeviceBackend):
+            self._backend.device_connection_changed_callback = self._on_device_connection_changed_background
 
         layout = QVBoxLayout(self)
         title = QLabel("Devices")
@@ -94,6 +111,7 @@ class DevicesScreen(QWidget):
         layout.addWidget(self.status_label)
 
         self.paired_table = self._create_table()
+        self.paired_table.cellDoubleClicked.connect(self._on_paired_table_double_clicked)
         paired_group = QGroupBox("Paired Devices")
         paired_layout = QVBoxLayout(paired_group)
         paired_layout.addWidget(self.paired_table)
@@ -161,6 +179,7 @@ class DevicesScreen(QWidget):
 
     def _populate_paired_table(self, devices: list[DeviceInfo]) -> None:
         self._reading_items.clear()
+        self._paired_device_ids = [device.device_id for device in devices]
         self.paired_table.setRowCount(len(devices))
         for row, device in enumerate(devices):
             self._set_device_row(self.paired_table, row, device)
@@ -410,6 +429,62 @@ class DevicesScreen(QWidget):
         self.refresh()
         self.status_label.setText(message)
 
+    @Slot(int, int)
+    def _on_paired_table_double_clicked(self, row: int, col: int) -> None:  # noqa: ARG002
+        if row >= len(self._paired_device_ids):
+            return
+        device_id = self._paired_device_ids[row]
+        paired = self._backend.get_paired_devices()
+        device = next((d for d in paired if d.device_id == device_id), None)
+        if device is None or not device.connected or device.device_type is not DeviceType.TRAINER:
+            return
+        self.status_label.setText(f"Reading capabilities for {device.name}...")
+        threading.Thread(
+            target=self._fetch_and_show_capabilities,
+            args=(device_id, device.name),
+            daemon=True,
+        ).start()
+
+    def _fetch_and_show_capabilities(self, device_id: str, device_name: str) -> None:
+        """Background thread: reads FTMS capability characteristics and emits result."""
+        features = None
+        power_range = None
+        resistance_range = None
+        try:
+            data = self._backend.read_gatt_characteristic(
+                device_id, FTMS_FITNESS_MACHINE_FEATURE_CHARACTERISTIC_UUID
+            ).result(timeout=5.0)
+            features = decode_ftms_fitness_machine_features(data)
+        except Exception:
+            pass
+        try:
+            data = self._backend.read_gatt_characteristic(
+                device_id, FTMS_SUPPORTED_POWER_RANGE_CHARACTERISTIC_UUID
+            ).result(timeout=5.0)
+            power_range = decode_ftms_supported_power_range(data)
+        except Exception:
+            pass
+        try:
+            data = self._backend.read_gatt_characteristic(
+                device_id, FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID
+            ).result(timeout=5.0)
+            resistance_range = decode_resistance_level_range(data)
+        except Exception:
+            pass
+        capabilities = FTMSCapabilities(
+            features=features,
+            power_range=power_range,
+            resistance_range=resistance_range,
+        )
+        self._capabilities_ready.emit(device_name, capabilities)
+
+    @Slot(str, object)
+    def _show_ftms_capabilities_dialog(self, device_name: str, capabilities: object) -> None:
+        from opencycletrainer.ui.ftms_capabilities_dialog import FTMSCapabilitiesDialog
+        dialog = FTMSCapabilitiesDialog(device_name, capabilities, parent=self)  # type: ignore[arg-type]
+        dialog.exec()
+        self.status_label.setText(f"Capabilities displayed for {device_name}.")
+
     def _submit_future(
         self,
         future: Future[Any],
@@ -435,6 +510,19 @@ class DevicesScreen(QWidget):
     @Slot(str)
     def _handle_action_failed(self, message: str) -> None:
         self.status_label.setText(message)
+
+    def _on_device_connection_changed_background(self, device_id: str, connected: bool) -> None:
+        """Called from the BLE background thread when a device connects or disconnects.
+        Forwards to the main thread via a queued signal."""
+        self._device_connection_changed.emit(device_id, connected)
+
+    @Slot(str, bool)
+    def _on_device_connection_changed(self, device_id: str, connected: bool) -> None:
+        """Handles a device connection-state change on the Qt main thread.
+        Removes the subscription record on disconnect so re-subscription happens on reconnect."""
+        if not connected:
+            self._subscribed_devices.discard(device_id)
+        self.refresh()
 
     def _emit_trainer_device_change(self, paired_devices: list[DeviceInfo]) -> None:
         trainer_id: str | None = None

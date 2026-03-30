@@ -36,7 +36,8 @@
       "Read(//c/Users/thomas.branyon/AppData/Roaming/**)",
       "Read(//c/Users/thomas.branyon/AppData/Local/**)",
       "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Roaming'' | Where-Object Name -like ''*cycle*'' -or Where-Object Name -like ''*OCT*'' -or Where-Object Name -like ''*Open*''\")",
-      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Local\\\\Packages\\\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\\\LocalCache\\\\Roaming\\\\OpenCycleTrainer\\\\paired_devices.json''\")"
+      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Local\\\\Packages\\\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\\\LocalCache\\\\Roaming\\\\OpenCycleTrainer\\\\paired_devices.json''\")",
+      "Bash(grep -E \"\\\\.py$\")"
     ]
   }
 }
