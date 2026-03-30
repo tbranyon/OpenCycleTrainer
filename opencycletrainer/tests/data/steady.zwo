@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workout_file>
+  <name>Steady Ride</name>
+  <description>A simple steady-state workout</description>
+  <sportType>bike</sportType>
+  <workout>
+    <SteadyState Duration="300" Power="0.80"/>
+  </workout>
+</workout_file>

@@ -35,6 +35,9 @@ from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, comput
 
 RECOVERY_THRESHOLD_PERCENT = 56.0
 _CADENCE_SOURCE_STALENESS_SECONDS = 3.0
+# Starting resistance when switching to manual/resistance mode mid-workout; mid-range to avoid
+# immediately overloading or underloading the rider.
+DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT = 33.0
 
 
 class WorkoutSessionController(QObject):
@@ -94,7 +97,7 @@ class WorkoutSessionController(QObject):
         self._workout: Workout | None = None
         self._selected_mode = self._screen.mode_selector.currentText()
         self._trainer_resistance_step_count: int | None = None
-        self._manual_resistance_offset_percent = 33.0
+        self._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
         self._manual_erg_jog_watts = 0.0
         self._total_kj = 0.0
         self._interval_extra_seconds: dict[int, int] = {}
@@ -272,7 +275,7 @@ class WorkoutSessionController(QObject):
 
         self._workout = workout
         self._interval_extra_seconds = {}
-        self._manual_resistance_offset_percent = 33.0
+        self._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
         self._manual_erg_jog_watts = 0.0
         self._chart_timer.stop()
         self._screen.load_workout_chart(workout, ftp)
@@ -672,6 +675,13 @@ class WorkoutSessionController(QObject):
         return int(percent), True
 
     def _active_control_mode(self, snapshot: WorkoutEngineSnapshot) -> str:
+        # Honour free-ride intervals regardless of user mode selection
+        if self._workout is not None:
+            index = snapshot.current_interval_index
+            if index is not None and 0 <= index < len(self._workout.intervals):
+                if self._workout.intervals[index].free_ride:
+                    return "Resistance"
+
         if self._selected_mode == "ERG":
             return "ERG"
         if self._selected_mode == "Resistance":

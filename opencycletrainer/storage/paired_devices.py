@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -14,7 +15,16 @@ class PairedDeviceStore:
     """Persists paired device identities across sessions."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path if path is not None else get_paired_devices_file_path()
+        if path is None:
+            if "PYTEST_CURRENT_TEST" in os.environ:
+                raise RuntimeError(
+                    "PairedDeviceStore() was created without an explicit path during a test "
+                    "run, which would write to the real user's production path. "
+                    "Pass path=tmp_path / 'paired.json' in your test fixture."
+                )
+            self._path = get_paired_devices_file_path()
+        else:
+            self._path = path
         self._lock = threading.Lock()
 
     @property

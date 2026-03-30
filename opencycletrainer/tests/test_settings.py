@@ -132,12 +132,13 @@ def test_workout_data_dir_defaults_to_none():
 
 def test_workout_data_dir_round_trips_through_serialization():
     settings_file = _settings_file()
-    settings = AppSettings(workout_data_dir=Path("C:/rides"))
+    existing_dir = settings_file.parent
+    settings = AppSettings(workout_data_dir=existing_dir)
 
     save_settings(settings, settings_file)
     loaded = load_settings(settings_file)
 
-    assert loaded.workout_data_dir == Path("C:/rides")
+    assert loaded.workout_data_dir == existing_dir
 
 
 def test_workout_data_dir_missing_key_defaults_to_none():
@@ -147,3 +148,36 @@ def test_workout_data_dir_missing_key_defaults_to_none():
     loaded = load_settings(settings_file)
 
     assert loaded.workout_data_dir is None
+
+
+def test_workout_data_dir_nonexistent_path_returns_none():
+    settings_file = _settings_file()
+    settings_file.write_text('{"workout_data_dir": "/nonexistent/path/xyz"}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.workout_data_dir is None
+
+
+def test_last_workout_dir_defaults_to_none():
+    assert AppSettings().last_workout_dir is None
+
+
+def test_last_workout_dir_existing_path_round_trips():
+    settings_file = _settings_file()
+    existing_dir = settings_file.parent
+    settings = AppSettings(last_workout_dir=existing_dir)
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.last_workout_dir == existing_dir
+
+
+def test_last_workout_dir_nonexistent_path_returns_none():
+    settings_file = _settings_file()
+    settings_file.write_text('{"last_workout_dir": "/nonexistent/path/xyz"}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.last_workout_dir is None

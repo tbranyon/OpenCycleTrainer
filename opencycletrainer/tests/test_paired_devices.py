@@ -70,6 +70,18 @@ def test_paired_device_store_path_property(tmp_path):
     assert store.path == path
 
 
+def test_paired_device_store_raises_in_test_environment_when_no_path_given():
+    """Guard against accidental writes to the real user data file during tests."""
+    with pytest.raises(RuntimeError, match="production path"):
+        PairedDeviceStore()
+
+
+def test_paired_device_store_does_not_raise_when_path_given(tmp_path):
+    """Explicit path always works regardless of test environment."""
+    store = PairedDeviceStore(path=tmp_path / "paired.json")
+    assert store.path == tmp_path / "paired.json"
+
+
 def test_paired_devices_path_uses_config_dir(monkeypatch):
     from pathlib import Path
     from opencycletrainer.storage import paths

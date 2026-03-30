@@ -12,6 +12,7 @@ class WorkoutInterval:
     end_percent_ftp: float
     start_target_watts: int
     end_target_watts: int
+    free_ride: bool = False
 
     @property
     def end_offset_seconds(self) -> int:

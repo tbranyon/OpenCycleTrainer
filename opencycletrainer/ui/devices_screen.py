@@ -32,6 +32,10 @@ from opencycletrainer.devices.decoders.ftms import (
     decode_ftms_supported_power_range,
     decode_resistance_level_range,
 )
+from opencycletrainer.devices.decoders.hrs import (
+    HRSCapabilities,
+    decode_hrs_body_sensor_location,
+)
 from opencycletrainer.devices.device_manager import DeviceManager
 from opencycletrainer.devices.types import (
     CPS_MEASUREMENT_CHARACTERISTIC_UUID,
@@ -42,6 +46,7 @@ from opencycletrainer.devices.types import (
     FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
     FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID,
     FTMS_SUPPORTED_POWER_RANGE_CHARACTERISTIC_UUID,
+    HRS_BODY_SENSOR_LOCATION_CHARACTERISTIC_UUID,
     HRS_MEASUREMENT_CHARACTERISTIC_UUID,
 )
 
@@ -66,6 +71,7 @@ class DevicesScreen(QWidget):
     opentrueup_availability_changed = Signal(bool)  # True when PM + trainer both connected
     _reading_received = Signal(str, str)  # (device_id, reading_text)
     _capabilities_ready = Signal(str, object)  # (device_name, FTMSCapabilities)
+    _hrs_capabilities_ready = Signal(str, object)  # (device_name, HRSCapabilities)
     _device_connection_changed = Signal(str, bool)  # (device_id, connected) from BLE thread
 
     def __init__(
@@ -90,6 +96,7 @@ class DevicesScreen(QWidget):
         self.action_failed.connect(self._handle_action_failed)
         self._reading_received.connect(self._on_reading_received)
         self._capabilities_ready.connect(self._show_ftms_capabilities_dialog)
+        self._hrs_capabilities_ready.connect(self._show_hrs_capabilities_dialog)
         self._device_connection_changed.connect(self._on_device_connection_changed)
         if isinstance(self._backend, BleakDeviceBackend):
             self._backend.device_connection_changed_callback = self._on_device_connection_changed_background
@@ -436,14 +443,21 @@ class DevicesScreen(QWidget):
         device_id = self._paired_device_ids[row]
         paired = self._backend.get_paired_devices()
         device = next((d for d in paired if d.device_id == device_id), None)
-        if device is None or not device.connected or device.device_type is not DeviceType.TRAINER:
+        if device is None or not device.connected:
             return
         self.status_label.setText(f"Reading capabilities for {device.name}...")
-        threading.Thread(
-            target=self._fetch_and_show_capabilities,
-            args=(device_id, device.name),
-            daemon=True,
-        ).start()
+        if device.device_type is DeviceType.TRAINER:
+            threading.Thread(
+                target=self._fetch_and_show_capabilities,
+                args=(device_id, device.name),
+                daemon=True,
+            ).start()
+        elif device.device_type is DeviceType.HEART_RATE:
+            threading.Thread(
+                target=self._fetch_and_show_hrs_capabilities,
+                args=(device_id, device.name),
+                daemon=True,
+            ).start()
 
     def _fetch_and_show_capabilities(self, device_id: str, device_name: str) -> None:
         """Background thread: reads FTMS capability characteristics and emits result."""
@@ -482,6 +496,26 @@ class DevicesScreen(QWidget):
     def _show_ftms_capabilities_dialog(self, device_name: str, capabilities: object) -> None:
         from opencycletrainer.ui.ftms_capabilities_dialog import FTMSCapabilitiesDialog
         dialog = FTMSCapabilitiesDialog(device_name, capabilities, parent=self)  # type: ignore[arg-type]
+        dialog.exec()
+        self.status_label.setText(f"Capabilities displayed for {device_name}.")
+
+    def _fetch_and_show_hrs_capabilities(self, device_id: str, device_name: str) -> None:
+        """Background thread: reads HRS capability characteristics and emits result."""
+        body_sensor_location = None
+        try:
+            data = self._backend.read_gatt_characteristic(
+                device_id, HRS_BODY_SENSOR_LOCATION_CHARACTERISTIC_UUID
+            ).result(timeout=5.0)
+            body_sensor_location = decode_hrs_body_sensor_location(data)
+        except Exception:
+            pass
+        capabilities = HRSCapabilities(body_sensor_location=body_sensor_location)
+        self._hrs_capabilities_ready.emit(device_name, capabilities)
+
+    @Slot(str, object)
+    def _show_hrs_capabilities_dialog(self, device_name: str, capabilities: object) -> None:
+        from opencycletrainer.ui.hrs_capabilities_dialog import HRSCapabilitiesDialog
+        dialog = HRSCapabilitiesDialog(device_name, capabilities, parent=self)  # type: ignore[arg-type]
         dialog.exec()
         self.status_label.setText(f"Capabilities displayed for {device_name}.")
 

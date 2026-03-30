@@ -189,3 +189,47 @@ def test_extend_interval_in_kj_mode_is_stubbed_but_recorded():
     assert extended.pending_kj_extension == 10
     assert extended.total_duration_seconds == 60
 
+
+# ── WorkoutInterval.free_ride (Phase 0) ──────────────────────────────────────
+
+
+def test_workout_interval_free_ride_defaults_to_false():
+    """WorkoutInterval.free_ride is False when not explicitly set."""
+    interval = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=300,
+        start_percent_ftp=85.0,
+        end_percent_ftp=85.0,
+        start_target_watts=170,
+        end_target_watts=170,
+    )
+    assert interval.free_ride is False
+
+
+def test_workout_interval_free_ride_can_be_set_true():
+    """WorkoutInterval.free_ride can be explicitly set to True."""
+    interval = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=300,
+        start_percent_ftp=0.0,
+        end_percent_ftp=0.0,
+        start_target_watts=0,
+        end_target_watts=0,
+        free_ride=True,
+    )
+    assert interval.free_ride is True
+
+
+def test_workout_interval_is_ramp_unaffected_by_free_ride():
+    """is_ramp works correctly when free_ride=True (flat 0/0 interval is not a ramp)."""
+    interval = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=300,
+        start_percent_ftp=0.0,
+        end_percent_ftp=0.0,
+        start_target_watts=0,
+        end_target_watts=0,
+        free_ride=True,
+    )
+    assert interval.is_ramp is False
+

@@ -29,6 +29,14 @@ SUPPORTED_THEME_MODES = {
 }
 
 
+def _restore_dir(value: str | None) -> Path | None:
+    """Return a Path only if the stored value is non-empty and the directory exists."""
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.exists() else None
+
+
 @dataclass
 class AppSettings:
     ftp: int = 250
@@ -87,8 +95,8 @@ class AppSettings:
             display_units=display_units,
             default_workout_behavior=default_workout_behavior,
             windowed_power_window_seconds=max(1, min(10, int(data.get("windowed_power_window_seconds", 3)))),
-            last_workout_dir=Path(data["last_workout_dir"]) if data.get("last_workout_dir") else None,
-            workout_data_dir=Path(data["workout_data_dir"]) if data.get("workout_data_dir") else None,
+            last_workout_dir=_restore_dir(data.get("last_workout_dir")),
+            workout_data_dir=_restore_dir(data.get("workout_data_dir")),
             strava_auto_sync_enabled=bool(data.get("strava_auto_sync_enabled", False)),
             strava_athlete_name=str(data.get("strava_athlete_name", "")),
             show_interval_plot=bool(data.get("show_interval_plot", True)),

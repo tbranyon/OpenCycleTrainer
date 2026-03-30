@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QPushButton, QTableWidget
 from opencycletrainer.core.sensors import SensorSample
 from opencycletrainer.devices.device_manager import completed_future
 from opencycletrainer.devices.decoders.ftms import FTMSCapabilities
+from opencycletrainer.devices.decoders.hrs import HRSCapabilities
 from opencycletrainer.devices.mock_backend import DeviceType, MockDevice, MockDeviceBackend
 from opencycletrainer.devices.types import (
     CPS_MEASUREMENT_CHARACTERISTIC_UUID,
@@ -333,3 +334,60 @@ def test_double_click_non_trainer_device_does_not_emit_signal():
     app.processEvents()
 
     assert not received, "Expected no signal for non-trainer device"
+
+
+def _detach_hrs_dialog_slot(screen: DevicesScreen) -> list[tuple[str, object]]:
+    """Disconnect the HRS dialog slot and return a list that will collect signal emissions."""
+    received: list[tuple[str, object]] = []
+    screen._hrs_capabilities_ready.disconnect(screen._show_hrs_capabilities_dialog)
+    screen._hrs_capabilities_ready.connect(lambda name, caps: received.append((name, caps)))
+    return received
+
+
+def test_double_click_connected_hrm_emits_hrs_capabilities_ready_signal():
+    app = _get_or_create_qapp()
+    backend = _CapabilitiesMockBackend(devices=[
+        MockDevice(
+            device_id="hrm-1",
+            name="Polar H10",
+            device_type=DeviceType.HEART_RATE,
+            paired=True,
+            connected=True,
+            battery_percent=80,
+        ),
+    ])
+    screen = DevicesScreen(backend=backend)
+    received = _detach_hrs_dialog_slot(screen)
+
+    screen.paired_table.cellDoubleClicked.emit(0, 0)
+
+    _wait_for_signal(app, received)
+
+    assert received, "Expected _hrs_capabilities_ready signal to be emitted"
+    name, caps = received[0]
+    assert name == "Polar H10"
+    assert isinstance(caps, HRSCapabilities)
+
+
+def test_double_click_disconnected_hrm_does_not_emit_hrs_signal():
+    app = _get_or_create_qapp()
+    backend = _CapabilitiesMockBackend(devices=[
+        MockDevice(
+            device_id="hrm-disc",
+            name="Disconnected HRM",
+            device_type=DeviceType.HEART_RATE,
+            paired=True,
+            connected=False,
+            battery_percent=None,
+        ),
+    ])
+    screen = DevicesScreen(backend=backend)
+    received = _detach_hrs_dialog_slot(screen)
+
+    screen.paired_table.cellDoubleClicked.emit(0, 0)
+
+    app.processEvents()
+    time.sleep(0.05)
+    app.processEvents()
+
+    assert not received, "Expected no signal for disconnected HRM"

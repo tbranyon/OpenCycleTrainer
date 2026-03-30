@@ -12,7 +12,8 @@ from PySide6.QtWidgets import QApplication
 
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.core.sensors import CadenceSource
-from opencycletrainer.core.workout_engine import EngineState
+from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
+from opencycletrainer.core.workout_model import Workout, WorkoutInterval
 from opencycletrainer.storage.settings import AppSettings
 from opencycletrainer.ui.workout_controller import WorkoutSessionController
 from opencycletrainer.ui.workout_screen import WorkoutScreen
@@ -1570,3 +1571,125 @@ def test_apply_settings_shows_interval_plot_when_enabled():
     screen = WorkoutScreen(settings=AppSettings(show_interval_plot=False))
     screen.apply_settings(AppSettings(show_interval_plot=True))
     assert not screen.chart_widget._interval_plot.isHidden()
+
+
+# ── Phase 1: free-ride interval forces Resistance mode ───────────────────────
+
+def _make_snapshot(interval_index: int | None, total_seconds: int = 600) -> WorkoutEngineSnapshot:
+    """Build a minimal snapshot at the given interval index."""
+    return WorkoutEngineSnapshot(
+        state=EngineState.RUNNING,
+        elapsed_seconds=10.0,
+        riding_elapsed_seconds=10.0,
+        total_duration_seconds=total_seconds,
+        current_interval_index=interval_index,
+        current_interval_elapsed_seconds=10.0,
+        current_interval_remaining_seconds=float(total_seconds - 10),
+        ramp_in_remaining_seconds=0.0,
+        recording_active=False,
+        pending_kj_extension=0,
+    )
+
+
+def _make_free_ride_workout() -> Workout:
+    """Two-interval workout: free_ride=True then normal ERG interval."""
+    return Workout(
+        name="Free Ride Test",
+        ftp_watts=200,
+        intervals=(
+            WorkoutInterval(
+                start_offset_seconds=0,
+                duration_seconds=300,
+                start_percent_ftp=0.0,
+                end_percent_ftp=0.0,
+                start_target_watts=0,
+                end_target_watts=0,
+                free_ride=True,
+            ),
+            WorkoutInterval(
+                start_offset_seconds=300,
+                duration_seconds=300,
+                start_percent_ftp=85.0,
+                end_percent_ftp=85.0,
+                start_target_watts=170,
+                end_target_watts=170,
+            ),
+        ),
+    )
+
+
+def test_active_control_mode_returns_resistance_for_free_ride_interval_regardless_of_selected_mode():
+    """_active_control_mode() forces Resistance when the current interval has free_ride=True."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller._workout = _make_free_ride_workout()
+    snapshot = _make_snapshot(interval_index=0)
+
+    for mode in ["ERG", "Resistance", "Hybrid"]:
+        controller._selected_mode = mode
+        assert controller._active_control_mode(snapshot) == "Resistance", (
+            f"Expected Resistance for free_ride interval with selected_mode={mode!r}"
+        )
+
+    controller.shutdown()
+
+
+def test_active_control_mode_resumes_normal_selection_after_free_ride_interval():
+    """After a free_ride interval, _active_control_mode() returns to the user's selected mode."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller._workout = _make_free_ride_workout()
+    snapshot = _make_snapshot(interval_index=1)
+
+    controller._selected_mode = "ERG"
+    assert controller._active_control_mode(snapshot) == "ERG"
+
+    controller._selected_mode = "Resistance"
+    assert controller._active_control_mode(snapshot) == "Resistance"
+
+    controller.shutdown()
+
+
+def test_trainer_bridge_sends_resistance_command_during_free_ride_interval():
+    """FTMS opcode 0x04 (resistance) is sent when the current interval is free_ride=True."""
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: (
+            transport if backend == "bleak" and trainer_id == "trainer-1" else None
+        ),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+
+    workout = _make_free_ride_workout()
+    controller._workout = workout
+    controller._engine.load_workout(workout)
+    snapshot = controller._engine.start()
+    controller._handle_snapshot(snapshot, now_monotonic=0.0)
+
+    assert _wait_until(
+        app,
+        lambda: any(payload[:1] == b"\x04" for payload in transport.writes),
+    ), "Expected resistance command (0x04) to be sent for free_ride interval"
+
+    controller.shutdown()

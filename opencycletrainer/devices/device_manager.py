@@ -24,6 +24,7 @@ class AsyncioRunner:
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="bleak-loop")
         self._ready = threading.Event()
         self._closed = False
@@ -44,16 +45,20 @@ class AsyncioRunner:
         loop.close()
 
     def submit(self, coroutine: Awaitable[T]) -> Future[T]:
-        if self._closed or self._loop is None:
-            raise RuntimeError("AsyncioRunner is closed")
-        return asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        with self._lock:
+            if self._closed or self._loop is None:
+                raise RuntimeError("AsyncioRunner is closed")
+            loop = self._loop
+        return asyncio.run_coroutine_threadsafe(coroutine, loop)
 
     def shutdown(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
         self._thread.join(timeout=2.0)
 
 

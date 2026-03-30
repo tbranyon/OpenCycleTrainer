@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 from opencycletrainer.core.workout_library import WorkoutLibrary
+from opencycletrainer.devices.mock_backend import MockDeviceBackend
 from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
 from opencycletrainer.ui.main_window import MainWindow
 from opencycletrainer.ui.workout_library_screen import WorkoutLibraryScreen
@@ -33,7 +34,7 @@ class _ShutdownSpy:
 
 
 def test_main_window_close_event_shuts_down_backend(qapp):
-    window = MainWindow()
+    window = MainWindow(backend=MockDeviceBackend())
     spy = _ShutdownSpy()
     window.devices_screen._backend = spy
 
@@ -45,7 +46,7 @@ def test_main_window_close_event_shuts_down_backend(qapp):
 def _make_window(qapp) -> MainWindow:
     """Create a MainWindow after flushing any deferred Qt deletions from prior tests."""
     qapp.processEvents()
-    return MainWindow()
+    return MainWindow(backend=MockDeviceBackend())
 
 
 def _close_window(window, qapp) -> None:
@@ -121,7 +122,7 @@ def test_tile_drag_reorder_persists_to_settings_file(qapp, tmp_path):
     initial = AppSettings(tile_selections=["heart_rate", "cadence_rpm", "workout_avg_power"])
     save_settings(initial, settings_path)
 
-    window = MainWindow(settings=initial, settings_path=settings_path)
+    window = MainWindow(settings=initial, settings_path=settings_path, backend=MockDeviceBackend())
     try:
         window.workout_screen.reorder_tiles("heart_rate", "workout_avg_power")
         saved = load_settings(settings_path)
@@ -135,7 +136,7 @@ def test_tile_drag_reorder_updates_workout_screen_settings(qapp, tmp_path):
     initial = AppSettings(tile_selections=["heart_rate", "cadence_rpm"])
     save_settings(initial, settings_path)
 
-    window = MainWindow(settings=initial, settings_path=settings_path)
+    window = MainWindow(settings=initial, settings_path=settings_path, backend=MockDeviceBackend())
     try:
         window.workout_screen.reorder_tiles("heart_rate", "cadence_rpm")
         assert window.workout_screen._settings.tile_selections == ["cadence_rpm", "heart_rate"]

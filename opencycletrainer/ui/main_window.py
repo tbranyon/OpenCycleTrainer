@@ -23,6 +23,7 @@ _CADENCE_SOURCE_BY_UUID: dict[str, CadenceSource] = {
 from opencycletrainer.integrations.strava.sync_service import upload_fit_to_strava
 from opencycletrainer.integrations.strava.token_store import get_tokens
 from opencycletrainer.storage.settings import AppSettings, save_settings
+from opencycletrainer.devices.device_manager import DeviceManager
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
 from .theme import apply_application_theme
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         *,
         settings: AppSettings | None = None,
         settings_path: Path | None = None,
+        backend: DeviceManager | None = None,
     ) -> None:
         super().__init__()
         self._settings = settings or AppSettings()
@@ -51,7 +53,7 @@ class MainWindow(QMainWindow):
             settings_path=settings_path,
             parent=self,
         )
-        self.devices_screen = DevicesScreen(parent=self)
+        self.devices_screen = DevicesScreen(backend=backend, parent=self)
         self.settings_screen = SettingsScreen(
             settings=self._settings,
             settings_path=settings_path,

@@ -17,6 +17,7 @@ from opencycletrainer.ui.workout_library_screen import WorkoutLibraryScreen, _fo
 _DATA_DIR = Path(__file__).parent / "data"
 _STEP_MRC = _DATA_DIR / "step_only.mrc"
 _RAMP_MRC = _DATA_DIR / "ramp.mrc"
+_STEADY_ZWO = _DATA_DIR / "steady.zwo"
 
 _MRC_SST = (
     "[COURSE HEADER]\n"
@@ -505,3 +506,207 @@ def test_compute_target_np_returns_int():
 
     workout = _make_flat_workout(watts=200, duration_s=600)
     assert isinstance(_compute_target_np(workout), int)
+
+
+# ── Phase 4: ZWO support ──────────────────────────────────────────────────────
+
+def test_file_dialog_filter_contains_zwo(tmp_path):
+    """_on_add_clicked must use a filter that includes *.zwo."""
+    screen, _, _ = _make_screen(tmp_path)
+
+    captured_filter: list[str] = []
+
+    def mock_get_open_file_name(parent, title, directory, filter_str):
+        captured_filter.append(filter_str)
+        return ("", "")
+
+    with patch(
+        "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
+        side_effect=mock_get_open_file_name,
+    ):
+        screen._on_add_clicked()
+
+    assert captured_filter, "getOpenFileName was not called"
+    assert "*.zwo" in captured_filter[0]
+
+
+def test_adding_zwo_with_category_calls_inject_zwo(tmp_path):
+    """When a .zwo is added with a category, inject_category_into_zwo_text is called (not the MRC variant)."""
+    screen, _, user_dir = _make_screen(tmp_path)
+    zwo_path = tmp_path / "ride.zwo"
+    zwo_path.write_text(
+        '<?xml version="1.0"?><workout_file><name>Ride</name><workout>'
+        '<SteadyState Duration="300" Power="0.80"/></workout></workout_file>',
+        encoding="utf-8",
+    )
+
+    with (
+        patch(
+            "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
+            return_value=(str(zwo_path), ""),
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
+            return_value=1,
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
+            return_value="SST",
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen.inject_category_into_zwo_text",
+            return_value='<?xml version="1.0"?><workout_file><name>Ride</name>'
+            '<oct_category>SST</oct_category><workout>'
+            '<SteadyState Duration="300" Power="0.80"/></workout></workout_file>',
+        ) as mock_inject_zwo,
+        patch(
+            "opencycletrainer.ui.workout_library_screen.inject_category_into_mrc_text",
+        ) as mock_inject_mrc,
+    ):
+        screen._on_add_clicked()
+
+    mock_inject_zwo.assert_called_once()
+    mock_inject_mrc.assert_not_called()
+
+
+def test_adding_zwo_without_category_does_not_inject(tmp_path):
+    """When a .zwo is added with no category, add_workout (file copy) is used instead of inject."""
+    screen, lib, user_dir = _make_screen(tmp_path)
+    zwo_path = tmp_path / "ride.zwo"
+    zwo_path.write_text(
+        '<?xml version="1.0"?><workout_file><name>Ride</name><workout>'
+        '<SteadyState Duration="300" Power="0.80"/></workout></workout_file>',
+        encoding="utf-8",
+    )
+
+    with (
+        patch(
+            "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
+            return_value=(str(zwo_path), ""),
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
+            return_value=1,
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
+            return_value="",
+        ),
+        patch.object(lib, "add_workout") as mock_add_workout,
+        patch.object(lib, "add_workout_from_text") as mock_add_text,
+    ):
+        screen._on_add_clicked()
+
+    mock_add_workout.assert_called_once()
+    mock_add_text.assert_not_called()
+
+
+def test_preview_pane_load_zwo_populates_name(tmp_path):
+    """WorkoutPreviewPane.load() must handle .zwo files — name label populated from ZWO name."""
+    _get_qapp()
+    from opencycletrainer.ui.workout_library_screen import WorkoutPreviewPane
+
+    pane = WorkoutPreviewPane(ftp_getter=lambda: 250)
+    pane.load(_STEADY_ZWO)
+    assert pane._name_label.text() == "Steady Ride"
+
+
+def test_preview_pane_load_zwo_populates_chart_data(tmp_path):
+    """WorkoutPreviewPane.load() populates chart data for a .zwo file."""
+    _get_qapp()
+    from opencycletrainer.ui.workout_library_screen import WorkoutPreviewPane
+
+    pane = WorkoutPreviewPane(ftp_getter=lambda: 250)
+    pane.load(_STEADY_ZWO)
+    x, y = pane._target_item.getData()
+    assert x is not None and len(x) > 0
+
+
+def test_preview_pane_load_zwo_populates_stats(tmp_path):
+    """WorkoutPreviewPane.load() populates duration/NP/kJ/TSS stats for a .zwo file."""
+    _get_qapp()
+    from opencycletrainer.ui.workout_library_screen import WorkoutPreviewPane
+
+    pane = WorkoutPreviewPane(ftp_getter=lambda: 250)
+    pane.load(_STEADY_ZWO)
+    assert pane._duration_label.text() != "—"
+    assert pane._np_label.text() != "—"
+    assert pane._kj_label.text() != "—"
+
+
+# ── UI-level exception handling ───────────────────────────────────────────────
+
+def test_add_clicked_unexpected_error_shows_message_box(tmp_path):
+    """Unexpected error from library during add is surfaced via QMessageBox, not swallowed."""
+    screen, lib, _ = _make_screen(tmp_path)
+
+    with (
+        patch(
+            "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
+            return_value=(str(_STEP_MRC), ""),
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
+            return_value=1,
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
+            return_value="",
+        ),
+        patch.object(lib, "add_workout", side_effect=RuntimeError("disk full")),
+        patch("opencycletrainer.ui.workout_library_screen.QMessageBox") as mock_msgbox,
+    ):
+        screen._on_add_clicked()
+
+    mock_msgbox.critical.assert_called_once()
+
+
+def test_add_clicked_unexpected_error_does_not_raise(tmp_path):
+    """Unexpected error during add must not propagate out of the slot."""
+    screen, lib, _ = _make_screen(tmp_path)
+
+    with (
+        patch(
+            "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
+            return_value=(str(_STEP_MRC), ""),
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
+            return_value=1,
+        ),
+        patch(
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
+            return_value="",
+        ),
+        patch.object(lib, "add_workout", side_effect=RuntimeError("disk full")),
+        patch("opencycletrainer.ui.workout_library_screen.QMessageBox"),
+    ):
+        screen._on_add_clicked()  # must not raise
+
+
+def test_refresh_unexpected_error_shows_message_box(tmp_path):
+    """Unexpected error from library.refresh() is surfaced via QMessageBox, not swallowed."""
+    screen, lib, _ = _make_screen(tmp_path)
+    initial_row_count = screen.table.rowCount()
+
+    with (
+        patch.object(lib, "refresh", side_effect=RuntimeError("filesystem error")),
+        patch("opencycletrainer.ui.workout_library_screen.QMessageBox") as mock_msgbox,
+    ):
+        screen.refresh()
+
+    mock_msgbox.critical.assert_called_once()
+
+
+def test_refresh_unexpected_error_does_not_update_table(tmp_path):
+    """After a failed refresh, the table is left unchanged."""
+    screen, lib, _ = _make_screen(tmp_path, user_files=[_STEP_MRC])
+    initial_row_count = screen.table.rowCount()
+
+    with (
+        patch.object(lib, "refresh", side_effect=RuntimeError("filesystem error")),
+        patch("opencycletrainer.ui.workout_library_screen.QMessageBox"),
+    ):
+        screen.refresh()
+
+    assert screen.table.rowCount() == initial_row_count

@@ -2,49 +2,16 @@
 
 1. .octw internal format support is not implemented (no parser/writer/schema in code).
 2. kJ-based workout completion is not implemented (engine explicitly marks kJ mode as stub). Evidence: workout_engine.py.
-3. [DONE] ~~Free Ride behavior is not implemented beyond a settings enum (no free-ride control logic/manual target workflow).~~
-4. [DONE] ~~Pause/resume ramp-in countdown user messaging is missing in UI.~~
-5. [DONE] ~~Live workout charts are not implemented (explicit TODO placeholders). Evidence: workout_screen.py.~~
-6. [DONE] ~~Live metric computation/refresh for tiles is not implemented (tiles render, but no data-update path).~~
-7. [DONE] ~~Workout completion summary screen (“Great job!” with time/kJ/NP/TSS/avg HR) is not implemented.~~
-8. Primary power source selection logic and persistence per pairing are not implemented.
-9. [DONE] ~~Device pairing persistence is not implemented (pair state is in-memory backend state, not saved to storage).~~
-10. [DONE] ~~OpenTrueUp is implemented as a module, but not integrated into runtime app flow/settings wiring (offset display method exists but is not fed by app logic). Evidence: opentrueup.py, workout_screen.py.~~
-11. [DONE] ~~Recorder/FIT export are implemented modules but not wired to workout lifecycle in the running app.~~
-12. [N/A] ~~Display units/date/time formatting behavior from spec is not implemented in UI behavior.~~
-13. CI build pipelines for Windows/Linux are not present in repo (no workflow configuration found).
-14. [DONE] ~~Graphs should load with workout file (currently don't display until workout is started)~~
-15. Switch to resistance mode doesn't work (FTMS command failure)
-16. [DONE] ~~Need current target power on display - mandatory field~~
-17. [DONE] ~~Need to do something when an interval is skipped--truncate the graph and put a yellow bar at the skip point~~
-18. [DONE] ~~Elapsed time shouldn't advance on skip~~
-19. [DONE] ~~Calibrate doesn't seem to work quite right, no light on PM~~
-20. [DONE] ~~Device pairings didn't seem to persist between invocations~~
-21. [DONE] ~~Don't seem to release devices correctly, closing the application left the devices connected and couldn't be re-found on subsequent invocations, status lights on devices indicated they're still connected to something.~~
-22. [DONE] ~~Need to display current resistance level when in resistance mode~~
-23. Errors in FTMS layer prevent writing FIT file on Stop apparently (sometimes). FIT file should be written on stop regardless of state.
-24. [DONE] ~~FIT file write message should be in green, not red.~~
-25. [DONE] ~~Add workout library tab/screen which lists all workouts both added by the user and prepackaged with the app. User should be able to load a workout from this screen by double clicking.~~
-26. [DONE] ~~Power jog adjustments need to persist for the remainder of the interval. They currently seem to get overwritten after a moment~~
-27. [DONE] ~~Ramp doesn't work with Tempo 1x15 at least, just maintained the start power. Switching between resistance and back to ERG jumped to the current ramp target momentarily but then got overwritten again with original start power.~~
-28. [DONE] ~~Need cadence tile on display~~
-29. [DONE] ~~Error alerts should not persist indefinitely on the UI. They should be clearable and auto clear after 5s.~~
-30. [DONE] ~~Strava sync Phases 1-4: OAuth connect/disconnect, secure token storage, and automatic FIT upload on workout completion.~~
-31. [DONE] ~~Strava sync Phase 5: Structured logging, duplicate upload prevention with local history, external_id on uploads, "already synced" alert, and Sync Now button wiring.~~
-32. [DONE] ~~Strava sync Phase 6: workout power chart image generated (matplotlib, 1080×1350 portrait) and attached to Strava activity after successful FIT upload, best-effort and non-blocking.~~
-33. [DONE] ~~Configure plots - Allow user to disable interval plot in Settings. If disabled, whole-workout plot should fill up its space.~~
-34. [DONE] ~~Cursor continues to advance on charts while paused. There also appears to be a 3-second countdown on the pause modal followed by a 3-second ramp in once returned from the modal--the correct sequence should be to do the ramp-in with the 3 second countdown on the pause modal.~~
-35. [DONE] ~~Settings and value changes on the Settings page should automatically be saved when changed, rather than requiring the user to click Save.~~
-36. [DONE] ~~OpenTrueUp enable should be grayed out whenever the user does not have both a power meter and a power-reporting trainer connected~~
-37. [DONE] ~~UI should show some indication that auto-reconnecting devices are in the process of connecting.~~
-38. [DONE] ~~Mock backend should only be a programmatic option for test scripts, the UI should not expose a backend toggle and should always use Bleak whenever we are not testing.~~
-39. [DONE] ~~Remove the display units toggle in settings, nothing uses it~~
-40. [DONE] ~~The Target Power tile should be modified to show "Current / Target Power" as the title and the values shown respectively (i.e. 151 / 153 W) in the box. This should use windowed average power for the current power, and Windowed Average Power should be removed from the configurable tile list.~~
-41. [DONE] ~~Remove "Default workout behavior" from the settings screen. This will be handled in other ways later.~~
-42. Support ZWO file input
-43. [DONE] ~~Add setting for Dark mode - Light, Dark, or Use System Theme. When in Dark mode, the plots should go to dark mode as well.~~
-44. [DONE] ~~Populate workout library with workouts from workouts_lib.md (create the MRC files from the descriptions). These workouts should ship with OCT.~~
-45. [DONE] ~~Allow user to set workout data folder in Settings. OCT should create subfolders in this directory for each filetype (FIT, JSON, png).~~
-46. [DONE] ~~"Trainer A" and "Power Meter B" keep reappearing in the devices list after making updates. These should never appear as they are not real devices.~~
-47. [DONE] ~~Closing the app or maybe in cases disconnecting from a device, particularly an FTMS trainer, does not appear to always properly release the device. The app thinks the device is disconnected but the device still indicates it is connected and does not show up in scans as available for connection. Make sure we always properly release/disconnect devices.~~
-48. Double clicking a connected device in the device list should fetch and display its capabilities (as reported by its relevant service characteristics, but transposed to human-readable form) in a modal. 48a. [DONE] ~~FTMS trainers~~, 48b. CPS Power Meters, 48c. Heart Rate Monitors
+3. Primary power source selection logic and persistence per pairing are not implemented.
+4. CI build pipelines for Windows/Linux are not present in repo (no workflow configuration found).
+5. Errors in FTMS layer prevent writing FIT file on Stop apparently (sometimes). FIT file should be written on stop regardless of state.
+6. Double clicking a connected device in the device list should fetch and display its capabilities (as reported by its relevant service characteristics, but transposed to human-readable form) in a modal. 6a. [DONE] ~~FTMS trainers~~, 6b. CPS Power Meters, 6c. [DONE] ~~Heart Rate Monitors~~
+7. [DONE] ~~BLE backend test pollution: forgetting to pass a mock `PairedDeviceStore` in tests writes to real user data files. Add a runtime guard (e.g., raise if the default production path is used without an explicit opt-in) rather than relying on developer discipline.~~
+8. `WorkoutSessionController` is growing too complex — it tracks power history, cadence history, per-interval stats, mode state, and OpenTrueUp state all in one class. Decompose into smaller focused objects to improve testability and maintainability.
+9. [DONE] ~~`except Exception` in `workout_library.py` is too broad when skipping unparseable files. Narrow to specific parser exception types to avoid swallowing import errors, OOM, or other unexpected failures.~~
+10. [DONE] ~~`_manual_resistance_offset_percent = 33.0` in `workout_controller.py` is an unexplained magic number used when switching modes. Extract to a named constant and add a comment explaining the intent.~~
+11. [DONE] ~~Resistance level range can be `None` in `ftms_control.py` for trainers that don't report it. Add an explicit fallback or guard so behavior is defined rather than undefined in that case.~~
+12. [DONE] ~~Thread safety in `AsyncioRunner`: `_closed` flag is not atomic and `_loop` can be `None` during startup/shutdown edge cases. Guard against race conditions if shutdown is called from multiple threads.~~
+13. [DONE] ~~`AppSettings.from_dict()` restores `last_workout_dir`/`workout_data_dir` as `Path` objects without checking whether those paths still exist. Add existence validation on restore.~~
+14. `extend_interval()` in `workout_engine.py` has no upper bound on the extension value. A misbehaving caller could extend an interval to an unreasonable duration. Add a reasonable cap or validation.
+15. No end-to-end integration test covering the full workout loop: load workout → start → tick → finish → FIT file written. Add at least one such test to catch wiring regressions between engine, recorder, and exporter.

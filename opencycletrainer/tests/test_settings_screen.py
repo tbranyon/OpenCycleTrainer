@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
+from opencycletrainer.devices.mock_backend import MockDeviceBackend
 from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
 from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
 from opencycletrainer.ui.main_window import MainWindow
@@ -176,7 +177,7 @@ def test_main_window_applies_settings_screen_tile_updates_to_workout_screen():
     settings = AppSettings(tile_selections=["heart_rate"])
     save_settings(settings, settings_path)
 
-    window = MainWindow(settings=settings, settings_path=settings_path)
+    window = MainWindow(settings=settings, settings_path=settings_path, backend=MockDeviceBackend())
     assert window.workout_screen.get_selected_tile_keys() == ["heart_rate"]
 
     window.settings_screen.set_tile_selected("workout_avg_power", True)

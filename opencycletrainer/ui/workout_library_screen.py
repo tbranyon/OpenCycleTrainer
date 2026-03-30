@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from opencycletrainer.core.mrc_parser import inject_category_into_mrc_text, parse_mrc_file
+from opencycletrainer.core.zwo_parser import inject_category_into_zwo_text, parse_zwo_file
 from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.ui.workout_chart import (
@@ -136,10 +138,16 @@ class WorkoutPreviewPane(QWidget):
         self._tss_label.setText("—")
 
     def load(self, path: Path) -> None:
-        """Parse MRC at path using current FTP, populate chart and stats."""
+        """Parse workout at path using current FTP, populate chart and stats.
+
+        Supports both .mrc and .zwo files, dispatching to the appropriate parser.
+        """
         try:
             ftp = self._ftp_getter()
-            workout = parse_mrc_file(path, ftp_watts=ftp)
+            if path.suffix.lower() == ".zwo":
+                workout = parse_zwo_file(path, ftp_watts=ftp)
+            else:
+                workout = parse_mrc_file(path, ftp_watts=ftp)
         except Exception:
             self.clear()
             return
@@ -367,7 +375,7 @@ class WorkoutLibraryScreen(QWidget):
             self,
             "Add Workout to Library",
             str(Path.home()),
-            "MRC Files (*.mrc)",
+            "Workout Files (*.mrc *.zwo);;MRC Files (*.mrc);;ZWO Files (*.zwo)",
         )
         if not file_path_str:
             return
@@ -383,12 +391,19 @@ class WorkoutLibraryScreen(QWidget):
             return
 
         cat = dialog.selected_category()
-        if cat:
-            text = source_path.read_text(encoding="utf-8")
-            text = inject_category_into_mrc_text(text, cat)
-            self._library.add_workout_from_text(text, source_path.name)
-        else:
-            self._library.add_workout(source_path)
+        try:
+            if cat:
+                text = source_path.read_text(encoding="utf-8")
+                if source_path.suffix.lower() == ".zwo":
+                    text = inject_category_into_zwo_text(text, cat)
+                else:
+                    text = inject_category_into_mrc_text(text, cat)
+                self._library.add_workout_from_text(text, source_path.name)
+            else:
+                self._library.add_workout(source_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error Adding Workout", f"Could not add workout:\n{exc}")
+            return
 
         self._refresh_category_combo()
         self._populate_table()
@@ -411,7 +426,11 @@ class WorkoutLibraryScreen(QWidget):
 
     def refresh(self) -> None:
         """Rescan library directories and repopulate the table."""
-        self._library.refresh()
+        try:
+            self._library.refresh()
+        except Exception as exc:
+            QMessageBox.critical(self, "Library Error", f"Could not refresh workout library:\n{exc}")
+            return
         self._refresh_category_combo()
         self._populate_table()
 
