@@ -762,6 +762,74 @@ def test_cadence_tile_excludes_readings_older_than_1s():
     controller.shutdown()
 
 
+def test_cadence_tile_holds_last_value_during_short_dropout():
+    """Cadence tile should display the last known value for up to 3s after data stops."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["cadence_rpm"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.receive_cadence_rpm(90.0)
+
+    # At t=2.5, cadence is 1.5s stale — within 3s hold window, should display 90
+    monotonic_now = 2.5
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["cadence_rpm"].value_label.text() == "90 rpm"
+
+    controller.shutdown()
+
+
+def test_cadence_tile_shows_dash_after_dropout_exceeds_3s():
+    """Cadence tile should revert to '--' once the last reading is older than 3s."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["cadence_rpm"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.receive_cadence_rpm(90.0)
+
+    # At t=4.1, cadence is 3.1s stale — beyond the 3s hold window, should show "--"
+    monotonic_now = 4.1
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["cadence_rpm"].value_label.text() == "--"
+
+    controller.shutdown()
+
+
 # ── Trainer control footer visibility ─────────────────────────────────────────
 
 

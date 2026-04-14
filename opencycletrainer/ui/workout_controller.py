@@ -35,6 +35,8 @@ from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, comput
 
 RECOVERY_THRESHOLD_PERCENT = 56.0
 _CADENCE_SOURCE_STALENESS_SECONDS = 3.0
+# Duration to hold the last cadence reading on display when signal is lost before showing "--".
+_CADENCE_DROPOUT_HOLD_SECONDS = 3.0
 # Starting resistance when switching to manual/resistance mode mid-workout; mid-range to avoid
 # immediately overloading or underloading the rider.
 DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT = 33.0
@@ -443,6 +445,7 @@ class WorkoutSessionController(QObject):
             current_index = int(snapshot.current_interval_index)
             current_extra = self._interval_extra_seconds.get(current_index, 0)
             self._interval_extra_seconds[current_index] = current_extra + int(seconds_or_kj)
+            self._screen.rebuild_target_series(self._engine.interval_durations)
         self._handle_snapshot(snapshot, now_monotonic=None)
 
     def _skip_interval(self) -> None:
@@ -1107,12 +1110,17 @@ class WorkoutSessionController(QObject):
         return round(sum(in_window) / len(in_window))
 
     def _windowed_avg_cadence(self, now: float) -> int | None:
-        """Return the average cadence (rpm) over the last 1 second, or None if no data."""
-        cutoff = now - 1.0
-        in_window = [rpm for t, rpm in self._cadence_history if t >= cutoff]
-        if not in_window:
-            return None
-        return round(sum(in_window) / len(in_window))
+        """Return the 1s rolling average cadence, holding the last value for up to 3s on dropout."""
+        cutoff_1s = now - 1.0
+        in_window = [rpm for t, rpm in self._cadence_history if t >= cutoff_1s]
+        if in_window:
+            return round(sum(in_window) / len(in_window))
+        # Hold the most recent reading for up to _CADENCE_DROPOUT_HOLD_SECONDS before blanking.
+        cutoff_hold = now - _CADENCE_DROPOUT_HOLD_SECONDS
+        recent = [(t, rpm) for t, rpm in self._cadence_history if t >= cutoff_hold]
+        if recent:
+            return round(max(recent, key=lambda x: x[0])[1])
+        return None
 
     def _on_chart_tick(self) -> None:
         if self._chart_start_monotonic is None:

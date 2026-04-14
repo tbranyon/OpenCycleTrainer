@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -540,18 +540,15 @@ def test_adding_zwo_with_category_calls_inject_zwo(tmp_path):
         encoding="utf-8",
     )
 
+    mock_dialog = MagicMock(**{"exec.return_value": 1, "selected_category.return_value": "SST"})
     with (
         patch(
             "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
             return_value=(str(zwo_path), ""),
         ),
         patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
-            return_value=1,
-        ),
-        patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
-            return_value="SST",
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog",
+            return_value=mock_dialog,
         ),
         patch(
             "opencycletrainer.ui.workout_library_screen.inject_category_into_zwo_text",
@@ -579,18 +576,15 @@ def test_adding_zwo_without_category_does_not_inject(tmp_path):
         encoding="utf-8",
     )
 
+    mock_dialog = MagicMock(**{"exec.return_value": 1, "selected_category.return_value": ""})
     with (
         patch(
             "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
             return_value=(str(zwo_path), ""),
         ),
         patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
-            return_value=1,
-        ),
-        patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
-            return_value="",
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog",
+            return_value=mock_dialog,
         ),
         patch.object(lib, "add_workout") as mock_add_workout,
         patch.object(lib, "add_workout_from_text") as mock_add_text,
@@ -640,18 +634,15 @@ def test_add_clicked_unexpected_error_shows_message_box(tmp_path):
     """Unexpected error from library during add is surfaced via QMessageBox, not swallowed."""
     screen, lib, _ = _make_screen(tmp_path)
 
+    mock_dialog = MagicMock(**{"exec.return_value": 1, "selected_category.return_value": ""})
     with (
         patch(
             "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
             return_value=(str(_STEP_MRC), ""),
         ),
         patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
-            return_value=1,
-        ),
-        patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
-            return_value="",
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog",
+            return_value=mock_dialog,
         ),
         patch.object(lib, "add_workout", side_effect=RuntimeError("disk full")),
         patch("opencycletrainer.ui.workout_library_screen.QMessageBox") as mock_msgbox,
@@ -665,18 +656,15 @@ def test_add_clicked_unexpected_error_does_not_raise(tmp_path):
     """Unexpected error during add must not propagate out of the slot."""
     screen, lib, _ = _make_screen(tmp_path)
 
+    mock_dialog = MagicMock(**{"exec.return_value": 1, "selected_category.return_value": ""})
     with (
         patch(
             "opencycletrainer.ui.workout_library_screen.QFileDialog.getOpenFileName",
             return_value=(str(_STEP_MRC), ""),
         ),
         patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.exec",
-            return_value=1,
-        ),
-        patch(
-            "opencycletrainer.ui.workout_library_screen._CategoryDialog.selected_category",
-            return_value="",
+            "opencycletrainer.ui.workout_library_screen._CategoryDialog",
+            return_value=mock_dialog,
         ),
         patch.object(lib, "add_workout", side_effect=RuntimeError("disk full")),
         patch("opencycletrainer.ui.workout_library_screen.QMessageBox"),

@@ -492,6 +492,10 @@ class WorkoutScreen(QWidget):
     def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
         self.chart_widget.add_skip_marker(elapsed_before, elapsed_after)
 
+    def rebuild_target_series(self, interval_durations: list[int]) -> None:
+        """Rebuild the chart target trace after interval durations change."""
+        self.chart_widget.rebuild_target_series(interval_durations)
+
     def export_chart_image(self, path: Path) -> Path:
         """Capture the workout overview chart as a PNG and save it to *path*."""
         return self.chart_widget.export_image(path)

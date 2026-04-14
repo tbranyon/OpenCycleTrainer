@@ -233,6 +233,7 @@ class WorkoutRecorder:
             self._fit_exporter.export_activity(
                 workout_name=session.workout_name,
                 started_at_utc=session.started_at_utc,
+                finished_at_utc=finish_time_utc,
                 fit_file_path=session.fit_file_path,
                 samples=fit_samples,
             )

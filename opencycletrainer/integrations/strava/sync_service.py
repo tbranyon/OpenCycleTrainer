@@ -10,6 +10,9 @@ from .upload_history import is_already_uploaded, record_upload
 
 _logger = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 3
+# Seconds to wait before each successive upload status poll.
+# First check is after 5 s; subsequent delays double until capped at 60 s.
+_POLL_SCHEDULE = [5, 10, 20, 40, 60, 60, 60]
 
 
 class DuplicateUploadError(Exception):
@@ -145,8 +148,12 @@ def _do_upload(fit_path: Path, access_token: str) -> str | None:
             external_id=external_id,
         )
     try:
-        uploader.wait()
-        return str(uploader.activity_id) if uploader.activity_id else None
+        for delay in _POLL_SCHEDULE:
+            time.sleep(delay)
+            uploader.poll()
+            if uploader.activity_id is not None:
+                return str(uploader.activity_id)
+        raise RuntimeError("Strava upload timed out waiting for server processing")
     except Exception as exc:  # noqa: BLE001
         if "duplicate" in str(exc).lower():
             raise DuplicateUploadError("Strava reported a duplicate activity") from exc

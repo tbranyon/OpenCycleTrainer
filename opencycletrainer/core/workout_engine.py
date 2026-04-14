@@ -63,6 +63,11 @@ class WorkoutEngine:
     def recording_active(self) -> bool:
         return self._state == EngineState.RUNNING
 
+    @property
+    def interval_durations(self) -> list[int]:
+        """Current duration of each interval in seconds (may differ from the original workout after extensions)."""
+        return list(self._interval_durations_seconds)
+
     def load_workout(self, workout: Workout) -> WorkoutEngineSnapshot:
         if not workout.intervals:
             raise ValueError("Workout must include at least one interval.")

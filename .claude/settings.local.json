@@ -37,7 +37,10 @@
       "Read(//c/Users/thomas.branyon/AppData/Local/**)",
       "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Roaming'' | Where-Object Name -like ''*cycle*'' -or Where-Object Name -like ''*OCT*'' -or Where-Object Name -like ''*Open*''\")",
       "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\thomas.branyon\\\\AppData\\\\Local\\\\Packages\\\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\\\LocalCache\\\\Roaming\\\\OpenCycleTrainer\\\\paired_devices.json''\")",
-      "Bash(grep -E \"\\\\.py$\")"
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(python3 -c \"from fit_tool.profile.profile_type import Sport, SubSport, Activity, Event, EventType; print\\(''Sport:'', [s.name for s in Sport][:10]\\); print\\(''SubSport:'', [s.name for s in SubSport][:10]\\); print\\(''Activity:'', [a.name for a in Activity]\\); print\\(''Event:'', [e.name for e in Event][:10]\\); print\\(''EventType:'', [e.name for e in EventType][:10]\\)\")",
+      "Bash(python3 -c \":*)",
+      "Bash(pkill -f \"python -m pytest\")"
     ]
   }
 }

@@ -8,7 +8,7 @@
   "default_workout_behavior": "workout_mode",
   "windowed_power_window_seconds": 3,
   "last_workout_dir": null,
-  "workout_data_dir": "C:\\Users\\thomas.branyon\\AppData\\Local\\Temp\\pytest-of-thomas.branyon\\pytest-63\\test_sync_now_defaults_to_fit_0",
+  "workout_data_dir": "/tmp/pytest-of-throwaway-breaker/pytest-5/test_sync_now_defaults_to_fit_0",
   "strava_auto_sync_enabled": false,
   "strava_athlete_name": "",
   "show_interval_plot": true

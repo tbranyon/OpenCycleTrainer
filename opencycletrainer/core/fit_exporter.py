@@ -27,6 +27,7 @@ class FitWriterBackend(Protocol):
         *,
         workout_name: str,
         started_at_utc: datetime,
+        finished_at_utc: datetime,
         fit_file_path: Path,
         samples: list[FitExportSample],
     ) -> None: ...
@@ -43,11 +44,13 @@ class FitExporter:
         *,
         workout_name: str,
         started_at_utc: datetime,
+        finished_at_utc: datetime,
         fit_file_path: Path,
         samples: list[FitExportSample],
     ) -> Path:
         ensure_dir(fit_file_path.parent)
         normalized_start = _normalize_utc(started_at_utc)
+        normalized_finish = _normalize_utc(finished_at_utc)
         normalized_samples = [
             FitExportSample(
                 timestamp_utc=_normalize_utc(sample.timestamp_utc),
@@ -61,6 +64,7 @@ class FitExporter:
         self._writer_backend.write_activity(
             workout_name=workout_name,
             started_at_utc=normalized_start,
+            finished_at_utc=normalized_finish,
             fit_file_path=fit_file_path,
             samples=normalized_samples,
         )
@@ -73,14 +77,26 @@ class _FitToolWriterBackend:
         *,
         workout_name: str,
         started_at_utc: datetime,
+        finished_at_utc: datetime,
         fit_file_path: Path,
         samples: list[FitExportSample],
     ) -> None:
         try:
             from fit_tool.fit_file_builder import FitFileBuilder
+            from fit_tool.profile.messages.activity_message import ActivityMessage
             from fit_tool.profile.messages.file_id_message import FileIdMessage
+            from fit_tool.profile.messages.lap_message import LapMessage
             from fit_tool.profile.messages.record_message import RecordMessage
-            from fit_tool.profile.profile_type import FileType, Manufacturer
+            from fit_tool.profile.messages.session_message import SessionMessage
+            from fit_tool.profile.profile_type import (
+                Activity,
+                Event,
+                EventType,
+                FileType,
+                Manufacturer,
+                Sport,
+                SubSport,
+            )
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 "fit-tool is required for FIT export. Install it with `pip install fit-tool`.",
@@ -109,6 +125,41 @@ class _FitToolWriterBackend:
                 _set_field(record, ("speed",), float(sample.speed_mps))
             builder.add(record)
 
+        elapsed_seconds = (finished_at_utc - started_at_utc).total_seconds()
+        finish_ts_ms = _to_fit_timestamp_ms(finished_at_utc)
+        start_ts_ms = _to_fit_timestamp_ms(started_at_utc)
+
+        lap = LapMessage()
+        _set_field(lap, ("timestamp",), finish_ts_ms)
+        _set_field(lap, ("start_time", "startTime"), start_ts_ms)
+        _set_field(lap, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
+        _set_field(lap, ("total_timer_time", "totalTimerTime"), elapsed_seconds)
+        _set_field(lap, ("event",), _enum_value(Event.LAP))
+        _set_field(lap, ("event_type", "eventType"), _enum_value(EventType.STOP))
+        builder.add(lap)
+
+        session = SessionMessage()
+        _set_field(session, ("timestamp",), finish_ts_ms)
+        _set_field(session, ("start_time", "startTime"), start_ts_ms)
+        _set_field(session, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
+        _set_field(session, ("total_timer_time", "totalTimerTime"), elapsed_seconds)
+        _set_field(session, ("sport",), _enum_value(Sport.CYCLING))
+        _set_field(session, ("sub_sport", "subSport"), _enum_value(SubSport.INDOOR_CYCLING))
+        _set_field(session, ("event",), _enum_value(Event.SESSION))
+        _set_field(session, ("event_type", "eventType"), _enum_value(EventType.STOP_DISABLE_ALL))
+        _set_field(session, ("num_laps", "numLaps"), 1)
+        builder.add(session)
+
+        activity = ActivityMessage()
+        _set_field(activity, ("timestamp",), finish_ts_ms)
+        _set_field(activity, ("local_timestamp", "localTimestamp"), _to_local_fit_timestamp(finished_at_utc))
+        _set_field(activity, ("total_timer_time", "totalTimerTime"), elapsed_seconds)
+        _set_field(activity, ("num_sessions", "numSessions"), 1)
+        _set_field(activity, ("type",), _enum_value(Activity.MANUAL))
+        _set_field(activity, ("event",), _enum_value(Event.ACTIVITY))
+        _set_field(activity, ("event_type", "eventType"), _enum_value(EventType.STOP))
+        builder.add(activity)
+
         fit_file = builder.build()
         fit_file.to_file(str(fit_file_path))
 
@@ -125,12 +176,14 @@ class JsonFitWriterBackend:
         *,
         workout_name: str,
         started_at_utc: datetime,
+        finished_at_utc: datetime,
         fit_file_path: Path,
         samples: list[FitExportSample],
     ) -> None:
         payload = {
             "workout_name": workout_name,
             "started_at_utc": _normalize_utc(started_at_utc).isoformat().replace("+00:00", "Z"),
+            "finished_at_utc": _normalize_utc(finished_at_utc).isoformat().replace("+00:00", "Z"),
             "records": [
                 {
                     "timestamp_utc": _normalize_utc(sample.timestamp_utc).isoformat().replace("+00:00", "Z"),
@@ -165,5 +218,15 @@ def _normalize_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+_FIT_EPOCH_OFFSET_SECONDS = 631065600  # seconds between Unix epoch (1970-01-01) and FIT epoch (1989-12-31)
+
+
 def _to_fit_timestamp_ms(value: datetime) -> int:
     return int(round(_normalize_utc(value).timestamp() * 1000))
+
+
+def _to_local_fit_timestamp(value: datetime) -> int:
+    """Returns a FIT local_timestamp: seconds since FIT epoch (Dec 31 1989) expressed in local time."""
+    utc_seconds = int(_normalize_utc(value).timestamp())
+    utc_offset_seconds = int(value.astimezone().utcoffset().total_seconds())
+    return utc_seconds + utc_offset_seconds - _FIT_EPOCH_OFFSET_SECONDS

@@ -362,3 +362,98 @@ def test_widget_apply_color_theme_switches_between_light_and_dark():
 
     widget.apply_color_theme("light")
     assert widget._color_theme == "light"
+
+
+# ── build_target_series with overridden durations ─────────────────────────────
+
+def test_build_target_series_with_overridden_durations():
+    """Extending interval 0 by 60 s shifts the series boundary and end point."""
+    from opencycletrainer.ui.workout_chart import build_target_series
+
+    workout = _flat_workout()  # interval 0: 300 s, interval 1: 600 s
+    t, w = build_target_series(workout, interval_durations=[360, 600])
+
+    # 4 boundary points total
+    assert len(t) == 4
+
+    # Interval 0: unchanged power, but now ends at 360 s
+    assert t[0] == pytest.approx(0.0)
+    assert w[0] == pytest.approx(100.0)
+    assert t[1] == pytest.approx(360.0)
+    assert w[1] == pytest.approx(100.0)
+
+    # Interval 1: starts at 360, ends at 960 (shifted by +60)
+    assert t[2] == pytest.approx(360.0)
+    assert w[2] == pytest.approx(180.0)
+    assert t[3] == pytest.approx(960.0)
+    assert w[3] == pytest.approx(180.0)
+
+
+def test_build_target_series_default_matches_overridden_with_original_durations():
+    """Passing the original durations explicitly should be identical to the default."""
+    from opencycletrainer.ui.workout_chart import build_target_series
+
+    workout = _flat_workout()
+    t_default, w_default = build_target_series(workout)
+    t_explicit, w_explicit = build_target_series(workout, interval_durations=[300, 600])
+
+    np.testing.assert_array_equal(t_default, t_explicit)
+    np.testing.assert_array_equal(w_default, w_explicit)
+
+
+# ── WorkoutChartWidget.rebuild_target_series ──────────────────────────────────
+
+def test_rebuild_target_series_updates_target_data():
+    """After rebuilding, both target items reflect the new interval durations."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    # Extend interval 0 by 60 s
+    widget.rebuild_target_series([360, 600])
+
+    for target in (widget._interval_target, widget._workout_target):
+        x, _ = target.getData()
+        assert x[1] == pytest.approx(360.0), "interval 0 end should shift to 360"
+        assert x[2] == pytest.approx(360.0), "interval 1 start should shift to 360"
+        assert x[3] == pytest.approx(960.0), "workout end should shift to 960"
+
+
+def test_rebuild_target_series_expands_workout_x_range():
+    """The workout overview X range should grow to the new total duration."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)  # total = 900 s
+
+    widget.rebuild_target_series([360, 600])  # new total = 960 s
+
+    _, x_max = widget._workout_plot.getViewBox().viewRange()[0]
+    assert x_max == pytest.approx(960.0)
+
+
+def test_rebuild_target_series_updates_interval_range():
+    """After extending interval 0, the interval view X window uses new offsets."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    _CONTEXT = 30  # _CONTEXT_SECONDS constant
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    widget.rebuild_target_series([360, 600])
+
+    # Still showing interval 0 (update_charts not called yet), window = [0, 360+30]=390
+    # clipped to total=960 → [0, 390]
+    x_min, x_max = widget._interval_plot.getViewBox().viewRange()[0]
+    assert x_min == pytest.approx(0.0)
+    assert x_max == pytest.approx(360.0 + _CONTEXT)
+
+    # Move to interval 1: start=360, end=960 → [360-30, min(960, 960+30)] = [330, 960]
+    widget.update_charts(400.0, 1, [], [])
+    x_min_1, x_max_1 = widget._interval_plot.getViewBox().viewRange()[0]
+    assert x_min_1 == pytest.approx(360.0 - _CONTEXT)
+    assert x_max_1 == pytest.approx(960.0)

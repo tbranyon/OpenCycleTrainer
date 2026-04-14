@@ -35,6 +35,10 @@ _COLOR_THEME_DARK = "dark"
 
 _Y_STEP = 50.0          # watts between horizontal grid lines
 _CONTEXT_SECONDS = 30   # padding on each side of interval chart
+
+# Chart export dimensions — 16:9 is widely used by Strava and social platforms.
+_EXPORT_WIDTH  = 1920
+_EXPORT_HEIGHT = 1080
 _5_MIN_SECONDS = 300.0  # five minutes in seconds
 
 
@@ -91,6 +95,7 @@ class WorkoutChartWidget(QWidget):
         layout.setSpacing(4)
 
         self._workout: Workout | None = None
+        self._interval_durations: list[int] = []
         self._ftp_watts: int = 200
         self._free_ride_mode: bool = False
         self._free_ride_x_window_seconds: int = 1800
@@ -150,6 +155,7 @@ class WorkoutChartWidget(QWidget):
         """Render the static target trace and reset live series."""
         self._workout   = workout
         self._ftp_watts = max(1, int(ftp_watts))
+        self._interval_durations = [iv.duration_seconds for iv in workout.intervals]
 
         t, w = build_target_series(workout)
         self._interval_target.setData(t, w)
@@ -198,6 +204,22 @@ class WorkoutChartWidget(QWidget):
         self._interval_plot.addItem(interval_region)
         self._workout_plot.addItem(workout_region)
         self._skip_markers.append((interval_region, workout_region))
+
+    def rebuild_target_series(self, interval_durations: list[int]) -> None:
+        """Rebuild the target trace after interval durations change (e.g. extend).
+
+        Updates both chart items and expands the workout overview X range to the
+        new total duration.
+        """
+        if self._workout is None:
+            return
+        self._interval_durations = list(interval_durations)
+        t, w = build_target_series(self._workout, self._interval_durations)
+        self._interval_target.setData(t, w)
+        self._workout_target.setData(t, w)
+        total = float(sum(self._interval_durations))
+        self._workout_plot.setXRange(0.0, total, padding=0)
+        self._update_interval_range(0)
 
     def update_charts(
         self,
@@ -263,9 +285,20 @@ class WorkoutChartWidget(QWidget):
                     _configure_y_axis(plot, float(new_y_max))
 
     def export_image(self, path: Path) -> Path:
-        """Capture the workout overview chart as a PNG and save it to *path*."""
+        """Capture the workout overview chart as a PNG and save it to *path*.
+
+        The raw grab is scaled to ``_EXPORT_WIDTH`` × ``_EXPORT_HEIGHT`` so the
+        saved image always has a consistent 16:9 aspect ratio regardless of the
+        current window size.
+        """
         pixmap = self._workout_plot.grab()
-        pixmap.save(str(path), "PNG")
+        scaled = pixmap.scaled(
+            _EXPORT_WIDTH,
+            _EXPORT_HEIGHT,
+            Qt.IgnoreAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        scaled.save(str(path), "PNG")
         return path
 
     def clear(self) -> None:
@@ -385,16 +418,14 @@ class WorkoutChartWidget(QWidget):
         self._skip_markers.clear()
 
     def _update_interval_range(self, interval_index: int) -> None:
-        if self._workout is None:
+        if self._workout is None or not self._interval_durations:
             return
-        intervals = self._workout.intervals
-        if not intervals:
-            return
-        idx = max(0, min(interval_index, len(intervals) - 1))
-        iv    = intervals[idx]
-        total = float(self._workout.total_duration_seconds)
-        x_min = max(0.0, float(iv.start_offset_seconds) - _CONTEXT_SECONDS)
-        x_max = min(total, float(iv.end_offset_seconds)  + _CONTEXT_SECONDS)
+        idx = max(0, min(interval_index, len(self._interval_durations) - 1))
+        iv_start = float(sum(self._interval_durations[:idx]))
+        iv_end   = float(sum(self._interval_durations[:idx + 1]))
+        total    = float(sum(self._interval_durations))
+        x_min = max(0.0, iv_start - _CONTEXT_SECONDS)
+        x_max = min(total, iv_end  + _CONTEXT_SECONDS)
         self._interval_plot.setXRange(x_min, x_max, padding=0)
         self._reposition_ftp_text(self._interval_plot, self._interval_ftp_text)
 
@@ -477,7 +508,10 @@ def _theme_settings(color_theme: str) -> dict[str, object]:
     }
 
 
-def build_target_series(workout: Workout) -> tuple[np.ndarray, np.ndarray]:
+def build_target_series(
+    workout: Workout,
+    interval_durations: list[int] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Build the target power polyline as (t, w) arrays.
 
@@ -487,13 +521,21 @@ def build_target_series(workout: Workout) -> tuple[np.ndarray, np.ndarray]:
     Adjacent flat intervals produce a shared boundary pair that results in a
     correct step (vertical segment).  Ramp intervals produce a sloped line and
     a trapezoidal fill.
+
+    ``interval_durations`` overrides each interval's duration (e.g. after an
+    extension), recomputing offsets while keeping the power values unchanged.
     """
+    durations = interval_durations if interval_durations is not None else [
+        iv.duration_seconds for iv in workout.intervals
+    ]
     t: list[float] = []
     w: list[float] = []
-    for iv in workout.intervals:
-        t.append(float(iv.start_offset_seconds))
+    offset = 0
+    for iv, dur in zip(workout.intervals, durations):
+        t.append(float(offset))
         w.append(float(iv.start_target_watts))
-        t.append(float(iv.end_offset_seconds))
+        offset += dur
+        t.append(float(offset))
         w.append(float(iv.end_target_watts))
     return np.array(t, dtype=float), np.array(w, dtype=float)
 
