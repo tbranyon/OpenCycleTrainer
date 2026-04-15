@@ -12,6 +12,7 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 
 from opencycletrainer.core.fit_exporter import FitExportSample, FitExporter
+from opencycletrainer.core.workout_metrics import compute_workout_metrics
 from opencycletrainer.storage.filenames import build_activity_filename
 from opencycletrainer.storage.paths import (
     ensure_dir,
@@ -51,6 +52,9 @@ class RecorderSummary:
     start_time_utc: datetime
     duration_seconds: int
     avg_power_watts: float | None
+    normalized_power: int | None
+    kj: float
+    avg_hr: int | None
     sample_count: int
     fit_file_path: Path
     samples_file_path: Path
@@ -62,6 +66,9 @@ class RecorderSummary:
             "start_time_utc": _isoformat_utc(self.start_time_utc),
             "duration_seconds": self.duration_seconds,
             "avg_power_watts": self.avg_power_watts,
+            "normalized_power": self.normalized_power,
+            "kj": round(self.kj, 3),
+            "avg_hr": self.avg_hr,
             "sample_count": self.sample_count,
         }
 
@@ -215,6 +222,8 @@ class WorkoutRecorder:
         if self._effective_power_count > 0:
             avg_power_watts = round(self._effective_power_sum / self._effective_power_count, 2)
 
+        metrics = compute_workout_metrics(self._recorded_samples, ftp_watts=0)
+
         fit_samples = [
             FitExportSample(
                 timestamp_utc=sample.timestamp_utc,
@@ -251,6 +260,9 @@ class WorkoutRecorder:
             start_time_utc=session.started_at_utc,
             duration_seconds=duration_seconds,
             avg_power_watts=avg_power_watts,
+            normalized_power=metrics.normalized_power,
+            kj=metrics.kj,
+            avg_hr=metrics.avg_hr,
             sample_count=len(self._recorded_samples),
             fit_file_path=session.fit_file_path,
             samples_file_path=session.samples_file_path,

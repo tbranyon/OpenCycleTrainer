@@ -48,7 +48,12 @@ class _FakeRecorder:
         self.started = False
         self.recording_enabled = False
         self.stop_calls += 1
-        return SimpleNamespace(fit_file_path=Path("Quick_Start_20260311_1200.fit"))
+        return SimpleNamespace(
+            fit_file_path=Path("Quick_Start_20260311_1200.fit"),
+            normalized_power=None,
+            kj=0.0,
+            avg_hr=None,
+        )
 
 
 class _FakeRecorderWithDataDir(_FakeRecorder):
@@ -251,6 +256,10 @@ def test_sensor_data_is_included_in_recorder_samples():
     monotonic_now = 1.0
     controller.process_tick(monotonic_now)
 
+    # The aggregator holds the partial bin until a second boundary or session end.
+    # shutdown() finalizes the session, flushing the aggregator to the recorder.
+    controller.shutdown()
+
     recorded = fake_recorder.samples
     assert recorded, "Expected at least one recorded sample"
     last = recorded[-1]
@@ -258,8 +267,6 @@ def test_sensor_data_is_included_in_recorder_samples():
     assert last.heart_rate_bpm == 155
     assert last.cadence_rpm == 95.0
     assert last.speed_mps == 10.5
-
-    controller.shutdown()
 
 
 def test_receive_cadence_and_speed_are_available():
@@ -275,13 +282,13 @@ def test_receive_cadence_and_speed_are_available():
     controller.receive_cadence_rpm(90.0)
     controller.receive_speed_mps(8.3)
 
-    assert controller._last_cadence_rpm == 90.0
+    assert controller._cadence_hist.last_rpm() == 90.0
     assert controller._last_speed_mps == 8.3
 
     controller.receive_cadence_rpm(None)
     controller.receive_speed_mps(None)
 
-    assert controller._last_cadence_rpm is None
+    assert controller._cadence_hist.last_rpm() is None
     assert controller._last_speed_mps is None
 
     controller.shutdown()
@@ -333,7 +340,7 @@ def test_opentrueup_disabled_by_default_and_no_oту_created():
         monotonic_clock=lambda: 0.0,
     )
 
-    assert controller._opentrueup is None
+    assert controller._opentrueup_state.controller is None
     assert screen.opentrueup_offset_value.text() == "-- W"
     controller.shutdown()
 
@@ -351,7 +358,7 @@ def test_opentrueup_enabled_creates_controller_and_updates_offset_display():
         monotonic_clock=lambda: 0.0,
     )
 
-    assert controller._opentrueup is not None
+    assert controller._opentrueup_state.controller is not None
 
     # Feed trainer power at t=0, then bike power to establish offset
     controller.receive_power_watts(200, now_monotonic=0.0)
@@ -384,7 +391,7 @@ def test_opentrueup_display_clears_when_disabled_via_apply_settings():
     assert screen.opentrueup_offset_value.text() == "15 W"
 
     controller.apply_settings(AppSettings(opentrueup_enabled=False))
-    assert controller._opentrueup is None
+    assert controller._opentrueup_state.controller is None
     assert screen.opentrueup_offset_value.text() == "-- W"
 
     controller.shutdown()
@@ -417,13 +424,14 @@ def test_bike_power_is_included_in_recorder_sample():
     monotonic_now = 1.0
     controller.process_tick(monotonic_now)
 
+    # Flush the aggregator's partial bin by ending the session.
+    controller.shutdown()
+
     recorded = fake_recorder.samples
     assert recorded
     last = recorded[-1]
     assert last.trainer_power_watts == 200
     assert last.bike_power_watts == 215
-
-    controller.shutdown()
 
 
 def test_chart_timer_starts_on_start_and_stops_on_stop():
@@ -443,16 +451,16 @@ def test_chart_timer_starts_on_start_and_stops_on_stop():
 
     test_data_dir = Path(__file__).parent / "data"
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
-    assert not controller._chart_timer.isActive()
+    assert not controller._chart_history.chart_timer.isActive()
 
     screen.start_button.click()
     app.processEvents()
-    assert controller._chart_timer.isActive()
-    assert controller._chart_start_monotonic == 0.0
+    assert controller._chart_history.chart_timer.isActive()
+    assert controller._chart_history.chart_start_monotonic == 0.0
 
     screen.end_button.click()
     app.processEvents()
-    assert not controller._chart_timer.isActive()
+    assert not controller._chart_history.chart_timer.isActive()
 
     controller.shutdown()
 
@@ -473,7 +481,7 @@ def test_chart_timer_stops_on_skip_to_finish():
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
     screen.start_button.click()
     app.processEvents()
-    assert controller._chart_timer.isActive()
+    assert controller._chart_history.chart_timer.isActive()
 
     # Skip all intervals until finished
     while controller.last_snapshot is not None and controller.last_snapshot.state not in {
@@ -482,7 +490,7 @@ def test_chart_timer_stops_on_skip_to_finish():
         screen.skip_interval_requested.emit()
         app.processEvents()
 
-    assert not controller._chart_timer.isActive()
+    assert not controller._chart_history.chart_timer.isActive()
     controller.shutdown()
 
 
@@ -503,7 +511,7 @@ def test_hr_history_accumulates_while_recording():
 
     # HR before start should not accumulate
     controller.receive_hr_bpm(120)
-    assert controller._hr_history == []
+    assert controller._chart_history.hr_history == []
 
     test_data_dir = Path(__file__).parent / "data"
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
@@ -515,8 +523,8 @@ def test_hr_history_accumulates_while_recording():
     monotonic_now = 2.0
     controller.receive_hr_bpm(145)
 
-    assert len(controller._hr_history) == 2
-    elapsed_0, bpm_0 = controller._hr_history[0]
+    assert len(controller._chart_history.hr_history) == 2
+    elapsed_0, bpm_0 = controller._chart_history.hr_history[0]
     assert bpm_0 == 140
     assert elapsed_0 == pytest.approx(1.0)
 
@@ -617,11 +625,11 @@ def test_load_workout_replaces_chart_and_stops_timer():
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
     screen.start_button.click()
     app.processEvents()
-    assert controller._chart_timer.isActive()
+    assert controller._chart_history.chart_timer.isActive()
 
     # Loading a new workout while running should stop timer and pre-load the new chart
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
-    assert not controller._chart_timer.isActive()
+    assert not controller._chart_history.chart_timer.isActive()
     x, _ = screen.chart_widget._workout_target.getData()
     assert x is not None and len(x) > 0
 
@@ -1094,8 +1102,8 @@ def test_pause_shows_pause_dialog():
     screen.pause_button.click()
     app.processEvents()
 
-    assert controller._pause_dialog is not None
-    assert controller._pause_dialog.isVisible()
+    assert controller._pause_state.pause_dialog is not None
+    assert controller._pause_state.pause_dialog.isVisible()
 
     controller.shutdown()
 
@@ -1109,7 +1117,7 @@ def test_pause_dialog_resume_confirmed_resumes_workout():
     assert controller.last_snapshot.state == EngineState.PAUSED
 
     # resume_started is emitted immediately when Resume button is clicked
-    controller._pause_dialog.resume_started.emit()
+    controller._pause_state.pause_dialog.resume_started.emit()
     app.processEvents()
     assert controller.last_snapshot.state == EngineState.RAMP_IN
 
@@ -1125,7 +1133,7 @@ def test_resume_button_triggers_ramp_in_before_countdown_ends():
     app.processEvents()
     assert controller.last_snapshot.state == EngineState.PAUSED
 
-    controller._pause_dialog.resume_button.click()
+    controller._pause_state.pause_dialog.resume_button.click()
     app.processEvents()
     # Engine should be in RAMP_IN right away, without waiting for countdown
     assert controller.last_snapshot.state == EngineState.RAMP_IN
@@ -1221,7 +1229,7 @@ def test_chart_cursor_frozen_during_ramp_in():
 
     # Resume at t=8 → 3s pause, engine enters RAMP_IN
     monotonic_now = 8.0
-    controller._pause_dialog.resume_button.click()
+    controller._pause_state.pause_dialog.resume_button.click()
     app.processEvents()
     assert controller.last_snapshot.state == EngineState.RAMP_IN
 
@@ -1246,7 +1254,7 @@ def test_cadence_dedicated_sensor_overrides_power_meter():
 
     controller.receive_cadence_rpm(70.0, CadenceSource.POWER_METER)
     controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
-    assert controller._last_cadence_rpm == 90.0
+    assert controller._cadence_hist.last_rpm() == 90.0
 
     controller.shutdown()
 
@@ -1264,7 +1272,7 @@ def test_cadence_power_meter_overrides_trainer():
 
     controller.receive_cadence_rpm(70.0, CadenceSource.TRAINER)
     controller.receive_cadence_rpm(90.0, CadenceSource.POWER_METER)
-    assert controller._last_cadence_rpm == 90.0
+    assert controller._cadence_hist.last_rpm() == 90.0
 
     controller.shutdown()
 
@@ -1282,7 +1290,7 @@ def test_cadence_lower_priority_ignored_when_higher_priority_active():
 
     controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
     controller.receive_cadence_rpm(70.0, CadenceSource.TRAINER)
-    assert controller._last_cadence_rpm == 90.0
+    assert controller._cadence_hist.last_rpm() == 90.0
 
     controller.shutdown()
 
@@ -1299,12 +1307,12 @@ def test_cadence_falls_back_when_higher_priority_source_goes_stale():
     )
 
     controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
-    assert controller._last_cadence_rpm == 90.0
+    assert controller._cadence_hist.last_rpm() == 90.0
 
     # Advance past the staleness threshold (3 s)
     monotonic_now = 4.0
     controller.receive_cadence_rpm(75.0, CadenceSource.POWER_METER)
-    assert controller._last_cadence_rpm == 75.0
+    assert controller._cadence_hist.last_rpm() == 75.0
 
     controller.shutdown()
 
@@ -1323,8 +1331,8 @@ def test_cadence_history_excludes_rejected_lower_priority_samples():
     controller.receive_cadence_rpm(90.0, CadenceSource.DEDICATED)
     controller.receive_cadence_rpm(70.0, CadenceSource.TRAINER)  # should be rejected
 
-    assert len(controller._cadence_history) == 1
-    assert controller._cadence_history[0][1] == 90.0
+    assert len(controller._cadence_hist.as_deque()) == 1
+    assert controller._cadence_hist.as_deque()[0][1] == 90.0
 
     controller.shutdown()
 
@@ -1494,7 +1502,7 @@ def test_free_ride_erg_target_entry_switches_to_erg_mode():
     app.processEvents()
 
     assert screen.mode_selector.currentText() == "ERG"
-    assert controller._free_ride_erg_target_watts == 250
+    assert controller._mode_state.free_ride_erg_target == 250
 
     controller.shutdown()
 
@@ -1701,7 +1709,7 @@ def test_active_control_mode_returns_resistance_for_free_ride_interval_regardles
     snapshot = _make_snapshot(interval_index=0)
 
     for mode in ["ERG", "Resistance", "Hybrid"]:
-        controller._selected_mode = mode
+        controller._mode_state.select_mode(mode)
         assert controller._active_control_mode(snapshot) == "Resistance", (
             f"Expected Resistance for free_ride interval with selected_mode={mode!r}"
         )
@@ -1723,10 +1731,10 @@ def test_active_control_mode_resumes_normal_selection_after_free_ride_interval()
     controller._workout = _make_free_ride_workout()
     snapshot = _make_snapshot(interval_index=1)
 
-    controller._selected_mode = "ERG"
+    controller._mode_state.select_mode("ERG")
     assert controller._active_control_mode(snapshot) == "ERG"
 
-    controller._selected_mode = "Resistance"
+    controller._mode_state.select_mode("Resistance")
     assert controller._active_control_mode(snapshot) == "Resistance"
 
     controller.shutdown()
@@ -1759,5 +1767,78 @@ def test_trainer_bridge_sends_resistance_command_during_free_ride_interval():
         app,
         lambda: any(payload[:1] == b"\x04" for payload in transport.writes),
     ), "Expected resistance command (0x04) to be sent for free_ride interval"
+
+
+def test_effective_power_prefers_bike_over_trainer_in_workout_avg():
+    """When bike power is available, workout avg and kJ reflect bike power, not trainer."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["workout_avg_power"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    # Bike arrives first; both subsequent trainer ticks should resolve to 215 (bike preferred).
+    controller.receive_bike_power_watts(215, now_monotonic=0.5)
+    controller.receive_power_watts(200, now_monotonic=1.0)  # effective = 215
+    controller.receive_power_watts(200, now_monotonic=2.0)  # effective = 215
+
+    monotonic_now = 2.0
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["workout_avg_power"].value_label.text() == "215 W"
+
+    controller.shutdown()
+
+
+def test_effective_power_falls_back_to_trainer_on_bike_dropout():
+    """When bike power is cleared (None), subsequent trainer ticks use trainer power."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["workout_avg_power"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_bike_power_watts(215, now_monotonic=0.5)
+    controller.receive_power_watts(200, now_monotonic=1.0)  # effective = 215 (bike present)
+    controller.receive_bike_power_watts(None)                # bike drops out
+    controller.receive_power_watts(200, now_monotonic=2.0)  # effective = 200 (trainer fallback)
+
+    monotonic_now = 2.0
+    controller.process_tick(monotonic_now)
+
+    # Tick 1: effective=215, Tick 2: effective=200 → avg = round((215+200)/2) = 208
+    assert screen._tile_by_key["workout_avg_power"].value_label.text() == "208 W"
+
+    controller.shutdown()
 
     controller.shutdown()

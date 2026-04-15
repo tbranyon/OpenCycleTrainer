@@ -146,6 +146,59 @@ def test_recorder_can_pause_and_resume_sampling_via_recording_active_flag():
     assert summary.sample_count == 2
 
 
+def test_recorder_accepts_pre_aggregated_1s_stream_without_dropping_records():
+    """Each pre-aggregated 1-second sample must be accepted; the recorder's <1s gate
+    must not drop samples whose timestamps are exactly 1 second apart."""
+    data_dir = _test_data_dir()
+    recorder = WorkoutRecorder(
+        data_dir=data_dir,
+        flush_batch_size=10,
+        fit_exporter=FitExporter(writer_backend=JsonFitWriterBackend()),
+    )
+    start_time = datetime(2026, 4, 15, 8, 0, 0, tzinfo=timezone.utc)
+
+    recorder.start("Pre-aggregated Stream", started_at_utc=start_time)
+    # Feed exactly 1-second-apart samples as an aggregator would produce.
+    results = [
+        recorder.record_sample(_sample(start_time + timedelta(seconds=i), trainer=200 + i * 5))
+        for i in range(5)
+    ]
+    summary = recorder.stop(finished_at_utc=start_time + timedelta(seconds=5))
+
+    assert all(results), "Every pre-aggregated sample must be accepted"
+    assert summary.sample_count == 5
+    assert summary.avg_power_watts == pytest.approx(210.0)
+
+
+def test_recorder_fit_power_uses_bike_first_with_trainer_fallback_on_dropout():
+    """FIT power follows bike-first policy; when bike is absent a sample uses trainer."""
+    data_dir = _test_data_dir()
+    recorder = WorkoutRecorder(
+        data_dir=data_dir,
+        flush_batch_size=5,
+        fit_exporter=FitExporter(writer_backend=JsonFitWriterBackend()),
+    )
+    start_time = datetime(2026, 4, 15, 9, 0, 0, tzinfo=timezone.utc)
+
+    recorder.start("Dropout Test", started_at_utc=start_time)
+    # Sample 1: bike present → FIT uses bike (215)
+    recorder.record_sample(_sample(start_time, trainer=200, bike=215))
+    # Sample 2: bike absent (dropout) → FIT falls back to trainer (200)
+    recorder.record_sample(_sample(start_time + timedelta(seconds=1), trainer=200, bike=None))
+    # Sample 3: bike returns → FIT uses bike (215)
+    recorder.record_sample(_sample(start_time + timedelta(seconds=2), trainer=200, bike=215))
+    summary = recorder.stop(finished_at_utc=start_time + timedelta(seconds=3))
+
+    fit_payload = json.loads(summary.fit_file_path.read_text(encoding="utf-8"))
+    records = fit_payload["records"]
+    assert records[0]["power_watts"] == 215  # bike present
+    assert records[1]["power_watts"] == 200  # bike absent → trainer fallback
+    assert records[2]["power_watts"] == 215  # bike back
+
+    # avg = (215 + 200 + 215) / 3 = 210
+    assert summary.avg_power_watts == pytest.approx(210.0)
+
+
 def test_recorder_stop_completes_gracefully_when_fit_export_fails():
     data_dir = _test_data_dir()
     recorder = WorkoutRecorder(

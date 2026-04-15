@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -13,33 +11,29 @@ _logger = logging.getLogger(__name__)
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QFileDialog
 
-from opencycletrainer.core.control.ftms_control import (
-    ControlMode,
-    FTMSControl,
-    FTMSControlTransport,
-    WorkoutEngineFTMSBridge,
-)
+from opencycletrainer.core.control.ftms_control import FTMSControlTransport
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
-from opencycletrainer.core.recorder import RecorderSample, WorkoutRecorder
+from opencycletrainer.core.cadence_history import CadenceHistory
+from opencycletrainer.core.interval_stats import IntervalStats
+from opencycletrainer.core.power_history import PowerHistory
+from opencycletrainer.core.recorder import WorkoutRecorder
 from opencycletrainer.core.sensors import CadenceSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
-from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore
-from opencycletrainer.storage.paths import get_workout_data_root, get_workout_png_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
+from .chart_history import ChartHistory
+from .ftms_bridge_manager import FTMSBridgeManager
+from .opentrueup_state import OpenTrueUpState
+from .mode_state import DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT, ModeState
+from .pause_state import PauseState
+from .recorder_integration import RecorderIntegration, SensorSnapshot
+from .tile_computation import TileComputation
+from .trainer_connection import TrainerConnection
 from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
 from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, compute_tss
-
-RECOVERY_THRESHOLD_PERCENT = 56.0
-_CADENCE_SOURCE_STALENESS_SECONDS = 3.0
-# Duration to hold the last cadence reading on display when signal is lost before showing "--".
-_CADENCE_DROPOUT_HOLD_SECONDS = 3.0
-# Starting resistance when switching to manual/resistance mode mid-workout; mid-range to avoid
-# immediately overloading or underloading the rider.
-DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT = 33.0
 
 
 class WorkoutSessionController(QObject):
@@ -81,71 +75,72 @@ class WorkoutSessionController(QObject):
             if summary_dialog_factory is not None
             else lambda summary, parent: WorkoutSummaryDialog(summary, parent)
         )
-        self._opentrueup: OpenTrueUpController | None = (
-            opentrueup if opentrueup is not None
-            else self._make_opentrueup(settings)
+        self._opentrueup_state = (
+            OpenTrueUpState(opentrueup, self._opentrueup_offset_signal.emit)
+            if opentrueup is not None
+            else OpenTrueUpState.from_settings(settings, self._opentrueup_offset_signal.emit)
         )
-        self._strava_upload_fn = strava_upload_fn
-        self._upload_executor: ThreadPoolExecutor | None = None
-        self._trainer_backend: object | None = None
-        self._trainer_device_id: str | None = None
-        self._last_known_trainer_id: str | None = None
-        self._ftms_bridge: WorkoutEngineFTMSBridge | None = None
-        self._ftms_bridge_executor: ThreadPoolExecutor | None = None
-
         self._engine = WorkoutEngine(
             kj_mode=self._settings.default_workout_behavior == "kj_mode",
         )
         self._workout: Workout | None = None
-        self._selected_mode = self._screen.mode_selector.currentText()
-        self._trainer_resistance_step_count: int | None = None
-        self._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
-        self._manual_erg_jog_watts = 0.0
-        self._total_kj = 0.0
+        self._mode_state = ModeState(self._screen.mode_selector.currentText())
         self._interval_extra_seconds: dict[int, int] = {}
-        self._last_energy_tick_monotonic: float | None = None
         self._last_snapshot: WorkoutEngineSnapshot | None = None
-        self._recorder_active = False
-        self._recorder_started = False
 
-        self._power_history: deque[tuple[float, int]] = deque()
-        self._cadence_history: deque[tuple[float, float]] = deque()
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
-        self._workout_power_sum = 0.0
-        self._workout_power_count = 0
-        self._interval_actual_kj = 0.0
-        self._workout_actual_kj = 0.0
-        self._last_actual_power_tick: float | None = None
-        self._interval_hr_sum = 0.0
-        self._interval_hr_count = 0
-        self._workout_hr_sum = 0.0
-        self._workout_hr_count = 0
+        self._power_history = PowerHistory()
+        self._cadence_hist = CadenceHistory()
+        self._interval_stats = IntervalStats()
         self._active_interval_index: int | None = None
         self._last_power_watts: int | None = None
         self._last_bike_power_watts: int | None = None
         self._last_hr_bpm: int | None = None
-        self._last_cadence_rpm: float | None = None
         self._last_speed_mps: float | None = None
-        self._cadence_source_last_times: dict[CadenceSource, float] = {}
 
-        self._is_free_ride: bool = False
-        self._free_ride_erg_target_watts: int | None = None
+        self._pause_state = PauseState(self._screen, self._resume_workout)
+        self._chart_history = ChartHistory(
+            self._screen,
+            self._monotonic_clock,
+            self._power_history,
+            self._pause_state,
+        )
+        self._recorder_integration = RecorderIntegration(
+            recorder=self._recorder,
+            screen=self._screen,
+            settings=self._settings,
+            utc_now=self._utc_now,
+            strava_upload_fn=strava_upload_fn,
+            alert_signal=self._strava_alert_signal.emit,
+            mode_state=self._mode_state,
+        )
+        self._ftms_bridge_manager = FTMSBridgeManager(
+            transport_factory=self._ftms_transport_factory,
+            screen=self._screen,
+            alert_signal=self._bridge_alert_signal.emit,
+            opentrueup_state=self._opentrueup_state,
+            mode_state=self._mode_state,
+            settings=self._settings,
+            engine=self._engine,
+        )
 
-        self._pause_dialog: PauseDialog | None = None
-        self._chart_start_monotonic: float | None = None
-        self._pause_start_monotonic: float | None = None
-        self._total_paused_duration: float = 0.0
-        self._hr_history: list[tuple[float, int]] = []
-        self._skip_events: list[tuple[float, float, float]] = []
+        self._tile_computation = TileComputation(
+            self._power_history,
+            self._cadence_hist,
+            self._interval_stats,
+            self._monotonic_clock,
+            lambda: self._last_hr_bpm,
+        )
 
         self._timer = QTimer(self)
         self._timer.setInterval(max(100, int(tick_interval_ms)))
         self._timer.timeout.connect(self.process_tick)
 
-        self._chart_timer = QTimer(self)
-        self._chart_timer.setInterval(1000)
-        self._chart_timer.timeout.connect(self._on_chart_tick)
+        self._trainer_connection = TrainerConnection(
+            screen=self._screen,
+            is_workout_active=self._timer.isActive,
+        )
+
+        self._chart_history.chart_timer.timeout.connect(self._on_chart_tick)
 
         self._wire_screen_actions()
         self._set_no_workout_state()
@@ -163,46 +158,33 @@ class WorkoutSessionController(QObject):
         backend: object,
         trainer_device_id: str | None,
     ) -> None:
-        old_id = self._trainer_device_id
-        self._trainer_backend = backend
-        self._trainer_device_id = trainer_device_id
-        self._notify_trainer_connection_change(old_id, trainer_device_id)
-        self._reconfigure_ftms_bridge()
-
-    def _notify_trainer_connection_change(
-        self, old_id: str | None, new_id: str | None
-    ) -> None:
-        """Show a subtle alert when the trainer connects or disconnects during an active workout."""
-        if not self._timer.isActive():
-            return
-        if old_id is not None and new_id is None:
-            self._screen.show_alert("Trainer disconnected. Reconnecting...", "info")
-        elif old_id is None and new_id is not None and self._last_known_trainer_id is not None:
-            self._screen.show_alert("Trainer reconnected", "success")
-        if new_id is not None:
-            self._last_known_trainer_id = new_id
+        self._trainer_connection.set_target(backend, trainer_device_id)
+        self._ftms_bridge_manager.configure(
+            backend, trainer_device_id, self._workout, self._last_snapshot
+        )
 
     def apply_settings(self, settings: AppSettings) -> None:
         self._settings = settings
         self._engine.kj_mode = settings.default_workout_behavior == "kj_mode"
-        self._configure_recorder_data_dir()
-        was_enabled = self._opentrueup is not None
+        self._recorder_integration.configure_data_dir(settings)
+        was_enabled = self._opentrueup_state.enabled
         now_enabled = settings.opentrueup_enabled
         if not was_enabled and now_enabled:
-            self._opentrueup = self._make_opentrueup(settings)
+            self._opentrueup_state.enable(settings)
         elif was_enabled and not now_enabled:
-            self._opentrueup = None
-            self._screen.set_opentrueup_offset_watts(None)
-        self._reconfigure_ftms_bridge()
+            self._opentrueup_state.disable()
+        self._ftms_bridge_manager.configure(
+            self._trainer_connection.backend,
+            self._trainer_connection.device_id,
+            self._workout,
+            self._last_snapshot,
+        )
 
     def shutdown(self) -> None:
         self._timer.stop()
-        self._chart_timer.stop()
-        self._teardown_ftms_bridge()
-        if self._recorder_active:
-            self._finalize_recorder()
-        if self._upload_executor is not None:
-            self._upload_executor.shutdown(wait=False)
+        self._chart_history.stop()
+        self._ftms_bridge_manager.teardown()
+        self._recorder_integration.shutdown()
 
     def process_tick(self, now_monotonic: float | None = None) -> WorkoutEngineSnapshot | None:
         if self._engine.workout is None:
@@ -212,8 +194,8 @@ class WorkoutSessionController(QObject):
         self._handle_snapshot(snapshot, now_monotonic=now)
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
-            self._finalize_recorder()
-            self._show_workout_summary()
+            recorder_summary = self._recorder_integration.finalize(self._workout)
+            self._show_workout_summary(recorder_summary)
         return snapshot
 
     def _wire_screen_actions(self) -> None:
@@ -231,9 +213,8 @@ class WorkoutSessionController(QObject):
 
     def _set_no_workout_state(self) -> None:
         self._workout = None
-        if self._is_free_ride:
-            self._is_free_ride = False
-            self._free_ride_erg_target_watts = None
+        if self._mode_state.is_free_ride:
+            self._mode_state.set_free_ride(False, None)
             self._screen.set_free_ride_mode(False)
             self._screen.set_interval_plot_visible(True)
         self._screen.set_workout_name(None)
@@ -277,9 +258,9 @@ class WorkoutSessionController(QObject):
 
         self._workout = workout
         self._interval_extra_seconds = {}
-        self._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
-        self._manual_erg_jog_watts = 0.0
-        self._chart_timer.stop()
+        self._mode_state._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
+        self._mode_state.reset_jog()
+        self._chart_history.stop()
         self._screen.load_workout_chart(workout, ftp)
         snapshot = self._engine.load_workout(self._workout)
         self._screen.set_workout_name(self._workout.name)
@@ -297,72 +278,40 @@ class WorkoutSessionController(QObject):
             self._resume_workout()
             return
 
-        self._total_kj = 0.0
         self._interval_extra_seconds = {}
-        self._manual_erg_jog_watts = 0.0
-        self._last_energy_tick_monotonic = None
-        self._power_history.clear()
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
-        self._workout_power_sum = 0.0
-        self._workout_power_count = 0
-        self._interval_actual_kj = 0.0
-        self._workout_actual_kj = 0.0
-        self._last_actual_power_tick = None
-        self._interval_hr_sum = 0.0
-        self._interval_hr_count = 0
-        self._workout_hr_sum = 0.0
-        self._workout_hr_count = 0
+        self._mode_state.reset_jog()
+        self._power_history.reset()
+        self._interval_stats.reset_workout()
         self._active_interval_index = None
         self._last_power_watts = None
         self._last_hr_bpm = None
-        self._chart_start_monotonic = None
-        self._pause_start_monotonic = None
-        self._total_paused_duration = 0.0
-        self._hr_history = []
-        self._skip_events = []
-        self._start_recorder()
+        self._chart_history.reset()
+        self._pause_state.reset()
+        self._recorder_integration.start(self._workout, self._utc_now())
 
         self._engine.start()
         now = float(self._monotonic_clock())
-        self._chart_start_monotonic = now
+        self._chart_history.start(now)
         if self._workout is not None:
             self._screen.load_workout_chart(self._workout, int(self._settings.ftp))
         snapshot = self._engine.tick(now)
         self._timer.start()
-        self._chart_timer.start()
         self._handle_snapshot(snapshot, now_monotonic=now)
 
     def _start_free_ride(self) -> None:
         if self._engine.state in {EngineState.RUNNING, EngineState.RAMP_IN, EngineState.PAUSED}:
             return
 
-        self._is_free_ride = True
-        self._free_ride_erg_target_watts = None
-        self._total_kj = 0.0
+        self._mode_state.set_free_ride(True, None)
+        self._mode_state.reset_jog()
         self._interval_extra_seconds = {}
-        self._manual_erg_jog_watts = 0.0
-        self._last_energy_tick_monotonic = None
-        self._power_history.clear()
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
-        self._workout_power_sum = 0.0
-        self._workout_power_count = 0
-        self._interval_actual_kj = 0.0
-        self._workout_actual_kj = 0.0
-        self._last_actual_power_tick = None
-        self._interval_hr_sum = 0.0
-        self._interval_hr_count = 0
-        self._workout_hr_sum = 0.0
-        self._workout_hr_count = 0
+        self._power_history.reset()
+        self._interval_stats.reset_workout()
         self._active_interval_index = None
         self._last_power_watts = None
         self._last_hr_bpm = None
-        self._chart_start_monotonic = None
-        self._pause_start_monotonic = None
-        self._total_paused_duration = 0.0
-        self._hr_history = []
-        self._skip_events = []
+        self._chart_history.reset()
+        self._pause_state.reset()
 
         ftp = max(1, int(self._settings.ftp))
         interval = WorkoutInterval(
@@ -377,42 +326,37 @@ class WorkoutSessionController(QObject):
         self._workout = synthetic
         self._engine.load_workout(synthetic)
 
-        self._selected_mode = "Resistance"
+        self._mode_state.select_mode("Resistance")
         self._screen.set_mode_state("Resistance")
         self._screen.set_free_ride_mode(True)
         self._screen.set_interval_plot_visible(False)
         self._screen.load_free_ride_chart()
         self._screen.set_workout_name("Free Ride")
 
-        self._start_recorder()
+        self._recorder_integration.start(self._workout, self._utc_now())
         self._engine.start()
         now = float(self._monotonic_clock())
-        self._chart_start_monotonic = now
+        self._chart_history.start(now)
         snapshot = self._engine.tick(now)
         self._timer.start()
-        self._chart_timer.start()
         self._handle_snapshot(snapshot, now_monotonic=now)
 
     def _on_erg_target_entered(self, watts: int) -> None:
         """Switch to ERG mode with the given watt target entered by the user in free ride."""
-        self._free_ride_erg_target_watts = watts
-        self._selected_mode = "ERG"
-        self._manual_erg_jog_watts = 0.0
+        self._mode_state.set_erg_target(watts)
         self._screen.set_mode_state("ERG")
         jog_offset = 0.0
-        self._submit_ftms_bridge_action(
+        self._ftms_bridge_manager.submit_action(
             lambda bridge: bridge.set_erg_jog_offset_watts(jog_offset)
         )
         if self._last_snapshot:
             self._handle_snapshot(self._last_snapshot, now_monotonic=None)
 
     def _pause_workout(self) -> None:
-        self._pause_start_monotonic = self._monotonic_clock()
+        now = self._monotonic_clock()
         snapshot = self._engine.pause()
         self._handle_snapshot(snapshot, now_monotonic=None)
-        self._pause_dialog = PauseDialog(self._screen)
-        self._pause_dialog.resume_started.connect(self._resume_workout)
-        self._pause_dialog.show()
+        self._pause_state.pause(now)
 
     def _resume_workout(self) -> None:
         # _pause_start_monotonic remains set intentionally: the cursor stays frozen
@@ -422,20 +366,17 @@ class WorkoutSessionController(QObject):
         self._handle_snapshot(snapshot, now_monotonic=None)
 
     def _stop_workout(self) -> None:
-        if self._pause_dialog is not None:
-            self._pause_dialog.close()
-            self._pause_dialog = None
+        self._pause_state.close_dialog()
         snapshot = self._engine.stop()
         self._timer.stop()
-        self._chart_timer.stop()
-        if self._is_free_ride:
-            self._is_free_ride = False
-            self._free_ride_erg_target_watts = None
+        self._chart_history.stop()
+        if self._mode_state.is_free_ride:
+            self._mode_state.set_free_ride(False, None)
             self._screen.set_free_ride_mode(False)
             self._screen.set_interval_plot_visible(True)
         self._handle_snapshot(snapshot, now_monotonic=None)
-        self._finalize_recorder()
-        self._show_workout_summary()
+        recorder_summary = self._recorder_integration.finalize(self._workout)
+        self._show_workout_summary(recorder_summary)
 
     def _extend_interval(self, seconds_or_kj: int, is_kj_mode: bool) -> None:
         if bool(is_kj_mode) != self._engine.kj_mode:
@@ -453,37 +394,28 @@ class WorkoutSessionController(QObject):
         mono_now = float(self._monotonic_clock())
         snapshot = self._engine.skip_interval()
         elapsed_after = snapshot.elapsed_seconds
-        if elapsed_after > elapsed_before and self._chart_start_monotonic is not None:
-            self._skip_events.append((mono_now, elapsed_before, elapsed_after))
+        if elapsed_after > elapsed_before and self._chart_history.chart_start_monotonic is not None:
+            self._chart_history.record_skip(mono_now, elapsed_before, elapsed_after)
             self._screen.add_skip_marker(elapsed_before, elapsed_after)
         self._handle_snapshot(snapshot, now_monotonic=None)
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
-            self._chart_timer.stop()
-            self._finalize_recorder()
-            self._show_workout_summary()
+            self._chart_history.stop()
+            recorder_summary = self._recorder_integration.finalize(self._workout)
+            self._show_workout_summary(recorder_summary)
 
     def _jog_target(self, delta_percent: int) -> None:
         snapshot = self._last_snapshot or self._engine.snapshot()
-        active_mode = self._active_control_mode(snapshot)
+        self._mode_state.jog(delta_percent, max(1, self._settings.ftp), snapshot, self._workout)
 
+        active_mode = self._mode_state.active_control_mode(snapshot, self._workout)
         if active_mode == "ERG":
-            ftp = max(1, self._settings.ftp)
-            delta_watts = (ftp * delta_percent) / 100.0
-            self._manual_erg_jog_watts += delta_watts
-            jog_watts = self._manual_erg_jog_watts
-            self._submit_ftms_bridge_action(
+            jog_watts = self._mode_state.erg_jog_watts
+            self._ftms_bridge_manager.submit_action(
                 lambda bridge: bridge.set_erg_jog_offset_watts(jog_watts)
             )
-        elif active_mode == "Resistance":
-            updated = self._manual_resistance_offset_percent + float(delta_percent)
-            self._manual_resistance_offset_percent = max(-100.0, min(100.0, updated))
-            # TODO: The updated _manual_resistance_offset_percent needs to be sent to the
-            # FTMS bridge to command the trainer. This part of the implementation is missing.
-            # For example, a hypothetical call might look like this:
-            # self._submit_ftms_bridge_action(
-            #     lambda bridge: bridge.set_resistance_level(self._manual_resistance_offset_percent)
-            # )
+        # TODO: Resistance jog needs to send an update to the FTMS bridge when
+        # bridge.set_resistance_level() is implemented.
 
         # Force an immediate update of the trainer target
         if self._last_snapshot:
@@ -492,7 +424,7 @@ class WorkoutSessionController(QObject):
     def _mode_selected(self, mode: str) -> None:
         if mode not in MODE_OPTIONS:
             return
-        self._selected_mode = mode
+        self._mode_state.select_mode(mode)
         self._handle_snapshot(self._engine.snapshot(), now_monotonic=None)
 
     def _handle_snapshot(
@@ -503,16 +435,14 @@ class WorkoutSessionController(QObject):
     ) -> None:
         prev_state = self._last_snapshot.state if self._last_snapshot is not None else None
         if prev_state == EngineState.RAMP_IN and snapshot.state == EngineState.RUNNING:
-            if self._pause_start_monotonic is not None:
-                self._total_paused_duration += self._monotonic_clock() - self._pause_start_monotonic
-                self._pause_start_monotonic = None
+            self._pause_state.on_ramp_in_to_running(self._monotonic_clock())
         self._last_snapshot = snapshot
         self._screen.set_session_state(snapshot.state.value)
-        self._screen.set_mode_state(self._selected_mode)
+        self._screen.set_mode_state(self._mode_state.selected_mode)
 
-        active_mode = self._active_control_mode(snapshot)
+        active_mode = self._mode_state.active_control_mode(snapshot, self._workout)
         if active_mode == "Resistance":
-            value, show_percent = self._resistance_display()
+            value, show_percent = self._mode_state.resistance_display()
             self._screen.set_resistance_level(value, show_percent=show_percent)
         else:
             self._screen.set_resistance_level(None)
@@ -521,25 +451,25 @@ class WorkoutSessionController(QObject):
         if current_index != self._active_interval_index:
             self._active_interval_index = current_index
             self._reset_interval_accumulators()
-            self._manual_erg_jog_watts = 0.0
+            self._mode_state.reset_jog()
 
         elapsed_seconds = int(round(snapshot.riding_elapsed_seconds))
         window = max(1, int(self._settings.windowed_power_window_seconds))
         windowed_avg = self._windowed_avg_power(self._monotonic_clock(), window)
         current_str = str(windowed_avg) if windowed_avg is not None else "--"
 
-        if self._is_free_ride:
+        if self._mode_state.is_free_ride:
             remaining_text = "\u2014"
             interval_remaining_text = "\u2014"
-            if self._active_control_mode(snapshot) == "ERG" and self._free_ride_erg_target_watts is not None:
-                target_watts = self._free_ride_erg_target_watts + int(round(self._manual_erg_jog_watts))
+            if self._mode_state.active_control_mode(snapshot, self._workout) == "ERG" and self._mode_state.free_ride_erg_target is not None:
+                target_watts = self._mode_state.free_ride_erg_target + int(round(self._mode_state.erg_jog_watts))
                 target_str = str(target_watts)
             else:
                 target_str = "\u2014"
         else:
             remaining_seconds = max(int(snapshot.total_duration_seconds) - int(round(snapshot.elapsed_seconds)), 0)
             interval_remaining_seconds = self._interval_remaining_seconds(snapshot)
-            target_watts = self._resolve_target_watts(snapshot) or self._workout_target_watts(snapshot)
+            target_watts = self._mode_state.resolve_target_watts(snapshot, self._workout) or self._mode_state.workout_target_watts(snapshot, self._workout)
             remaining_text = _format_hh_mm_ss(remaining_seconds)
             interval_remaining_text = _format_hh_mm_ss(interval_remaining_seconds)
             target_str = str(target_watts) if target_watts is not None else "--"
@@ -552,10 +482,20 @@ class WorkoutSessionController(QObject):
         )
 
         self._update_tiles(snapshot)
-        self._submit_snapshot_to_ftms_bridge(snapshot)
+        self._ftms_bridge_manager.submit_snapshot(snapshot, self._workout)
 
-        if self._recorder_active:
-            self._sync_recorder(snapshot, now_monotonic=now_monotonic)
+        if self._recorder_integration.recorder_active:
+            self._recorder_integration.sync(
+                snapshot,
+                now_monotonic,
+                SensorSnapshot(
+                    last_power_watts=self._last_power_watts,
+                    last_bike_power_watts=self._last_bike_power_watts,
+                    last_hr_bpm=self._last_hr_bpm,
+                    last_cadence_rpm=self._cadence_hist.last_rpm(),
+                    last_speed_mps=self._last_speed_mps,
+                ),
+            )
 
     def _interval_remaining_seconds(self, snapshot: WorkoutEngineSnapshot) -> int:
         index = snapshot.current_interval_index
@@ -568,223 +508,42 @@ class WorkoutSessionController(QObject):
         elapsed = int(round(snapshot.current_interval_elapsed_seconds or 0.0))
         return max(interval_duration - elapsed, 0)
 
-    def _sync_recorder(
-        self,
-        snapshot: WorkoutEngineSnapshot,
-        *,
-        now_monotonic: float | None,
-    ) -> None:
-        try:
-            self._recorder.set_recording_active(snapshot.recording_active)
-        except RuntimeError as exc:
-            _logger.warning("Recorder set_recording_active failed, halting recording: %s", exc)
-            self._recorder_active = False
-            return
-
-        if now_monotonic is not None:
-            self._update_total_kj(snapshot, now_monotonic)
-
-        target_watts = self._resolve_target_watts(snapshot)
-        active_mode = self._active_control_mode(snapshot)
-        erg_setpoint = target_watts if active_mode == "ERG" else None
-
-        try:
-            self._recorder.record_sample(
-                RecorderSample(
-                    timestamp_utc=self._utc_now(),
-                    target_power_watts=target_watts,
-                    trainer_power_watts=self._last_power_watts,
-                    bike_power_watts=self._last_bike_power_watts,
-                    heart_rate_bpm=self._last_hr_bpm,
-                    cadence_rpm=self._last_cadence_rpm,
-                    speed_mps=self._last_speed_mps,
-                    mode=active_mode,
-                    erg_setpoint_watts=erg_setpoint,
-                    total_kj=round(self._total_kj, 3),
-                ),
-            )
-        except RuntimeError as exc:
-            _logger.warning("Recorder record_sample failed, halting recording: %s", exc)
-            self._recorder_active = False
-
-    def _update_total_kj(self, snapshot: WorkoutEngineSnapshot, now_monotonic: float) -> None:
-        last_tick = self._last_energy_tick_monotonic
-        self._last_energy_tick_monotonic = float(now_monotonic)
-        if last_tick is None:
-            return
-        delta_seconds = float(now_monotonic) - float(last_tick)
-        if delta_seconds <= 0:
-            return
-        if not snapshot.recording_active:
-            return
-        target_watts = self._resolve_target_watts(snapshot)
-        if target_watts is None or target_watts <= 0:
-            return
-        self._total_kj += (float(target_watts) * delta_seconds) / 1000.0
-
     def _workout_target_watts(self, snapshot: WorkoutEngineSnapshot) -> int | None:
         """Return the raw workout target power regardless of control mode."""
-        if self._workout is None:
-            return None
-        index = snapshot.current_interval_index
-        if index is None or index < 0 or index >= len(self._workout.intervals):
-            return None
-        interval = self._workout.intervals[index]
-        elapsed = float(snapshot.current_interval_elapsed_seconds or 0.0)
-        duration = max(float(interval.duration_seconds), 1.0)
-        ratio = min(max(elapsed, 0.0), duration) / duration
-        target = float(interval.start_target_watts) + (
-            float(interval.end_target_watts) - float(interval.start_target_watts)
-        ) * ratio
-        return int(round(target))
+        return self._mode_state.workout_target_watts(snapshot, self._workout)
 
     def _resolve_target_watts(self, snapshot: WorkoutEngineSnapshot) -> int | None:
-        if self._workout is None:
-            return None
-        if self._active_control_mode(snapshot) != "ERG":
-            return None
-
-        if self._is_free_ride:
-            if self._free_ride_erg_target_watts is None:
-                return None
-            return int(round(max(0, self._free_ride_erg_target_watts + self._manual_erg_jog_watts)))
-
-        index = snapshot.current_interval_index
-        if index is None:
-            return None
-        if index < 0 or index >= len(self._workout.intervals):
-            return None
-
-        interval = self._workout.intervals[index]
-        elapsed = float(snapshot.current_interval_elapsed_seconds or 0.0)
-        duration = max(float(interval.duration_seconds), 1.0)
-        ratio = min(max(elapsed, 0.0), duration) / duration
-        target = float(interval.start_target_watts) + (
-            float(interval.end_target_watts) - float(interval.start_target_watts)
-        ) * ratio
-        final_target = target + self._manual_erg_jog_watts
-        return int(round(max(0, final_target)))
+        return self._mode_state.resolve_target_watts(snapshot, self._workout)
 
     def _resistance_display(self) -> tuple[int, bool]:
-        """Return (display_value, show_percent) for the current resistance level.
-
-        When the trainer has fewer than 100 discrete steps, returns the raw step
-        number (no percent sign) so each UI step maps to a real trainer step.
-        """
-        percent = self._manual_resistance_offset_percent
-        step_count = self._trainer_resistance_step_count
-        if step_count is not None and step_count < 100:
-            return round(step_count * percent / 100), False
-        return int(percent), True
+        return self._mode_state.resistance_display()
 
     def _active_control_mode(self, snapshot: WorkoutEngineSnapshot) -> str:
-        # Honour free-ride intervals regardless of user mode selection
-        if self._workout is not None:
-            index = snapshot.current_interval_index
-            if index is not None and 0 <= index < len(self._workout.intervals):
-                if self._workout.intervals[index].free_ride:
-                    return "Resistance"
+        return self._mode_state.active_control_mode(snapshot, self._workout)
 
-        if self._selected_mode == "ERG":
-            return "ERG"
-        if self._selected_mode == "Resistance":
-            return "Resistance"
-        if self._selected_mode != "Hybrid" or self._workout is None:
-            return "ERG"
-        index = snapshot.current_interval_index
-        if index is None:
-            return "ERG"
-        if index < 0 or index >= len(self._workout.intervals):
-            return "ERG"
-        interval = self._workout.intervals[index]
-        if interval.start_percent_ftp < RECOVERY_THRESHOLD_PERCENT:
-            return "ERG"
-        return "Resistance"
+    def _show_workout_summary(self, recorder_summary: object = None) -> None:
+        """Build a WorkoutSummary from recorder-derived metrics and display the modal.
 
-    def _start_recorder(self) -> None:
-        if self._workout is None or self._recorder_started:
-            return
-        self._configure_recorder_data_dir()
-        self._recorder.start(
-            workout_name=self._workout.name,
-            started_at_utc=self._utc_now(),
-        )
-        self._recorder_active = True
-        self._recorder_started = True
-
-    def _finalize_recorder(self) -> None:
-        if not self._recorder_started:
-            return
-        self._recorder_started = False
-        self._recorder_active = False
-        try:
-            summary = self._recorder.stop(finished_at_utc=self._utc_now())
-        except RuntimeError as exc:
-            _logger.warning("Recorder stop failed: %s", exc)
-            return
-        self._screen.show_alert(
-            f"Workout saved: {summary.fit_file_path.name}",
-            alert_type="success",
-        )
-        if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
-            chart_image_path = get_workout_png_dir(self._workout_data_root()) / (
-                f"{summary.fit_file_path.stem}.png"
-            )
-            self._screen.export_chart_image(chart_image_path)
-            self._enqueue_strava_upload(summary.fit_file_path, chart_image_path)
-
-    def _workout_data_root(self) -> Path:
-        return get_workout_data_root(self._settings.workout_data_dir)
-
-    def _configure_recorder_data_dir(self) -> None:
-        set_data_dir = getattr(self._recorder, "set_data_dir", None)
-        if not callable(set_data_dir):
-            return
-        try:
-            set_data_dir(self._workout_data_root())
-        except RuntimeError:
-            # Recorder is active; it will pick up the updated setting next session.
-            return
-
-    def _enqueue_strava_upload(self, fit_path: Path, chart_image_path: Path | None) -> None:
-        from concurrent.futures import Future  # noqa: PLC0415
-        if self._upload_executor is None:
-            self._upload_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="strava_upload",
-            )
-        fut: Future[None] = self._upload_executor.submit(self._strava_upload_fn, fit_path, chart_image_path)
-        fut.add_done_callback(self._on_upload_done)
-
-    def _on_upload_done(self, future: object) -> None:
-        """Called in the upload thread when an upload finishes."""
-        from concurrent.futures import Future  # noqa: PLC0415
-        from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError  # noqa: PLC0415
-        if not isinstance(future, Future):
-            return
-        exc = future.exception()
-        if exc is None:
-            self._strava_alert_signal.emit("Ride synced to Strava", "success")
-        elif isinstance(exc, DuplicateUploadError):
-            self._strava_alert_signal.emit("Ride already synced to Strava", "info")
-        else:
-            _logger.warning("Strava upload failed: %s", exc)
-            self._strava_alert_signal.emit("Strava sync failed (ride kept locally)", "error")
-
-    def _show_workout_summary(self) -> None:
-        """Build a WorkoutSummary from current session data and display the modal."""
+        *recorder_summary* is the RecorderSummary returned by RecorderIntegration.finalize().
+        NP, kJ, and avg HR come from that single FIT-bound sample series; TSS is then
+        derived from those values using the current FTP setting.
+        """
         elapsed = self._last_snapshot.elapsed_seconds if self._last_snapshot else 0.0
-        np_watts = self._compute_normalized_power()
         ftp = max(1, int(self._settings.ftp))
+
+        if recorder_summary is not None:
+            np_watts = getattr(recorder_summary, "normalized_power", None)
+            kj = float(getattr(recorder_summary, "kj", 0.0))
+            avg_hr = getattr(recorder_summary, "avg_hr", None)
+        else:
+            np_watts = self._compute_normalized_power()
+            kj = self._power_history.workout_actual_kj()
+            avg_hr = self._interval_stats.workout_avg_hr()
+
         tss = compute_tss(np_watts, ftp, elapsed)
-        avg_hr = (
-            int(self._workout_hr_sum / self._workout_hr_count)
-            if self._workout_hr_count > 0
-            else None
-        )
         summary = WorkoutSummary(
             elapsed_seconds=elapsed,
-            kj=self._workout_actual_kj,
+            kj=kj,
             normalized_power=np_watts,
             tss=tss,
             avg_hr=avg_hr,
@@ -797,24 +556,27 @@ class WorkoutSessionController(QObject):
         else:
             self._set_no_workout_state()
 
+    @staticmethod
+    def _resolve_effective_power(
+        trainer_watts: int | None,
+        bike_watts: int | None,
+    ) -> int | None:
+        """Return the effective power for metrics: bike preferred, trainer fallback."""
+        if bike_watts is not None:
+            return bike_watts
+        return trainer_watts
+
     def receive_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
         """Feed a live trainer power reading (W) into the metric computation pipeline."""
         self._last_power_watts = watts
         if watts is None:
             return
         now = float(now_monotonic if now_monotonic is not None else self._monotonic_clock())
-        self._power_history.append((now, int(watts)))
-        self._interval_power_sum += float(watts)
-        self._interval_power_count += 1
-        self._workout_power_sum += float(watts)
-        self._workout_power_count += 1
-        if self._last_actual_power_tick is not None:
-            delta = now - self._last_actual_power_tick
-            if delta > 0 and (self._last_snapshot is not None and self._last_snapshot.recording_active):
-                kj = float(watts) * delta / 1000.0
-                self._interval_actual_kj += kj
-                self._workout_actual_kj += kj
-        self._last_actual_power_tick = now
+        recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
+        effective = self._resolve_effective_power(watts, self._last_bike_power_watts)
+        if effective is not None:
+            self._power_history.record(int(effective), now, recording_active)
+            self._interval_stats.record_power(int(effective), now, recording_active)
         self._dispatch_power_sample(
             timestamp=now,
             trainer_watts=watts,
@@ -822,7 +584,11 @@ class WorkoutSessionController(QObject):
         )
 
     def receive_bike_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
-        """Feed a live bike power meter reading (W) for OpenTrueUp offset computation."""
+        """Feed a live bike power meter reading (W).
+
+        Updates the last known bike power used by _resolve_effective_power on the next
+        trainer tick, and forwards raw values to the OpenTrueUp/FTMS bridge pipeline.
+        """
         self._last_bike_power_watts = watts
         if watts is None:
             return
@@ -838,12 +604,9 @@ class WorkoutSessionController(QObject):
         self._last_hr_bpm = bpm
         if bpm is None:
             return
-        self._interval_hr_sum += float(bpm)
-        self._interval_hr_count += 1
-        self._workout_hr_sum += float(bpm)
-        self._workout_hr_count += 1
-        if self._recorder_active and self._chart_start_monotonic is not None:
-            self._hr_history.append((float(self._monotonic_clock()), int(bpm)))
+        self._interval_stats.record_hr(int(bpm))
+        if self._recorder_integration.recorder_active:
+            self._chart_history.record_hr(int(bpm), float(self._monotonic_clock()))
 
     def receive_cadence_rpm(
         self, rpm: float | None, source: CadenceSource = CadenceSource.TRAINER
@@ -852,28 +615,10 @@ class WorkoutSessionController(QObject):
 
         Sources are accepted in priority order: dedicated sensor > power meter > trainer.
         A lower-priority source is only used when no higher-priority source has been heard
-        from within the last _CADENCE_SOURCE_STALENESS_SECONDS seconds.
+        from within the last staleness window.
         """
         now = float(self._monotonic_clock())
-        if rpm is None:
-            self._cadence_source_last_times.pop(source, None)
-            active = self._active_cadence_source(now)
-            if active is None or active == source:
-                self._last_cadence_rpm = None
-            return
-        self._cadence_source_last_times[source] = now
-        if self._active_cadence_source(now) != source:
-            return
-        self._last_cadence_rpm = rpm
-        self._cadence_history.append((now, rpm))
-
-    def _active_cadence_source(self, now: float) -> CadenceSource | None:
-        """Return the highest-priority cadence source with a non-stale reading."""
-        cutoff = now - _CADENCE_SOURCE_STALENESS_SECONDS
-        for source in sorted(self._cadence_source_last_times, key=lambda s: s.value):
-            if self._cadence_source_last_times[source] >= cutoff:
-                return source
-        return None
+        self._cadence_hist.record(rpm, source, now)
 
     def receive_speed_mps(self, mps: float | None) -> None:
         """Feed a live speed reading (m/s) for inclusion in recorder samples."""
@@ -886,127 +631,14 @@ class WorkoutSessionController(QObject):
         trainer_watts: int | None,
         bike_watts: int | None,
     ) -> None:
-        if self._ftms_bridge is not None and self._ftms_bridge_executor is not None:
-            self._submit_ftms_bridge_action(
-                lambda bridge: bridge.on_power_sample(
-                    timestamp=timestamp,
-                    trainer_power_watts=trainer_watts,
-                    bike_power_watts=bike_watts,
-                ),
-            )
+        if self._ftms_bridge_manager.active:
+            self._ftms_bridge_manager.submit_power_sample(timestamp, trainer_watts, bike_watts)
             return
         self._feed_opentrueup(
             timestamp,
             trainer_watts=trainer_watts,
             bike_watts=bike_watts,
         )
-
-    def _submit_snapshot_to_ftms_bridge(self, snapshot: WorkoutEngineSnapshot) -> None:
-        self._submit_ftms_bridge_action(
-            lambda bridge: self._apply_snapshot_to_bridge(bridge, snapshot),
-        )
-
-    def _apply_snapshot_to_bridge(
-        self,
-        bridge: WorkoutEngineFTMSBridge,
-        snapshot: WorkoutEngineSnapshot,
-    ) -> None:
-        active_mode = self._active_control_mode(snapshot)
-        if active_mode == "Resistance":
-            bridge.set_mode_resistance()
-        else:
-            bridge.set_mode_erg()
-        bridge.on_engine_snapshot(snapshot, self._workout)
-
-    def _submit_ftms_bridge_action(
-        self,
-        action: Callable[[WorkoutEngineFTMSBridge], None],
-    ) -> None:
-        bridge = self._ftms_bridge
-        executor = self._ftms_bridge_executor
-        if bridge is None or executor is None:
-            return
-
-        def _run() -> None:
-            current_bridge = self._ftms_bridge
-            if current_bridge is not bridge:
-                return
-            action(current_bridge)
-
-        executor.submit(_run)
-
-    def _reconfigure_ftms_bridge(self) -> None:
-        self._teardown_ftms_bridge()
-        if self._trainer_device_id is None or self._trainer_backend is None:
-            self._screen.set_trainer_controls_visible(False)
-            return
-
-        transport = self._create_ftms_transport(self._trainer_backend, self._trainer_device_id)
-        if transport is None:
-            self._screen.set_trainer_controls_visible(False)
-            return
-
-        resistance_range = transport.read_resistance_level_range()
-        if resistance_range is not None:
-            step_count = resistance_range.step_count
-            self._trainer_resistance_step_count = step_count if step_count > 0 else None
-        else:
-            self._trainer_resistance_step_count = None
-
-        initial_snapshot = self._last_snapshot if self._last_snapshot is not None else self._engine.snapshot()
-        initial_mode = (
-            ControlMode.RESISTANCE
-            if self._active_control_mode(initial_snapshot) == "Resistance"
-            else ControlMode.ERG
-        )
-
-        try:
-            control = FTMSControl(transport)
-        except Exception as exc:
-            _logger.error("Failed to initialise FTMSControl: %s", exc)
-            self._bridge_alert_signal.emit("Could not connect to trainer")
-            self._screen.set_trainer_controls_visible(False)
-            return
-
-        self._ftms_bridge = WorkoutEngineFTMSBridge(
-            control,
-            mode=initial_mode,
-            alert_callback=self._bridge_alert_signal.emit,
-            opentrueup=self._opentrueup,
-            opentrueup_status_callback=self._handle_bridge_opentrueup_status,
-            lead_time_seconds=max(0, int(self._settings.lead_time)),
-            kj_mode=self._engine.kj_mode,
-        )
-        self._ftms_bridge_executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="ftms-bridge",
-        )
-        self._submit_snapshot_to_ftms_bridge(initial_snapshot)
-        self._screen.set_trainer_controls_visible(True)
-
-    def _teardown_ftms_bridge(self) -> None:
-        executor = self._ftms_bridge_executor
-        self._ftms_bridge_executor = None
-        self._ftms_bridge = None
-        self._trainer_resistance_step_count = None
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-    def _create_ftms_transport(
-        self,
-        backend: object,
-        trainer_device_id: str,
-    ) -> FTMSControlTransport | None:
-        try:
-            return self._ftms_transport_factory(backend, trainer_device_id)
-        except Exception as exc:
-            _logger.error("Failed to create FTMS transport: %s", exc)
-            self._bridge_alert_signal.emit("Could not connect to trainer")
-            return None
-
-    def _handle_bridge_opentrueup_status(self, status: object) -> None:
-        offset = getattr(status, "last_computed_offset_watts", None)
-        self._opentrueup_offset_signal.emit(offset)
 
     @staticmethod
     def _default_ftms_transport_factory(
@@ -1024,169 +656,32 @@ class WorkoutSessionController(QObject):
         trainer_watts: int | None,
         bike_watts: int | None,
     ) -> None:
-        if self._opentrueup is None:
-            return
-        try:
-            status = self._opentrueup.record_power_sample(
-                timestamp=now,
-                trainer_power_watts=trainer_watts,
-                bike_power_watts=bike_watts,
-            )
-        except ValueError:
-            return
-        self._screen.set_opentrueup_offset_watts(status.last_computed_offset_watts)
-
-    @staticmethod
-    def _make_opentrueup(settings: AppSettings) -> OpenTrueUpController | None:
-        if not settings.opentrueup_enabled:
-            return None
-        return OpenTrueUpController(
-            enabled=True,
-            offset_store=OpenTrueUpOffsetStore(),
-        )
+        self._opentrueup_state.feed(now, trainer_watts=trainer_watts, bike_watts=bike_watts)
 
     def _reset_interval_accumulators(self) -> None:
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
-        self._interval_actual_kj = 0.0
-        self._last_actual_power_tick = None
-        self._interval_hr_sum = 0.0
-        self._interval_hr_count = 0
+        self._interval_stats.reset_interval()
 
     def _update_tiles(self, snapshot: WorkoutEngineSnapshot) -> None:
-        for key in self._screen.get_selected_tile_keys():
-            self._screen.set_tile_value(key, self._compute_tile_value(key, snapshot))
+        self._tile_computation.update_screen(self._screen, snapshot, self._settings)
 
-    def _compute_tile_value(self, key: str, snapshot: WorkoutEngineSnapshot) -> str:  # noqa: ARG002
-        ftp = max(1, int(self._settings.ftp))
-        window = max(1, int(self._settings.windowed_power_window_seconds))
-        now = self._monotonic_clock()
-
-        if key == "windowed_avg_power":
-            val = self._windowed_avg_power(now, window)
-            return f"{val} W" if val is not None else "--"
-        if key == "windowed_avg_ftp":
-            val = self._windowed_avg_power(now, window)
-            return f"{round(val / ftp * 100)} %" if val is not None else "--"
-        if key == "interval_avg_power":
-            if not self._interval_power_count:
-                return "--"
-            return f"{round(self._interval_power_sum / self._interval_power_count)} W"
-        if key == "workout_avg_power":
-            if not self._workout_power_count:
-                return "--"
-            return f"{round(self._workout_power_sum / self._workout_power_count)} W"
-        if key == "workout_normalized_power":
-            val = self._compute_normalized_power()
-            return f"{val} W" if val is not None else "--"
-        if key == "heart_rate":
-            return f"{self._last_hr_bpm} bpm" if self._last_hr_bpm is not None else "--"
-        if key == "workout_avg_hr":
-            if not self._workout_hr_count:
-                return "--"
-            return f"{round(self._workout_hr_sum / self._workout_hr_count)} bpm"
-        if key == "interval_avg_hr":
-            if not self._interval_hr_count:
-                return "--"
-            return f"{round(self._interval_hr_sum / self._interval_hr_count)} bpm"
-        if key == "kj_work_completed":
-            if not self._workout_power_count:
-                return "--"
-            return f"{self._workout_actual_kj:.1f} kJ"
-        if key == "kj_work_completed_interval":
-            if not self._interval_power_count:
-                return "--"
-            return f"{self._interval_actual_kj:.1f} kJ"
-        if key == "cadence_rpm":
-            val = self._windowed_avg_cadence(now)
-            return f"{val} rpm" if val is not None else "--"
-        return "--"
+    def _compute_tile_value(self, key: str, snapshot: WorkoutEngineSnapshot) -> str:
+        return self._tile_computation.compute(key, snapshot, self._settings)
 
     def _windowed_avg_power(self, now: float, window_seconds: int) -> int | None:
-        cutoff = now - float(window_seconds)
-        in_window = [w for t, w in self._power_history if t >= cutoff]
-        if not in_window:
-            return None
-        return round(sum(in_window) / len(in_window))
+        return self._power_history.windowed_avg(now, window_seconds)
 
     def _windowed_avg_cadence(self, now: float) -> int | None:
-        """Return the 1s rolling average cadence, holding the last value for up to 3s on dropout."""
-        cutoff_1s = now - 1.0
-        in_window = [rpm for t, rpm in self._cadence_history if t >= cutoff_1s]
-        if in_window:
-            return round(sum(in_window) / len(in_window))
-        # Hold the most recent reading for up to _CADENCE_DROPOUT_HOLD_SECONDS before blanking.
-        cutoff_hold = now - _CADENCE_DROPOUT_HOLD_SECONDS
-        recent = [(t, rpm) for t, rpm in self._cadence_history if t >= cutoff_hold]
-        if recent:
-            return round(max(recent, key=lambda x: x[0])[1])
-        return None
+        return self._cadence_hist.windowed_avg(now)
 
     def _on_chart_tick(self) -> None:
-        if self._chart_start_monotonic is None:
-            return
-
-        now = self._monotonic_clock()
-        skip_offset = sum(after - before for _, before, after in self._skip_events)
-        paused = self._total_paused_duration
-        if self._pause_start_monotonic is not None:
-            paused += now - self._pause_start_monotonic
-        elapsed = (now - self._chart_start_monotonic) + skip_offset - paused
-
-        # Build elapsed-keyed series, adjusting timestamps to account for skips.
-        # Samples taken after a skip are shifted forward by the cumulative skipped duration
-        # so they appear at the correct position on the workout timeline.
-        def _adjusted_time(sample_mono: float) -> float:
-            offset = sum(
-                after - before
-                for skip_mono, before, after in self._skip_events
-                if skip_mono <= sample_mono
-            )
-            return (sample_mono - self._chart_start_monotonic) + offset  # type: ignore[operator]
-
-        power_series = [
-            (_adjusted_time(mono), watts)
-            for mono, watts in self._power_history
-        ]
-
-        hr_series = [
-            (_adjusted_time(mono), bpm)
-            for mono, bpm in self._hr_history
-        ]
-
-        interval_index = (
-            self._last_snapshot.current_interval_index
-            if self._last_snapshot is not None
-            else None
+        self._chart_history.on_tick(
+            self._last_snapshot,
+            self._workout,
+            self._mode_state.is_free_ride,
         )
 
-        if self._is_free_ride:
-            self._screen.update_free_ride_charts(elapsed, power_series, hr_series)
-        else:
-            self._screen.update_charts(elapsed, interval_index, power_series, hr_series)
-
     def _compute_normalized_power(self) -> int | None:
-        samples = list(self._power_history)
-        if len(samples) < 2:
-            return None
-        start_t = samples[0][0]
-        end_t = samples[-1][0]
-        if end_t - start_t < 30.0:
-            return None
-        n_bins = int(end_t - start_t) + 1
-        bins: list[list[int]] = [[] for _ in range(n_bins)]
-        for t, w in samples:
-            idx = min(int(t - start_t), n_bins - 1)
-            bins[idx].append(w)
-        one_sec = [sum(b) / len(b) if b else 0.0 for b in bins]
-        if len(one_sec) < 30:
-            return None
-        window_sum = sum(one_sec[:30])
-        fourth_powers = [(window_sum / 30.0) ** 4]
-        for i in range(30, len(one_sec)):
-            window_sum += one_sec[i] - one_sec[i - 30]
-            fourth_powers.append((window_sum / 30.0) ** 4)
-        return int(round((sum(fourth_powers) / len(fourth_powers)) ** 0.25))
+        return self._power_history.compute_normalized_power()
 
 
 def _format_hh_mm_ss(total_seconds: int) -> str:

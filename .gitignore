@@ -3,11 +3,19 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.pytest_tmp/
 .coverage
 dist/
 build/
 .tmp_runtime/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Claude state
+.claude/worktrees/
+.claude/settings.local.json
 
 # Strava app credentials — never commit
 opencycletrainer/integrations/strava/_app_secrets.py
-
