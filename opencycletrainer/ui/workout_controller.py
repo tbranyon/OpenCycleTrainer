@@ -19,7 +19,7 @@ from opencycletrainer.core.cadence_history import CadenceHistory
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.power_history import PowerHistory
 from opencycletrainer.core.recorder import WorkoutRecorder
-from opencycletrainer.core.sensors import CadenceSource
+from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
 from opencycletrainer.storage.settings import AppSettings, save_settings
@@ -27,13 +27,20 @@ from opencycletrainer.storage.settings import AppSettings, save_settings
 from .chart_history import ChartHistory
 from .ftms_bridge_manager import FTMSBridgeManager
 from .opentrueup_state import OpenTrueUpState
-from .mode_state import DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT, ModeState
+from .mode_state import (
+    DEFAULT_FREE_RIDE_ERG_TARGET_WATTS,
+    DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT,
+    ModeState,
+)
 from .pause_state import PauseState
 from .recorder_integration import RecorderIntegration, SensorSnapshot
 from .tile_computation import TileComputation
 from .trainer_connection import TrainerConnection
 from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
 from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, compute_tss
+
+
+_POWER_STALE_PAUSE_SECONDS = 3.0
 
 
 class WorkoutSessionController(QObject):
@@ -96,6 +103,7 @@ class WorkoutSessionController(QObject):
         self._last_bike_power_watts: int | None = None
         self._last_hr_bpm: int | None = None
         self._last_speed_mps: float | None = None
+        self._last_power_received_at: float | None = None
 
         self._pause_state = PauseState(self._screen, self._resume_workout)
         self._chart_history = ChartHistory(
@@ -139,6 +147,8 @@ class WorkoutSessionController(QObject):
             screen=self._screen,
             is_workout_active=self._timer.isActive,
         )
+        self._power_source_trainer_id: str | None = None
+        self._power_source_meter_id: str | None = None
 
         self._chart_history.chart_timer.timeout.connect(self._on_chart_tick)
 
@@ -163,6 +173,20 @@ class WorkoutSessionController(QObject):
             backend, trainer_device_id, self._workout, self._last_snapshot
         )
 
+    def set_power_source_pair(
+        self,
+        trainer_device_id: str | None,
+        power_meter_device_id: str | None,
+    ) -> None:
+        """Update the active trainer + power meter pairing used for persistence."""
+        self._power_source_trainer_id = trainer_device_id
+        self._power_source_meter_id = power_meter_device_id
+        self._opentrueup_state.configure_pair(
+            self._settings,
+            trainer_device_id,
+            power_meter_device_id,
+        )
+
     def apply_settings(self, settings: AppSettings) -> None:
         self._settings = settings
         self._engine.kj_mode = settings.default_workout_behavior == "kj_mode"
@@ -170,7 +194,11 @@ class WorkoutSessionController(QObject):
         was_enabled = self._opentrueup_state.enabled
         now_enabled = settings.opentrueup_enabled
         if not was_enabled and now_enabled:
-            self._opentrueup_state.enable(settings)
+            self._opentrueup_state.enable(
+                settings,
+                self._power_source_trainer_id,
+                self._power_source_meter_id,
+            )
         elif was_enabled and not now_enabled:
             self._opentrueup_state.disable()
         self._ftms_bridge_manager.configure(
@@ -190,6 +218,13 @@ class WorkoutSessionController(QObject):
         if self._engine.workout is None:
             return None
         now = float(now_monotonic if now_monotonic is not None else self._monotonic_clock())
+        if (
+            self._engine.state == EngineState.RUNNING
+            and self._last_power_received_at is not None
+            and now - self._last_power_received_at > _POWER_STALE_PAUSE_SECONDS
+        ):
+            self._pause_workout()
+            return self._last_snapshot
         snapshot = self._engine.tick(now)
         self._handle_snapshot(snapshot, now_monotonic=now)
         if snapshot.state == EngineState.FINISHED:
@@ -284,7 +319,9 @@ class WorkoutSessionController(QObject):
         self._interval_stats.reset_workout()
         self._active_interval_index = None
         self._last_power_watts = None
+        self._last_bike_power_watts = None
         self._last_hr_bpm = None
+        self._last_power_received_at = None
         self._chart_history.reset()
         self._pause_state.reset()
         self._recorder_integration.start(self._workout, self._utc_now())
@@ -302,14 +339,16 @@ class WorkoutSessionController(QObject):
         if self._engine.state in {EngineState.RUNNING, EngineState.RAMP_IN, EngineState.PAUSED}:
             return
 
-        self._mode_state.set_free_ride(True, None)
+        self._mode_state.set_free_ride(True, DEFAULT_FREE_RIDE_ERG_TARGET_WATTS)
         self._mode_state.reset_jog()
         self._interval_extra_seconds = {}
         self._power_history.reset()
         self._interval_stats.reset_workout()
         self._active_interval_index = None
         self._last_power_watts = None
+        self._last_bike_power_watts = None
         self._last_hr_bpm = None
+        self._last_power_received_at = None
         self._chart_history.reset()
         self._pause_state.reset()
 
@@ -569,14 +608,25 @@ class WorkoutSessionController(QObject):
     def receive_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
         """Feed a live trainer power reading (W) into the metric computation pipeline."""
         self._last_power_watts = watts
-        if watts is None:
-            return
         now = float(now_monotonic if now_monotonic is not None else self._monotonic_clock())
+        if watts is None:
+            self._power_history.record(
+                None,
+                now,
+                False,
+                source=PowerSource.TRAINER,
+            )
+            return
+        self._last_power_received_at = now
         recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
-        effective = self._resolve_effective_power(watts, self._last_bike_power_watts)
-        if effective is not None:
-            self._power_history.record(int(effective), now, recording_active)
-            self._interval_stats.record_power(int(effective), now, recording_active)
+        accepted = self._power_history.record(
+            int(watts),
+            now,
+            recording_active,
+            source=PowerSource.TRAINER,
+        )
+        if accepted:
+            self._interval_stats.record_power(int(watts), now, recording_active)
         self._dispatch_power_sample(
             timestamp=now,
             trainer_watts=watts,
@@ -586,13 +636,29 @@ class WorkoutSessionController(QObject):
     def receive_bike_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
         """Feed a live bike power meter reading (W).
 
-        Updates the last known bike power used by _resolve_effective_power on the next
-        trainer tick, and forwards raw values to the OpenTrueUp/FTMS bridge pipeline.
+        CPS power is treated as the primary metrics stream while fresh, with FTMS
+        trainer power used as fallback.
         """
         self._last_bike_power_watts = watts
-        if watts is None:
-            return
         now = float(now_monotonic if now_monotonic is not None else self._monotonic_clock())
+        if watts is None:
+            self._power_history.record(
+                None,
+                now,
+                False,
+                source=PowerSource.POWER_METER,
+            )
+            return
+        self._last_power_received_at = now
+        recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
+        accepted = self._power_history.record(
+            int(watts),
+            now,
+            recording_active,
+            source=PowerSource.POWER_METER,
+        )
+        if accepted:
+            self._interval_stats.record_power(int(watts), now, recording_active)
         self._dispatch_power_sample(
             timestamp=now,
             trainer_watts=None,

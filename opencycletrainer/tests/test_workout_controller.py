@@ -102,6 +102,10 @@ def _wait_until(app: QApplication, predicate, timeout_seconds: float = 1.0) -> b
     return predicate()
 
 
+def _ftms_target_power_payload(watts: int) -> bytes:
+    return bytes([0x05]) + int(watts).to_bytes(2, "little", signed=True)
+
+
 def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     app = _get_or_create_qapp()
     fake_recorder = _FakeRecorder()
@@ -158,7 +162,7 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     assert controller.last_snapshot is not None
     assert controller.last_snapshot.state == EngineState.STOPPED
     assert fake_recorder.stop_calls == 1
-    assert fake_recorder.samples
+    assert fake_recorder.samples == []
 
     controller.shutdown()
 
@@ -369,6 +373,27 @@ def test_opentrueup_enabled_creates_controller_and_updates_offset_display():
 
     # Offset should be +10 W (bike avg 210 - trainer avg 200)
     assert screen.opentrueup_offset_value.text() == "10 W"
+    controller.shutdown()
+
+
+def test_opentrueup_pair_ids_are_configured_for_offset_persistence():
+    _get_or_create_qapp()
+    settings = AppSettings(opentrueup_enabled=True)
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_power_source_pair("trainer-1", "pm-1")
+
+    opentrueup = controller._opentrueup_state.controller
+    assert opentrueup is not None
+    assert opentrueup._trainer_id == "trainer-1"
+    assert opentrueup._power_meter_id == "pm-1"
+
     controller.shutdown()
 
 
@@ -1805,6 +1830,188 @@ def test_effective_power_prefers_bike_over_trainer_in_workout_avg():
     controller.shutdown()
 
 
+def test_cps_power_updates_workout_avg_without_trainer_power():
+    """A CPS power meter is a primary power source even when no FTMS power arrives."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["workout_avg_power"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_bike_power_watts(214, now_monotonic=1.0)
+    controller.receive_bike_power_watts(216, now_monotonic=2.0)
+
+    monotonic_now = 2.0
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["workout_avg_power"].value_label.text() == "215 W"
+
+    controller.shutdown()
+
+
+def test_free_ride_with_trainer_sends_initial_resistance_command():
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: (
+            transport if backend == "bleak" and trainer_id == "trainer-1" else None
+        ),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    assert _wait_until(
+        app,
+        lambda: bytes([0x04, 33]) in transport.writes,
+    ), "Expected initial Free Ride resistance command"
+
+    controller.shutdown()
+
+
+def test_free_ride_erg_target_entry_sends_entered_target_to_trainer():
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: (
+            transport if backend == "bleak" and trainer_id == "trainer-1" else None
+        ),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    screen.erg_target_entered.emit(250)
+    app.processEvents()
+
+    assert _wait_until(
+        app,
+        lambda: _ftms_target_power_payload(250) in transport.writes,
+    ), "Expected Free Ride ERG target command for entered watts"
+
+    controller.shutdown()
+
+
+def test_free_ride_erg_mode_without_entry_uses_default_target():
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: (
+            transport if backend == "bleak" and trainer_id == "trainer-1" else None
+        ),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    screen.mode_selector.setCurrentText("ERG")
+    app.processEvents()
+
+    assert _wait_until(
+        app,
+        lambda: _ftms_target_power_payload(100) in transport.writes,
+    ), "Expected default Free Ride ERG target command"
+
+    controller.shutdown()
+
+
+def test_free_ride_resistance_jog_sends_updated_resistance_command():
+    app = _get_or_create_qapp()
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: (
+            transport if backend == "bleak" and trainer_id == "trainer-1" else None
+        ),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    screen.free_ride_button.click()
+    app.processEvents()
+
+    screen.jog_requested.emit(10)
+    app.processEvents()
+
+    assert _wait_until(
+        app,
+        lambda: bytes([0x04, 43]) in transport.writes,
+    ), "Expected Free Ride resistance jog to update trainer resistance"
+
+    controller.shutdown()
+
+
+def test_fresh_cps_power_takes_precedence_over_ftms_power_samples():
+    """When CPS and FTMS are both present, FTMS power must not dilute primary metrics."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["workout_avg_power"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_bike_power_watts(220, now_monotonic=1.0)
+    controller.receive_power_watts(100, now_monotonic=1.2)
+    controller.receive_power_watts(120, now_monotonic=2.0)
+
+    monotonic_now = 2.0
+    controller.process_tick(monotonic_now)
+
+    assert screen._tile_by_key["workout_avg_power"].value_label.text() == "220 W"
+
+    controller.shutdown()
+
+
 def test_effective_power_falls_back_to_trainer_on_bike_dropout():
     """When bike power is cleared (None), subsequent trainer ticks use trainer power."""
     app = _get_or_create_qapp()
@@ -1840,5 +2047,138 @@ def test_effective_power_falls_back_to_trainer_on_bike_dropout():
     assert screen._tile_by_key["workout_avg_power"].value_label.text() == "208 W"
 
     controller.shutdown()
+
+    controller.shutdown()
+
+
+# ── Auto-pause on power loss ──────────────────────────────────────────────────
+
+
+def _make_running_controller_with_clock(app):
+    """Helper: returns (controller, screen, monotonic_ref) — clock controlled via the returned list."""
+    monotonic_now = [0.0]
+
+    def _monotonic() -> float:
+        return monotonic_now[0]
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    return controller, screen, monotonic_now
+
+
+def test_auto_pause_when_power_lost_for_more_than_3s():
+    """Workout should auto-pause when no power received for more than 3 s."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    controller.receive_power_watts(200, now_monotonic=1.0)
+
+    # 3.1 s after last power — threshold exceeded
+    clock[0] = 4.1
+    controller.process_tick(4.1)
+
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_no_auto_pause_when_power_never_received():
+    """Workout must not auto-pause simply because power was never received."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    # No power at all — 5 s into the workout
+    clock[0] = 5.0
+    controller.process_tick(5.0)
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
+
+    controller.shutdown()
+
+
+def test_no_auto_pause_within_3s_of_last_power():
+    """Workout must remain running while the power gap is ≤ 3 s."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    controller.receive_power_watts(200, now_monotonic=1.0)
+
+    # 2.9 s after last power — below threshold
+    clock[0] = 3.9
+    controller.process_tick(3.9)
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
+
+    controller.shutdown()
+
+
+def test_no_auto_pause_when_already_paused():
+    """A manually paused workout must not trigger an additional auto-pause on the next tick."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    controller.receive_power_watts(200, now_monotonic=1.0)
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    # Simulate a tick long after last power while already paused — state must not change
+    clock[0] = 10.0
+    controller.process_tick(10.0)
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_bike_power_counts_for_auto_pause_staleness():
+    """Bike power alone should reset the staleness timer and prevent auto-pause."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    # Only bike power — no trainer power
+    controller.receive_bike_power_watts(220, now_monotonic=1.0)
+
+    # 2.9 s since bike power — within threshold, must remain RUNNING
+    clock[0] = 3.9
+    controller.process_tick(3.9)
+    assert controller.last_snapshot.state == EngineState.RUNNING
+
+    # 3.1 s since bike power — must auto-pause
+    clock[0] = 4.1
+    controller.process_tick(4.1)
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_power_timestamp_resets_on_workout_restart():
+    """After stopping and restarting, the stale-power clock resets so no spurious auto-pause."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    # Power received at t=1, workout ends at t=2
+    controller.receive_power_watts(200, now_monotonic=1.0)
+    screen.end_button.click()
+    app.processEvents()
+
+    # Reload and restart — _last_power_received_at must be cleared
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    clock[0] = 100.0  # clock far in the future; no new power received
+    screen.start_button.click()
+    app.processEvents()
+
+    # Tick at t=100 with no power since restart — should NOT auto-pause
+    controller.process_tick(100.0)
+    assert controller.last_snapshot.state == EngineState.RUNNING
 
     controller.shutdown()

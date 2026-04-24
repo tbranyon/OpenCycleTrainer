@@ -20,7 +20,7 @@ from .control import (
 from .fit_exporter import FitExportSample, FitExporter, JsonFitWriterBackend
 from .mrc_parser import MRCParseError, parse_mrc_file, parse_mrc_text
 from .recorder import RecorderSample, RecorderSession, RecorderSummary, WorkoutRecorder
-from .sensors import SensorSample, SensorStreamDecoder
+from .sensors import CadenceSource, PowerSource, SensorSample, SensorStreamDecoder
 from .workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from .workout_model import Workout, WorkoutInterval
 
@@ -47,6 +47,8 @@ __all__ = [
     "RecorderSample",
     "RecorderSession",
     "RecorderSummary",
+    "CadenceSource",
+    "PowerSource",
     "SensorSample",
     "SensorStreamDecoder",
     "Workout",

@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         self.workout_screen.tile_order_changed.connect(self._on_tile_order_changed)
         self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
         self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
+        self.devices_screen.power_source_pair_changed.connect(self._on_power_source_pair_changed)
         self.devices_screen.opentrueup_availability_changed.connect(
             self.settings_screen.set_opentrueup_devices_available
         )
@@ -100,6 +101,10 @@ class MainWindow(QMainWindow):
         self.workout_controller.set_trainer_control_target(
             backend=self.devices_screen.backend,
             trainer_device_id=self.devices_screen.connected_trainer_device_id(),
+        )
+        self.workout_controller.set_power_source_pair(
+            self.devices_screen.connected_trainer_device_id(),
+            self.devices_screen.connected_power_meter_device_id(),
         )
 
     def _on_sensor_sample(self, sample: object) -> None:
@@ -147,6 +152,15 @@ class MainWindow(QMainWindow):
             backend=backend,
             trainer_device_id=trainer_id,
         )
+
+    def _on_power_source_pair_changed(
+        self,
+        trainer_device_id: object,
+        power_meter_device_id: object,
+    ) -> None:
+        trainer_id = trainer_device_id if isinstance(trainer_device_id, str) else None
+        power_meter_id = power_meter_device_id if isinstance(power_meter_device_id, str) else None
+        self.workout_controller.set_power_source_pair(trainer_id, power_meter_id)
 
     def _on_system_color_scheme_changed(self, _scheme: object) -> None:
         self._apply_theme(self._settings)

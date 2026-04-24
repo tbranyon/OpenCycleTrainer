@@ -272,6 +272,7 @@ class WorkoutEngineFTMSBridge:
         self._lead_time_sent_for_interval: int | None = None
         self._current_erg_target_base_watts: int | None = None
         self._last_sent_erg_target_watts: int | None = None
+        self._last_sent_resistance_level: float | None = None
         self._erg_jog_offset_watts: float = 0.0
         if mode is ControlMode.ERG:
             self._control.set_mode_erg()
@@ -289,6 +290,8 @@ class WorkoutEngineFTMSBridge:
         self._last_state = None
         self._last_interval_index = None
         self._lead_time_sent_for_interval = None
+        self._last_sent_erg_target_watts = None
+        self._last_sent_resistance_level = None
 
     def set_mode_resistance(self) -> None:
         if self._control.mode is ControlMode.RESISTANCE:
@@ -297,6 +300,8 @@ class WorkoutEngineFTMSBridge:
         self._last_state = None
         self._last_interval_index = None
         self._lead_time_sent_for_interval = None
+        self._last_sent_erg_target_watts = None
+        self._last_sent_resistance_level = None
 
     def set_erg_jog_offset_watts(self, offset_watts: float) -> None:
         """Apply a manual ERG jog offset and immediately send the updated target."""
@@ -304,6 +309,18 @@ class WorkoutEngineFTMSBridge:
         if self._current_erg_target_base_watts is not None:
             jogged = int(round(self._current_erg_target_base_watts + offset_watts))
             self._send_erg_target(self._apply_opentrueup_target(jogged), force=True)
+
+    def apply_manual_erg_target(self, target_watts: int) -> None:
+        """Apply a Free Ride ERG target while preserving any active jog offset."""
+        base_target = int(target_watts)
+        self._current_erg_target_base_watts = base_target
+        jogged_target = int(round(base_target + self._erg_jog_offset_watts))
+        self._send_erg_target(self._apply_opentrueup_target(jogged_target))
+
+    def apply_manual_resistance_level(self, level: float) -> None:
+        """Apply a Free Ride resistance level outside interval-derived setpoints."""
+        self._current_erg_target_base_watts = None
+        self._send_resistance_level(level)
 
     def on_engine_snapshot(
         self,
@@ -394,7 +411,7 @@ class WorkoutEngineFTMSBridge:
             self._send_erg_target(0, force=True)
             self._current_erg_target_base_watts = 0
         else:
-            self._control.set_resistance_level(0)
+            self._send_resistance_level(0, force=True)
 
     def _apply_interval_setpoint(self, snapshot: WorkoutEngineSnapshot, workout: Workout) -> None:
         interval_index = snapshot.current_interval_index
@@ -412,7 +429,7 @@ class WorkoutEngineFTMSBridge:
         else:
             self._current_erg_target_base_watts = None
             resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)
-            self._control.set_resistance_level(resistance_level)
+            self._send_resistance_level(resistance_level)
 
     def _apply_ramp_update(self, snapshot: WorkoutEngineSnapshot, workout: Workout) -> None:
         """Update trainer target for the current tick of an active ramp interval, preserving any jog offset."""
@@ -429,7 +446,7 @@ class WorkoutEngineFTMSBridge:
         else:
             self._current_erg_target_base_watts = None
             resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)
-            self._control.set_resistance_level(resistance_level)
+            self._send_resistance_level(resistance_level)
 
     def _should_apply_lead_time(
         self, snapshot: WorkoutEngineSnapshot, workout: Workout
@@ -462,7 +479,7 @@ class WorkoutEngineFTMSBridge:
         else:
             self._current_erg_target_base_watts = None
             resistance_level = _resolve_interval_percent(next_interval, 0.0)
-            self._control.set_resistance_level(resistance_level)
+            self._send_resistance_level(resistance_level)
         self._lead_time_sent_for_interval = snapshot.current_interval_index
 
     def _report_error(self, message: str) -> None:
@@ -480,8 +497,17 @@ class WorkoutEngineFTMSBridge:
             return
         self._control.set_erg_target_watts(target)
         self._last_sent_erg_target_watts = target
+        self._last_sent_resistance_level = None
         if self._opentrueup is not None:
             self._opentrueup.note_applied_erg_target(target)
+
+    def _send_resistance_level(self, level: float, *, force: bool = False) -> None:
+        resistance = float(level)
+        if not force and self._last_sent_resistance_level == resistance:
+            return
+        self._control.set_resistance_level(resistance)
+        self._last_sent_resistance_level = resistance
+        self._last_sent_erg_target_watts = None
 
 
 def _resolve_interval_target_watts(interval: WorkoutInterval, elapsed_in_interval: float) -> int:

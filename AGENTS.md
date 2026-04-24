@@ -27,7 +27,7 @@ Comment classes and methods succinctly. Do not comment method code inline unless
 - Ask clarifying questions if a feature or request is insufficiently defined and there is no clear logical interpretation that can be inferred.
 
 ## Documentation
-When implementing items from TODOs.md, **always** mark them done once completed and passing tests.
+When implementing items from TODOs.md, **always** clean them from the list (delete the line then renumber existing items as needed) once completed and passing tests.
 If BLE specifics are needed, the specifications for the CPS and FTMS services are available in PDF form in the Docs folder.
 
 ---

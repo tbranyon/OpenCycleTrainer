@@ -135,6 +135,12 @@ _CSC_CADENCE_OUT_OF_RANGE_PACKET_2 = bytes.fromhex("026a000004")
 _CPS_CADENCE_OUT_OF_RANGE_PACKET_1 = bytes.fromhex("2000c80064000000")
 _CPS_CADENCE_OUT_OF_RANGE_PACKET_2 = bytes.fromhex("2000c8006a000004")
 
+_CPS_WITH_PEDAL_BALANCE_AND_TORQUE_1 = bytes.fromhex("2500fa00403412e8030008")
+_CPS_WITH_PEDAL_BALANCE_AND_TORQUE_2 = bytes.fromhex("2500ff00403812e903000a")
+
+_CPS_WITH_WHEEL_AND_CRANK_1 = bytes.fromhex("3000fa00640000000004e8030008")
+_CPS_WITH_WHEEL_AND_CRANK_2 = bytes.fromhex("3000ff00650000000006e903000a")
+
 # FTMS: cadence_raw=65535 → 32767.5 RPM, far beyond any sane value.
 _FTMS_CADENCE_OUT_OF_RANGE = bytes.fromhex("04000000ffff")
 
@@ -170,6 +176,44 @@ def test_cps_cadence_out_of_range_is_rejected():
 
     assert sample_2 is not None
     assert sample_2.cadence_rpm is None
+
+
+def test_cps_cadence_skips_optional_fields_before_crank_data():
+    decoder = SensorStreamDecoder()
+
+    sample_1 = decoder.decode_notification(
+        CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+        _CPS_WITH_PEDAL_BALANCE_AND_TORQUE_1,
+    )
+    sample_2 = decoder.decode_notification(
+        CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+        _CPS_WITH_PEDAL_BALANCE_AND_TORQUE_2,
+    )
+
+    assert sample_1 is not None
+    assert sample_1.cadence_rpm is None
+
+    assert sample_2 is not None
+    assert sample_2.cadence_rpm == pytest.approx(120.0)
+
+
+def test_cps_cadence_skips_wheel_data_before_crank_data():
+    decoder = SensorStreamDecoder()
+
+    sample_1 = decoder.decode_notification(
+        CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+        _CPS_WITH_WHEEL_AND_CRANK_1,
+    )
+    sample_2 = decoder.decode_notification(
+        CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+        _CPS_WITH_WHEEL_AND_CRANK_2,
+    )
+
+    assert sample_1 is not None
+    assert sample_1.cadence_rpm is None
+
+    assert sample_2 is not None
+    assert sample_2.cadence_rpm == pytest.approx(120.0)
 
 
 def test_ftms_cadence_out_of_range_is_rejected():

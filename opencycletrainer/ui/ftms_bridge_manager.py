@@ -160,6 +160,19 @@ class FTMSBridgeManager:
         workout: Workout | None,
     ) -> None:
         active_mode = self._mode_state.active_control_mode(snapshot, workout)
+        if getattr(self._mode_state, "is_free_ride", False):
+            if active_mode == "Resistance":
+                bridge.set_mode_resistance()
+                bridge.apply_manual_resistance_level(
+                    self._mode_state.resistance_target_percent()
+                )
+            else:
+                bridge.set_mode_erg()
+                target_watts = getattr(self._mode_state, "free_ride_erg_target", None)
+                if target_watts is not None:
+                    bridge.apply_manual_erg_target(target_watts)
+            return
+
         if active_mode == "Resistance":
             bridge.set_mode_resistance()
         else:

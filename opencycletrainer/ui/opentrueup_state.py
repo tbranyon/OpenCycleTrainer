@@ -61,11 +61,40 @@ class OpenTrueUpState:
         """Construct an OpenTrueUpState using the current AppSettings."""
         return cls(_make_opentrueup(settings), offset_callback)
 
-    def enable(self, settings: AppSettings) -> None:
+    def configure_pair(
+        self,
+        settings: AppSettings,
+        trainer_id: str | None,
+        power_meter_id: str | None,
+    ) -> None:
+        """Rebuild the controller when the active trainer + power meter pair changes."""
+        if not settings.opentrueup_enabled:
+            return
+        current_trainer_id = getattr(self._opentrueup, "_trainer_id", None)
+        current_power_meter_id = getattr(self._opentrueup, "_power_meter_id", None)
+        if current_trainer_id == trainer_id and current_power_meter_id == power_meter_id:
+            return
+        self._opentrueup = _make_opentrueup(
+            settings,
+            trainer_id=trainer_id,
+            power_meter_id=power_meter_id,
+        )
+        self._offset_callback(None)
+
+    def enable(
+        self,
+        settings: AppSettings,
+        trainer_id: str | None = None,
+        power_meter_id: str | None = None,
+    ) -> None:
         """Create a fresh OpenTrueUpController from settings if not already enabled."""
         if self._opentrueup is not None:
             return
-        self._opentrueup = _make_opentrueup(settings)
+        self._opentrueup = _make_opentrueup(
+            settings,
+            trainer_id=trainer_id,
+            power_meter_id=power_meter_id,
+        )
 
     def disable(self) -> None:
         """Destroy the controller and clear the UI offset display."""
@@ -73,11 +102,18 @@ class OpenTrueUpState:
         self._offset_callback(None)
 
 
-def _make_opentrueup(settings: AppSettings) -> OpenTrueUpController | None:
+def _make_opentrueup(
+    settings: AppSettings,
+    *,
+    trainer_id: str | None = None,
+    power_meter_id: str | None = None,
+) -> OpenTrueUpController | None:
     """Construct an OpenTrueUpController if enabled in settings."""
     if not settings.opentrueup_enabled:
         return None
     return OpenTrueUpController(
         enabled=True,
         offset_store=OpenTrueUpOffsetStore(),
+        trainer_id=trainer_id,
+        power_meter_id=power_meter_id,
     )

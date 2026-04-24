@@ -3,12 +3,18 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from datetime import datetime, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.devices.mock_backend import MockDeviceBackend
+from opencycletrainer.core.sensors import SensorSample
+from opencycletrainer.devices.types import (
+    CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+    FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
+)
 from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
 from opencycletrainer.ui.main_window import MainWindow
 from opencycletrainer.ui.workout_library_screen import WorkoutLibraryScreen
@@ -158,5 +164,33 @@ def test_main_window_applies_light_theme_to_chart_when_configured(qapp):
     try:
         window._on_settings_applied(AppSettings(theme_mode="light"))
         assert window.workout_screen.chart_widget._color_theme == "light"
+    finally:
+        _close_window(window, qapp)
+
+
+def test_main_window_routes_power_samples_by_characteristic_uuid(qapp):
+    window = _make_window(qapp)
+    trainer_values: list[int] = []
+    bike_values: list[int] = []
+    window.workout_controller.receive_power_watts = lambda watts: trainer_values.append(watts)
+    window.workout_controller.receive_bike_power_watts = lambda watts: bike_values.append(watts)
+
+    try:
+        now = datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc)
+        window._on_sensor_sample(SensorSample(
+            timestamp_utc=now,
+            device_id="trainer-1",
+            source_characteristic_uuid=FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
+            power_watts=180,
+        ))
+        window._on_sensor_sample(SensorSample(
+            timestamp_utc=now,
+            device_id="pm-1",
+            source_characteristic_uuid=CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+            power_watts=220,
+        ))
+
+        assert trainer_values == [180]
+        assert bike_values == [220]
     finally:
         _close_window(window, qapp)

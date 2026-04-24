@@ -2,19 +2,39 @@ from __future__ import annotations
 
 from collections import deque
 
+from opencycletrainer.core.sensors import PowerSource
+
+_POWER_SOURCE_STALENESS_SECONDS = 3.0
+
 
 class PowerHistory:
     """Rolling power sample store with workout-level aggregation."""
 
-    def __init__(self) -> None:
+    def __init__(self, staleness_seconds: float = _POWER_SOURCE_STALENESS_SECONDS) -> None:
+        self._staleness_seconds = float(staleness_seconds)
         self._samples: deque[tuple[float, int]] = deque()
+        self._source_last_times: dict[PowerSource, float] = {}
         self._workout_power_sum = 0.0
         self._workout_power_count = 0
         self._workout_actual_kj = 0.0
         self._last_actual_power_tick: float | None = None
 
-    def record(self, watts: int, now: float, recording_active: bool) -> None:
-        """Append a power sample and update workout-level accumulators."""
+    def record(
+        self,
+        watts: int | None,
+        now: float,
+        recording_active: bool,
+        source: PowerSource = PowerSource.TRAINER,
+    ) -> bool:
+        """Append an accepted power sample and update workout-level accumulators."""
+        if watts is None:
+            self._source_last_times.pop(source, None)
+            return False
+
+        self._source_last_times[source] = float(now)
+        if self.active_source(now) != source:
+            return False
+
         self._samples.append((now, int(watts)))
         self._workout_power_sum += float(watts)
         self._workout_power_count += 1
@@ -23,6 +43,7 @@ class PowerHistory:
             if delta > 0 and recording_active:
                 self._workout_actual_kj += float(watts) * delta / 1000.0
         self._last_actual_power_tick = now
+        return True
 
     def windowed_avg(self, now: float, window_seconds: int) -> int | None:
         """Return the mean watts for all samples within the trailing window, or None."""
@@ -66,9 +87,18 @@ class PowerHistory:
         """Return measured energy (kJ) accumulated while recording was active."""
         return self._workout_actual_kj
 
+    def active_source(self, now: float) -> PowerSource | None:
+        """Return the highest-priority non-stale power source."""
+        cutoff = now - self._staleness_seconds
+        for source in sorted(self._source_last_times, key=lambda s: s.value):
+            if self._source_last_times[source] >= cutoff:
+                return source
+        return None
+
     def reset(self) -> None:
         """Clear all samples and accumulators."""
         self._samples.clear()
+        self._source_last_times.clear()
         self._workout_power_sum = 0.0
         self._workout_power_count = 0
         self._workout_actual_kj = 0.0

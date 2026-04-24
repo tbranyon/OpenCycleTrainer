@@ -68,6 +68,7 @@ class DevicesScreen(QWidget):
     action_failed = Signal(str)
     sensor_sample_received = Signal(object)  # SensorSample
     trainer_device_changed = Signal(object, object)  # (backend, trainer_device_id | None)
+    power_source_pair_changed = Signal(object, object)  # (trainer_device_id | None, power_meter_device_id | None)
     opentrueup_availability_changed = Signal(bool)  # True when PM + trainer both connected
     _reading_received = Signal(str, str)  # (device_id, reading_text)
     _capabilities_ready = Signal(str, object)  # (device_name, FTMSCapabilities)
@@ -89,6 +90,7 @@ class DevicesScreen(QWidget):
         self._subscribed_devices: set[str] = set()
         self._decoders: dict[str, CyclingPowerDecoder | CyclingSpeedCadenceDecoder] = {}
         self._last_trainer_selection: tuple[int, str | None] | None = None
+        self._last_power_source_pair: tuple[str | None, str | None] | None = None
         self._last_opentrueup_available: bool | None = None
         self._paired_device_ids: list[str] = []
 
@@ -149,6 +151,12 @@ class DevicesScreen(QWidget):
     def connected_trainer_device_id(self) -> str | None:
         for device in self._backend.get_paired_devices():
             if device.device_type is DeviceType.TRAINER and device.connected:
+                return device.device_id
+        return None
+
+    def connected_power_meter_device_id(self) -> str | None:
+        for device in self._backend.get_paired_devices():
+            if device.device_type is DeviceType.POWER_METER and device.connected:
                 return device.device_id
         return None
 
@@ -312,6 +320,7 @@ class DevicesScreen(QWidget):
             sample = SensorSample(
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
+                device_id=device_id,
                 power_watts=metrics.power_watts,
                 cadence_rpm=metrics.cadence_rpm,
             )
@@ -323,6 +332,7 @@ class DevicesScreen(QWidget):
             sample = SensorSample(
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
+                device_id=device_id,
                 power_watts=metrics.power_watts,
                 cadence_rpm=metrics.cadence_rpm,
                 speed_mps=metrics.speed_mps,
@@ -335,6 +345,7 @@ class DevicesScreen(QWidget):
             sample = SensorSample(
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
+                device_id=device_id,
                 heart_rate_bpm=metrics.heart_rate_bpm,
             )
             reading_text = f"{metrics.heart_rate_bpm} bpm" if metrics.heart_rate_bpm is not None else None
@@ -350,6 +361,7 @@ class DevicesScreen(QWidget):
             sample = SensorSample(
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
+                device_id=device_id,
                 cadence_rpm=metrics.cadence_rpm,
                 speed_mps=metrics.speed_mps,
             )
@@ -560,19 +572,24 @@ class DevicesScreen(QWidget):
 
     def _emit_trainer_device_change(self, paired_devices: list[DeviceInfo]) -> None:
         trainer_id: str | None = None
-        has_power_meter = False
+        power_meter_id: str | None = None
         for device in paired_devices:
             if device.device_type is DeviceType.TRAINER and device.connected:
                 trainer_id = device.device_id
             if device.device_type is DeviceType.POWER_METER and device.connected:
-                has_power_meter = True
+                power_meter_id = device.device_id
 
         selection = (id(self._backend), trainer_id)
         if selection != self._last_trainer_selection:
             self._last_trainer_selection = selection
             self.trainer_device_changed.emit(self._backend, trainer_id)
 
-        opentrueup_available = trainer_id is not None and has_power_meter
+        power_source_pair = (trainer_id, power_meter_id)
+        if power_source_pair != self._last_power_source_pair:
+            self._last_power_source_pair = power_source_pair
+            self.power_source_pair_changed.emit(trainer_id, power_meter_id)
+
+        opentrueup_available = trainer_id is not None and power_meter_id is not None
         if opentrueup_available != self._last_opentrueup_available:
             self._last_opentrueup_available = opentrueup_available
             self.opentrueup_availability_changed.emit(opentrueup_available)

@@ -204,7 +204,14 @@ class OneSecondAggregator:
             total_kj=self._last_total_kj,
         )
         self._reset_bin()
-        return result
+        has_sensor_data = (
+            result.trainer_power_watts is not None
+            or result.bike_power_watts is not None
+            or result.heart_rate_bpm is not None
+            or result.cadence_rpm is not None
+            or result.speed_mps is not None
+        )
+        return result if has_sensor_data else None
 
     def _reset_bin(self) -> None:
         """Reset per-bin accumulation state.  Power carry-forward is preserved."""

@@ -27,10 +27,17 @@ class CadenceSource(Enum):
     TRAINER = 3      # smart trainer (FTMS)
 
 
+class PowerSource(Enum):
+    """Priority-ordered power data sources (lower value = higher priority)."""
+    POWER_METER = 1  # on-bike power meter (CPS)
+    TRAINER = 2      # smart trainer (FTMS)
+
+
 @dataclass(frozen=True)
 class SensorSample:
     timestamp_utc: datetime
     source_characteristic_uuid: str
+    device_id: str | None = None
     power_watts: int | None = None
     cadence_rpm: float | None = None
     heart_rate_bpm: int | None = None

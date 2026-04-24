@@ -5,6 +5,7 @@ from opencycletrainer.core.workout_model import Workout
 
 RECOVERY_THRESHOLD_PERCENT = 56.0
 DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT = 33.0
+DEFAULT_FREE_RIDE_ERG_TARGET_WATTS = 100
 
 
 class ModeState:
@@ -123,6 +124,10 @@ class ModeState:
         if step_count is not None and step_count < 100:
             return round(step_count * percent / 100), False
         return int(percent), True
+
+    def resistance_target_percent(self) -> float:
+        """Return the FTMS-safe resistance target percentage for manual mode."""
+        return max(0.0, min(100.0, self._manual_resistance_offset_percent))
 
     # ── Mutations ─────────────────────────────────────────────────────────────
 

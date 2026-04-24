@@ -139,6 +139,7 @@ def test_decode_notification_cps_returns_power_and_reading_text():
     # First sample — no prior revolution data, cadence is None
     sample, text = screen._decode_notification("dev-1", CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_SAMPLE_1, now)
     assert sample is not None
+    assert sample.device_id == "dev-1"
     assert sample.power_watts == 250
     assert sample.cadence_rpm is None
     assert text == "250 W"
@@ -187,6 +188,7 @@ def test_decode_notification_ftms_returns_power_cadence_speed():
         "dev-trainer", FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_SAMPLE, now
     )
     assert sample is not None
+    assert sample.device_id == "dev-trainer"
     assert sample.power_watts == 250
     assert sample.cadence_rpm == pytest.approx(90.0)
     assert sample.speed_mps == pytest.approx(10.0)
@@ -231,6 +233,39 @@ def test_devices_screen_emits_trainer_device_changed_when_connected_state_change
     backend.disconnect_device("trainer-1").result(timeout=0.5)
     screen.refresh()
     assert changes[-1] == (backend, None)
+
+
+def test_devices_screen_emits_power_source_pair_when_trainer_and_power_meter_connected():
+    _get_or_create_qapp()
+    backend = MockDeviceBackend(
+        devices=[
+            MockDevice(
+                device_id="trainer-1",
+                name="Trainer One",
+                device_type=DeviceType.TRAINER,
+                paired=True,
+                connected=False,
+                battery_percent=None,
+            ),
+            MockDevice(
+                device_id="pm-1",
+                name="Power Meter One",
+                device_type=DeviceType.POWER_METER,
+                paired=True,
+                connected=False,
+                battery_percent=None,
+            ),
+        ],
+    )
+    screen = DevicesScreen(backend=backend)
+    changes: list[tuple[object, object]] = []
+    screen.power_source_pair_changed.connect(lambda trainer_id, pm_id: changes.append((trainer_id, pm_id)))
+
+    backend.connect_device("trainer-1").result(timeout=0.5)
+    backend.connect_device("pm-1").result(timeout=0.5)
+    screen.refresh()
+
+    assert changes[-1] == ("trainer-1", "pm-1")
 
 
 # --- Double-click capabilities tests ---
