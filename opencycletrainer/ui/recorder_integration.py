@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from opencycletrainer.core.one_second_aggregator import OneSecondAggregator
 from opencycletrainer.core.recorder import RecorderSample, RecorderSummary
+from opencycletrainer.core.workout_metrics import compute_workout_metrics
 from opencycletrainer.core.workout_engine import WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.paths import get_workout_data_root, get_workout_png_dir
@@ -51,6 +53,7 @@ class RecorderIntegration:
 
         self._recorder_active = False
         self._recorder_started = False
+        self._pending_finalize = False
         self._total_kj = 0.0
         self._last_energy_tick_monotonic: float | None = None
         self._upload_executor: ThreadPoolExecutor | None = None
@@ -85,18 +88,18 @@ class RecorderIntegration:
         self._aggregator.reset()
         self._aggregator.set_recording_active(True)
 
-    def finalize(self, workout: Workout) -> RecorderSummary | None:  # noqa: ARG002
-        """Stop recording, save the file, and trigger any post-workout uploads.
+    def prepare_summary(self) -> object | None:
+        """Stop accepting samples and compute summary metrics without writing files.
 
-        Returns the RecorderSummary produced by the recorder (containing NP, kJ,
-        avg HR, and avg power derived from the FIT-bound sample series), or None
-        if no recording was active or the recorder raised on stop.
+        Returns a namespace with normalized_power, kj, avg_hr, or None if no
+        recording was active. After this call, either commit() or discard() must
+        be called to finish the session.
         """
         if not self._recorder_started:
             return None
         self._recorder_started = False
         self._recorder_active = False
-        # Flush any in-progress aggregation bin before handing off to the recorder.
+        self._pending_finalize = True
         flush_sample = self._aggregator.flush()
         self._aggregator.reset()
         if flush_sample is not None:
@@ -104,11 +107,28 @@ class RecorderIntegration:
                 self._recorder.record_sample(flush_sample)
             except RuntimeError as exc:
                 _logger.warning("Recorder record_sample (flush) failed: %s", exc)
+        get_samples = getattr(self._recorder, "get_recorded_samples", None)
+        if callable(get_samples):
+            samples = get_samples()
+            metrics = compute_workout_metrics(samples, ftp_watts=0)
+            return SimpleNamespace(
+                normalized_power=metrics.normalized_power,
+                kj=metrics.kj,
+                avg_hr=metrics.avg_hr,
+            )
+        return None
+
+    def commit(self) -> None:
+        """Write files and trigger Strava sync. Call after prepare_summary()."""
+        if not self._pending_finalize:
+            return
+        self._pending_finalize = False
         try:
             summary = self._recorder.stop(finished_at_utc=self._utc_now())
         except RuntimeError as exc:
             _logger.warning("Recorder stop failed: %s", exc)
-            return None
+            self._workout = None
+            return
         self._screen.show_alert(
             f"Workout saved: {summary.fit_file_path.name}",
             alert_type="success",
@@ -121,7 +141,32 @@ class RecorderIntegration:
             self._screen.export_chart_image(chart_image_path)
             self._enqueue_strava_upload(summary.fit_file_path, chart_image_path)
         self._workout = None
-        return summary
+
+    def discard(self) -> None:
+        """Abandon the current workout without writing any files."""
+        if not self._pending_finalize:
+            return
+        self._pending_finalize = False
+        discard_fn = getattr(self._recorder, "discard", None)
+        if callable(discard_fn):
+            try:
+                discard_fn()
+            except Exception as exc:
+                _logger.warning("Recorder discard failed: %s", exc)
+        self._workout = None
+
+    def finalize(self, workout: Workout) -> object | None:  # noqa: ARG002
+        """Stop recording, save the file, and trigger any post-workout uploads.
+
+        Convenience method that calls prepare_summary() then commit(). Used by
+        shutdown() and any path that must save without showing a dialog.
+        Returns an object with normalized_power, kj, avg_hr, or None.
+        """
+        pending = self.prepare_summary()
+        if pending is None:
+            return None
+        self.commit()
+        return pending
 
     def sync(
         self,
@@ -199,8 +244,10 @@ class RecorderIntegration:
 
     def shutdown(self) -> None:
         """Finalize any in-progress recording and shut down the upload thread pool."""
-        if self._recorder_active:
+        if self._recorder_started:
             self.finalize(self._workout)
+        elif self._pending_finalize:
+            self.commit()
         if self._upload_executor is not None:
             self._upload_executor.shutdown(wait=False)
 

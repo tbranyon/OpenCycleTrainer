@@ -229,7 +229,7 @@ class WorkoutSessionController(QObject):
         self._handle_snapshot(snapshot, now_monotonic=now)
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
-            recorder_summary = self._recorder_integration.finalize(self._workout)
+            recorder_summary = self._recorder_integration.prepare_summary()
             self._show_workout_summary(recorder_summary)
         return snapshot
 
@@ -414,7 +414,7 @@ class WorkoutSessionController(QObject):
             self._screen.set_free_ride_mode(False)
             self._screen.set_interval_plot_visible(True)
         self._handle_snapshot(snapshot, now_monotonic=None)
-        recorder_summary = self._recorder_integration.finalize(self._workout)
+        recorder_summary = self._recorder_integration.prepare_summary()
         self._show_workout_summary(recorder_summary)
 
     def _extend_interval(self, seconds_or_kj: int, is_kj_mode: bool) -> None:
@@ -440,7 +440,7 @@ class WorkoutSessionController(QObject):
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
             self._chart_history.stop()
-            recorder_summary = self._recorder_integration.finalize(self._workout)
+            recorder_summary = self._recorder_integration.prepare_summary()
             self._show_workout_summary(recorder_summary)
 
     def _jog_target(self, delta_percent: int) -> None:
@@ -474,7 +474,11 @@ class WorkoutSessionController(QObject):
     ) -> None:
         prev_state = self._last_snapshot.state if self._last_snapshot is not None else None
         if prev_state == EngineState.RAMP_IN and snapshot.state == EngineState.RUNNING:
-            self._pause_state.on_ramp_in_to_running(self._monotonic_clock())
+            now = self._monotonic_clock()
+            pause_start = self._pause_state.pause_start_monotonic
+            if pause_start is not None:
+                self._chart_history.record_pause(now, now - pause_start)
+            self._pause_state.on_ramp_in_to_running(now)
         self._last_snapshot = snapshot
         self._screen.set_session_state(snapshot.state.value)
         self._screen.set_mode_state(self._mode_state.selected_mode)
@@ -561,12 +565,7 @@ class WorkoutSessionController(QObject):
         return self._mode_state.active_control_mode(snapshot, self._workout)
 
     def _show_workout_summary(self, recorder_summary: object = None) -> None:
-        """Build a WorkoutSummary from recorder-derived metrics and display the modal.
-
-        *recorder_summary* is the RecorderSummary returned by RecorderIntegration.finalize().
-        NP, kJ, and avg HR come from that single FIT-bound sample series; TSS is then
-        derived from those values using the current FTP setting.
-        """
+        """Build a WorkoutSummary from recorder-derived metrics and display the modal."""
         elapsed = self._last_snapshot.elapsed_seconds if self._last_snapshot else 0.0
         ftp = max(1, int(self._settings.ftp))
 
@@ -589,11 +588,20 @@ class WorkoutSessionController(QObject):
         )
         dialog = self._summary_dialog_factory(summary, self._screen)
         if dialog is not None:
-            dialog.accepted.connect(self._set_no_workout_state)
-            dialog.rejected.connect(self._set_no_workout_state)
+            dialog.accepted.connect(self._on_summary_finish)
+            dialog.rejected.connect(self._on_summary_discard)
             dialog.open()
         else:
+            self._recorder_integration.commit()
             self._set_no_workout_state()
+
+    def _on_summary_finish(self) -> None:
+        self._recorder_integration.commit()
+        self._set_no_workout_state()
+
+    def _on_summary_discard(self) -> None:
+        self._recorder_integration.discard()
+        self._set_no_workout_state()
 
     @staticmethod
     def _resolve_effective_power(

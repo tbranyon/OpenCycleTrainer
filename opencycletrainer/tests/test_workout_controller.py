@@ -8,6 +8,7 @@ from concurrent.futures import Future
 
 import pytest
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
@@ -42,6 +43,9 @@ class _FakeRecorder:
         self.samples.append(sample)
         return True
 
+    def get_recorded_samples(self) -> list[object]:
+        return list(self.samples)
+
     def stop(self, finished_at_utc: object) -> object:  # noqa: ARG002
         if not self.started:
             raise RuntimeError("Recorder is not active.")
@@ -54,6 +58,10 @@ class _FakeRecorder:
             kj=0.0,
             avg_hr=None,
         )
+
+    def discard(self) -> None:
+        self.started = False
+        self.recording_enabled = False
 
 
 class _FakeRecorderWithDataDir(_FakeRecorder):
@@ -120,6 +128,7 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
         settings=AppSettings(),
         recorder=fake_recorder,
         monotonic_clock=_monotonic,
+        summary_dialog_factory=_auto_accept_summary_dialog_factory,
     )
 
     assert controller.last_snapshot is None
@@ -161,7 +170,7 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     app.processEvents()
     assert controller.last_snapshot is not None
     assert controller.last_snapshot.state == EngineState.STOPPED
-    assert fake_recorder.stop_calls == 1
+    assert _wait_until(app, lambda: fake_recorder.stop_calls == 1)
     assert fake_recorder.samples == []
 
     controller.shutdown()
@@ -944,6 +953,14 @@ def test_trainer_controls_hidden_when_trainer_disconnected():
 
 # ── Strava upload trigger ─────────────────────────────────────────────────────
 
+def _auto_accept_summary_dialog_factory(summary, parent):
+    """Dialog factory that immediately accepts (simulates the user clicking Finish)."""
+    from opencycletrainer.ui.workout_summary_dialog import WorkoutSummaryDialog  # noqa: PLC0415
+    dialog = WorkoutSummaryDialog(summary, parent)
+    QTimer.singleShot(0, dialog.accept)
+    return dialog
+
+
 def _make_controller_with_upload(
     app,
     upload_fn,
@@ -960,6 +977,7 @@ def _make_controller_with_upload(
         recorder=_FakeRecorder(),
         monotonic_clock=lambda: 0.0,
         strava_upload_fn=upload_fn,
+        summary_dialog_factory=_auto_accept_summary_dialog_factory,
     )
     controller._load_workout_from_file(test_data_dir / "ramp.mrc")
     screen.start_button.click()
@@ -1029,12 +1047,12 @@ def test_finalize_recorder_skips_strava_upload_when_disabled():
 def test_finalize_recorder_no_error_when_upload_fn_is_none():
     app = _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
-    settings = AppSettings(strava_auto_sync_enabled=True)
     controller = WorkoutSessionController(
         screen=screen,
         settings=AppSettings(strava_auto_sync_enabled=True),
         recorder=_FakeRecorder(),
         monotonic_clock=lambda: 0.0,
+        summary_dialog_factory=_auto_accept_summary_dialog_factory,
         # strava_upload_fn not provided (defaults to None)
     )
     test_data_dir = Path(__file__).parent / "data"

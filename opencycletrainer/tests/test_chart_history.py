@@ -35,6 +35,9 @@ class _FakePowerHistory:
     def as_series(self) -> list[tuple[float, int]]:
         return list(self._series)
 
+    def smoothed_series(self, window_seconds: float = 1.0) -> list[tuple[float, int]]:
+        return list(self._series)
+
 
 class _FakePauseState:
     def __init__(self, paused: float = 0.0) -> None:

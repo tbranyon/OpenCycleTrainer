@@ -156,7 +156,7 @@ class OpenTrueUpController:
         if self._dropout_active and self._dropout_hold_target_watts is not None:
             target = self._dropout_hold_target_watts
         else:
-            target = base_target + self._offset_watts
+            target = base_target - self._offset_watts
         target = _clamp_erg_target(target)
         self._last_applied_erg_target_watts = target
         return target

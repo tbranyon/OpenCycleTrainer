@@ -281,6 +281,31 @@ class WorkoutRecorder:
         self._last_recorded_timestamp_utc = None
         return summary
 
+    def discard(self) -> None:
+        """Abort the current session without saving any files."""
+        session = self._session
+        if session is None:
+            return
+        self._flush_pending_rows()
+        if self._write_queue is not None:
+            self._write_queue.put(None)
+        if self._writer_thread is not None:
+            self._writer_thread.join(timeout=5)
+        try:
+            if session.samples_file_path.exists():
+                session.samples_file_path.unlink()
+        except OSError:
+            pass
+        self._session = None
+        self._recording_enabled = False
+        self._write_queue = None
+        self._writer_thread = None
+        self._pending_rows = []
+        self._recorded_samples = []
+        self._last_recorded_timestamp_utc = None
+        self._effective_power_sum = 0.0
+        self._effective_power_count = 0
+
     def set_recording_active(self, active: bool) -> None:
         if self._session is None:
             raise RuntimeError("Recorder is not active.")

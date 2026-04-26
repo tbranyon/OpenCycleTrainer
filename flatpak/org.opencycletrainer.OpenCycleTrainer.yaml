@@ -17,11 +17,15 @@ finish-args:
   - --filesystem=xdg-documents
 
 modules:
+  - python-modules.json
+
   - name: opencycletrainer
     buildsystem: simple
     build-commands:
-      - python3 -m pip install --verbose --exists-action=i --prefix=/app --no-build-isolation .
+      - python3 -m pip install --verbose --exists-action=i --no-index --find-links="file://${PWD}" --prefix=/app --no-build-isolation --no-deps .
       - install -Dm644 res/icon_nobg.png /app/share/opencycletrainer/res/icon_nobg.png
+      - install -Dm644 res/icon_512.png /app/share/icons/hicolor/512x512/apps/org.opencycletrainer.OpenCycleTrainer.png
+      - install -Dm644 flatpak/org.opencycletrainer.OpenCycleTrainer.desktop /app/share/applications/org.opencycletrainer.OpenCycleTrainer.desktop
       - install -d /app/share/opencycletrainer/workouts
       - install -m644 workouts/*.mrc /app/share/opencycletrainer/workouts/
     sources:

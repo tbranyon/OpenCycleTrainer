@@ -19,6 +19,7 @@ class _FakeRecorder:
         self.recording_enabled = False
         self.samples: list[object] = []
         self.stop_calls = 0
+        self.discard_calls = 0
         self.data_dirs: list[Path] = []
 
     def start(self, workout_name: str, started_at_utc: object) -> object:  # noqa: ARG002
@@ -37,6 +38,9 @@ class _FakeRecorder:
         self.samples.append(sample)
         return True
 
+    def get_recorded_samples(self) -> list[object]:
+        return list(self.samples)
+
     def stop(self, finished_at_utc: object) -> object:  # noqa: ARG002
         if not self.started:
             raise RuntimeError("Recorder is not active.")
@@ -49,6 +53,11 @@ class _FakeRecorder:
             kj=0.0,
             avg_hr=None,
         )
+
+    def discard(self) -> None:
+        self.started = False
+        self.recording_enabled = False
+        self.discard_calls += 1
 
     def set_data_dir(self, data_dir: Path) -> None:
         self.data_dirs.append(data_dir)
@@ -201,6 +210,124 @@ class TestStart:
         snap = _FakeSnapshot(recording_active=True)
         ri.update_total_kj(snap, 10.0)
         assert ri.total_kj == pytest.approx(0.0)
+
+
+# ── prepare_summary() ────────────────────────────────────────────────────────
+
+
+class TestPrepare:
+    def test_returns_none_when_not_started(self) -> None:
+        ri, *_ = _make()
+        assert ri.prepare_summary() is None
+
+    def test_returns_metrics_object_when_started(self) -> None:
+        ri, *_ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        result = ri.prepare_summary()
+        assert result is not None
+        assert hasattr(result, "normalized_power")
+        assert hasattr(result, "kj")
+        assert hasattr(result, "avg_hr")
+
+    def test_sets_recorder_active_false(self) -> None:
+        ri, *_ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        assert ri.recorder_active is False
+
+    def test_second_call_returns_none(self) -> None:
+        ri, *_ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        assert ri.prepare_summary() is None
+
+    def test_does_not_call_recorder_stop(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        assert rec.stop_calls == 0
+
+
+# ── commit() ─────────────────────────────────────────────────────────────────
+
+
+class TestCommit:
+    def test_calls_recorder_stop(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit()
+        assert rec.stop_calls == 1
+
+    def test_noop_when_not_pending(self) -> None:
+        ri, rec, _ = _make()
+        ri.commit()
+        assert rec.stop_calls == 0
+
+    def test_shows_saved_alert(self) -> None:
+        ri, _, scr = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit()
+        assert any("Workout saved" in msg for msg, _ in scr.alerts)
+
+    def test_second_commit_is_noop(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit()
+        ri.commit()
+        assert rec.stop_calls == 1
+
+    def test_no_strava_upload_when_disabled(self) -> None:
+        uploaded: list = []
+        ri, *_ = _make(
+            settings=AppSettings(strava_auto_sync_enabled=False),
+            strava_upload_fn=lambda *a: uploaded.append(a),
+        )
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit()
+        assert uploaded == []
+
+
+# ── discard() ────────────────────────────────────────────────────────────────
+
+
+class TestDiscard:
+    def test_calls_recorder_discard(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.discard()
+        assert rec.discard_calls == 1
+
+    def test_noop_when_not_pending(self) -> None:
+        ri, rec, _ = _make()
+        ri.discard()
+        assert rec.discard_calls == 0
+
+    def test_does_not_call_recorder_stop(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.discard()
+        assert rec.stop_calls == 0
+
+    def test_no_saved_alert(self) -> None:
+        ri, _, scr = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.discard()
+        assert not any("Workout saved" in msg for msg, _ in scr.alerts)
+
+    def test_second_discard_is_noop(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.discard()
+        ri.discard()
+        assert rec.discard_calls == 1
 
 
 # ── finalize() ───────────────────────────────────────────────────────────────
@@ -499,3 +626,10 @@ class TestShutdown:
         ri.start(_FakeWorkout(), _UTC_NOW)
         ri.shutdown()
         assert ri.recorder_active is False
+
+    def test_commits_when_pending_finalize(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.shutdown()
+        assert rec.stop_calls == 1

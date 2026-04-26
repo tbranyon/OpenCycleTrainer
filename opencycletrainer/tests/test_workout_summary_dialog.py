@@ -95,11 +95,18 @@ def test_summary_dialog_shows_all_five_tile_labels():
     assert "Avg Heart Rate" in label_texts
 
 
-def test_summary_dialog_has_done_button():
+def test_summary_dialog_has_finish_button():
     _get_or_create_qapp()
     dialog = WorkoutSummaryDialog(_make_summary())
     button_texts = {btn.text() for btn in dialog.findChildren(QPushButton)}
-    assert "Done" in button_texts
+    assert "Finish" in button_texts
+
+
+def test_summary_dialog_has_discard_button():
+    _get_or_create_qapp()
+    dialog = WorkoutSummaryDialog(_make_summary())
+    button_texts = {btn.text() for btn in dialog.findChildren(QPushButton)}
+    assert "Discard" in button_texts
 
 
 def test_summary_dialog_has_header_label():
@@ -173,20 +180,36 @@ def test_summary_dialog_shows_placeholder_when_hr_is_none():
 # ---------------------------------------------------------------------------
 
 
-def test_done_button_accepts_dialog():
+def test_finish_button_accepts_dialog():
     app = _get_or_create_qapp()
     dialog = WorkoutSummaryDialog(_make_summary())
 
     accepted: list[bool] = []
     dialog.accepted.connect(lambda: accepted.append(True))
 
-    done_button = next(
-        btn for btn in dialog.findChildren(QPushButton) if btn.text() == "Done"
+    finish_button = next(
+        btn for btn in dialog.findChildren(QPushButton) if btn.text() == "Finish"
     )
-    done_button.click()
+    finish_button.click()
     app.processEvents()
 
     assert accepted == [True]
+
+
+def test_discard_button_rejects_dialog():
+    app = _get_or_create_qapp()
+    dialog = WorkoutSummaryDialog(_make_summary())
+
+    rejected: list[bool] = []
+    dialog.rejected.connect(lambda: rejected.append(True))
+
+    discard_button = next(
+        btn for btn in dialog.findChildren(QPushButton) if btn.text() == "Discard"
+    )
+    discard_button.click()
+    app.processEvents()
+
+    assert rejected == [True]
 
 
 # ---------------------------------------------------------------------------

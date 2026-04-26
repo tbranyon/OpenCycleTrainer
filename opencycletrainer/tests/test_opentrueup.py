@@ -159,7 +159,7 @@ def test_bridge_applies_offset_in_erg_and_holds_setpoint_during_pm_dropout():
     engine.load_workout(workout)
     engine.start()
     engine.tick(0.0)
-    assert control.erg_targets == [210]
+    assert control.erg_targets == [190]  # 200 base - 10 OTU offset
 
     bridge.on_power_sample(timestamp=1.0, trainer_power_watts=200, bike_power_watts=210)
     bridge.on_power_sample(timestamp=2.0, trainer_power_watts=200, bike_power_watts=210)
@@ -167,13 +167,13 @@ def test_bridge_applies_offset_in_erg_and_holds_setpoint_during_pm_dropout():
 
     # Interval changes while PM dropout is active: setpoint should hold.
     engine.tick(10.0)
-    assert control.erg_targets == [210]
+    assert control.erg_targets == [190]
     assert opentrueup.dropout_active is True
 
     # PM returns; bridge reapplies current interval target with the last good offset.
     bridge.on_power_sample(timestamp=12.0, trainer_power_watts=230, bike_power_watts=240)
     assert opentrueup.dropout_active is False
-    assert control.erg_targets[-1] == 250
+    assert control.erg_targets[-1] == 230  # 240 base - 10 OTU offset
 
 
 def test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset():
@@ -193,21 +193,21 @@ def test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset():
     engine.load_workout(workout)
     engine.start()
     engine.tick(0.0)
-    assert control.erg_targets == [210]  # 200 base + 10 OTU offset
+    assert control.erg_targets == [190]  # 200 base - 10 OTU offset
 
-    # User applies a +20W jog: trainer should get 200 + 20 + 10 = 230W.
+    # User applies a +20W jog: trainer should get 200 + 20 - 10 = 210W.
     bridge.set_erg_jog_offset_watts(20.0)
-    assert control.erg_targets[-1] == 230
+    assert control.erg_targets[-1] == 210
 
     # Simulate PM dropout.
     bridge.on_power_sample(timestamp=1.0, trainer_power_watts=200, bike_power_watts=210)
     bridge.on_power_sample(timestamp=5.0, trainer_power_watts=200, bike_power_watts=None)
     assert opentrueup.dropout_active is True
 
-    # PM returns → OTU requires re-apply → jog must be preserved: 200 + 20 + 10 = 230W.
+    # PM returns → OTU requires re-apply → jog must be preserved: 200 + 20 - 10 = 210W.
     bridge.on_power_sample(timestamp=9.0, trainer_power_watts=200, bike_power_watts=210)
     assert opentrueup.dropout_active is False
-    assert control.erg_targets[-1] == 230
+    assert control.erg_targets[-1] == 210
 
 
 def test_bridge_computes_offset_in_background_when_control_mode_is_resistance():

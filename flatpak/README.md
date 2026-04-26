@@ -19,6 +19,20 @@ flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flat
 flatpak install flathub org.kde.Platform//6.9 org.kde.Sdk//6.9
 ```
 
+## Regenerating Python dependency sources
+
+The manifest references `flatpak/python-modules.json`, which pins all PyPI packages with their download URLs and sha256 hashes so the build can run offline. Regenerate it whenever `flatpak/requirements.txt` changes:
+
+```bash
+# one-time: get the generator
+curl -O https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/pip/flatpak-pip-generator
+
+# regenerate (requires network)
+python3 flatpak-pip-generator --requirements-file=flatpak/requirements.txt --output=flatpak/python-modules
+```
+
+Commit `flatpak/python-modules.json` alongside any dependency changes.
+
 ## Build + Install (local user)
 
 Run from the repository root:

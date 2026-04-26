@@ -34,6 +34,7 @@ class ChartHistory:
         self._chart_start_monotonic: float | None = None
         self._hr_history: list[tuple[float, int]] = []
         self._skip_events: list[tuple[float, float, float]] = []
+        self._pause_events: list[tuple[float, float]] = []  # (end_mono, duration)
 
         if _timer_factory is not None:
             self._chart_timer = _timer_factory()
@@ -76,6 +77,7 @@ class ChartHistory:
         self._chart_start_monotonic = None
         self._hr_history = []
         self._skip_events = []
+        self._pause_events = []
 
     def record_hr(self, bpm: int, now: float) -> None:
         """Append an HR sample. No-op if the chart has not been started."""
@@ -86,6 +88,10 @@ class ChartHistory:
     def record_skip(self, now: float, elapsed_before: float, elapsed_after: float) -> None:
         """Record a skip event so the elapsed cursor can account for skipped time."""
         self._skip_events.append((now, elapsed_before, elapsed_after))
+
+    def record_pause(self, end_mono: float, duration: float) -> None:
+        """Record a completed pause (including ramp-in) so data timestamps are adjusted."""
+        self._pause_events.append((end_mono, duration))
 
     def on_tick(self, snapshot: Any, workout: Any, is_free_ride: bool) -> None:
         """Recompute elapsed time and push updated series to the screen."""
@@ -101,16 +107,21 @@ class ChartHistory:
         # Samples taken after a skip are shifted forward by the cumulative skipped
         # duration so they appear at the correct position on the workout timeline.
         def _adjusted_time(sample_mono: float) -> float:
-            offset = sum(
+            skip_offset = sum(
                 after - before
                 for skip_mono, before, after in self._skip_events
                 if skip_mono <= sample_mono
             )
-            return (sample_mono - self._chart_start_monotonic) + offset  # type: ignore[operator]
+            pause_offset = sum(
+                dur
+                for end_mono, dur in self._pause_events
+                if end_mono <= sample_mono
+            )
+            return (sample_mono - self._chart_start_monotonic) + skip_offset - pause_offset  # type: ignore[operator]
 
         power_series = [
             (_adjusted_time(mono), watts)
-            for mono, watts in self._power_history.as_series()
+            for mono, watts in self._power_history.smoothed_series()
         ]
 
         hr_series = [

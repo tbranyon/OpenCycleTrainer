@@ -141,11 +141,14 @@ class WorkoutSummaryDialog(QDialog):
 
         root.addLayout(grid)
 
-        # Done button
-        done_btn = QPushButton("Done", self)
-        done_btn.clicked.connect(self.accept)
+        # Action buttons
+        finish_btn = QPushButton("Finish", self)
+        finish_btn.clicked.connect(self.accept)
+        discard_btn = QPushButton("Discard", self)
+        discard_btn.clicked.connect(self.reject)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_row.addWidget(done_btn)
+        btn_row.addWidget(discard_btn)
+        btn_row.addWidget(finish_btn)
         btn_row.addStretch()
         root.addLayout(btn_row)

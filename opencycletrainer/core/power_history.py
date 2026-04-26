@@ -107,3 +107,50 @@ class PowerHistory:
     def as_series(self) -> list[tuple[float, int]]:
         """Return all samples as a list of (monotonic_timestamp, watts) tuples."""
         return list(self._samples)
+
+    def smoothed_series(self, window_seconds: float = 1.0) -> list[tuple[float, int]]:
+        """Return samples with each point replaced by the trailing time-weighted average.
+
+        For each sample at time T, averages all samples in [T - window_seconds, T],
+        weighted by the duration each value was "held" between consecutive samples.
+        """
+        samples = list(self._samples)
+        if not samples:
+            return []
+        result: list[tuple[float, int]] = []
+        for i, (t, _) in enumerate(samples):
+            window_start = t - window_seconds
+            # Collect samples in the window; include the last sample before the window
+            # as the carry-in value from window_start.
+            in_window: list[tuple[float, int]] = []
+            carry_in: int | None = None
+            for j in range(i + 1):
+                jt, jw = samples[j]
+                if jt < window_start:
+                    carry_in = jw
+                else:
+                    in_window.append((jt, jw))
+
+            if not in_window:
+                result.append((t, samples[i][1]))
+                continue
+
+            # Build (timestamp, watts) pairs anchored at window_start.
+            anchored = [(window_start, carry_in if carry_in is not None else in_window[0][1])]
+            anchored.extend(in_window)
+
+            total_weight = 0.0
+            weighted_sum = 0.0
+            for k in range(len(anchored) - 1):
+                duration = anchored[k + 1][0] - anchored[k][0]
+                weighted_sum += anchored[k][1] * duration
+                total_weight += duration
+            # Final sample holds until t
+            last_duration = t - anchored[-1][0]
+            if last_duration > 0:
+                weighted_sum += anchored[-1][1] * last_duration
+                total_weight += last_duration
+
+            avg = round(weighted_sum / total_weight) if total_weight > 0 else samples[i][1]
+            result.append((t, avg))
+        return result

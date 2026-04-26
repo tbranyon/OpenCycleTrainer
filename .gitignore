@@ -19,3 +19,11 @@ Thumbs.db
 
 # Strava app credentials — never commit
 opencycletrainer/integrations/strava/_app_secrets.py
+
+# Flatpak build artifacts
+.flatpak-builder/
+*.flatpak
+repo/
+
+# Downloaded tool, not authored — regenerate via curl as needed
+flatpak/flatpak-pip-generator.py

@@ -40,6 +40,8 @@ def _iter_bundled_roots() -> list[Path]:
     frozen_root = _frozen_bundle_root()
     if frozen_root is not None:
         roots.append(frozen_root)
+    if os.environ.get("FLATPAK_ID"):
+        roots.append(Path("/app/share") / APP_NAME_UNIX)
     roots.append(Path(sys.prefix) / "share" / APP_NAME_UNIX)
     roots.append(_repo_root())
     return roots
