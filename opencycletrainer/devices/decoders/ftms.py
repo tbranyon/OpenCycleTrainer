@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import struct
 from dataclasses import dataclass
 
 from .base import DecodedMetrics
@@ -121,16 +122,19 @@ class ResistanceLevelRange:
 def decode_resistance_level_range(payload: bytes) -> ResistanceLevelRange:
     """Decode FTMS Supported Resistance Level Range (0x2AD6).
 
-    Three UINT8 fields with 0.1 resolution: minimum, maximum, minimum increment.
+    Per FTMS spec: minimum (SINT16), maximum (SINT16), minimum increment (UINT16),
+    all with 0.1 resolution, little-endian — 6 bytes total.
     """
-    if len(payload) < 3:
+    _logger.debug("Resistance range raw payload (%d bytes): %s", len(payload), payload.hex())
+    if len(payload) < 6:
         raise ValueError(
-            f"Resistance Level Range payload too short: expected 3 bytes, got {len(payload)}"
+            f"Resistance Level Range payload too short: expected 6 bytes, got {len(payload)}"
         )
+    minimum_raw, maximum_raw, increment_raw = struct.unpack_from("<hhH", payload)
     return ResistanceLevelRange(
-        minimum=payload[0] / 10.0,
-        maximum=payload[1] / 10.0,
-        minimum_increment=payload[2] / 10.0,
+        minimum=minimum_raw / 10.0,
+        maximum=maximum_raw / 10.0,
+        minimum_increment=increment_raw / 10.0,
     )
 
 

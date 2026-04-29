@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import struct
 from typing import Any
 
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
@@ -350,7 +351,8 @@ def test_bleak_ftms_transport_reads_resistance_level_range(monkeypatch, tmp_path
         backend.connect_device("AA:BB:CC:01").result(timeout=1.0)
 
         client = backend._clients["AA:BB:CC:01"]
-        client.read_responses[FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID] = bytes([0, 100, 1])
+        # min=0 (SINT16), max=100 spec units=10.0 (SINT16), inc=1 spec unit=0.1 (UINT16)
+        client.read_responses[FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID] = struct.pack("<hhH", 0, 100, 1)
 
         transport = BleakFTMSControlTransport(backend, "AA:BB:CC:01")
         result = transport.read_resistance_level_range()
@@ -399,7 +401,7 @@ def test_bleak_ftms_transport_resistance_range_cached_after_first_read(monkeypat
         backend.connect_device("AA:BB:CC:01").result(timeout=1.0)
 
         client = backend._clients["AA:BB:CC:01"]
-        client.read_responses[FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID] = bytes([0, 100, 1])
+        client.read_responses[FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID] = struct.pack("<hhH", 0, 100, 1)
 
         transport = BleakFTMSControlTransport(backend, "AA:BB:CC:01")
         transport.read_resistance_level_range()

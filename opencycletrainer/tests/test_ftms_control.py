@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+import struct
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_ftms_control_encodes_erg_and_resistance_commands_and_waits_for_ack():
     assert transport.writes == [
         b"\x00",
         b"\x05\xfa\x00",
-        b"\x04\x2a",  # opcode 0x04 + UINT8(42) for 42.3 rounded
+        struct.pack("<Bh", 0x04, 42),  # opcode 0x04 + SINT16 LE 42 for 42.3 rounded
     ]
 
 
@@ -341,20 +342,23 @@ def test_bridge_reports_control_errors_to_alert_callback():
 
 # --- ResistanceLevelRange decoder tests ---
 
-def test_decode_resistance_level_range_parses_three_bytes():
-    result = decode_resistance_level_range(bytes([0, 100, 1]))
+def test_decode_resistance_level_range_parses_six_bytes():
+    # min=0 (SINT16), max=100 spec units=10.0 (SINT16), inc=1 spec unit=0.1 (UINT16)
+    payload = struct.pack("<hhH", 0, 100, 1)
+    result = decode_resistance_level_range(payload)
     assert result == ResistanceLevelRange(minimum=0.0, maximum=10.0, minimum_increment=0.1)
     assert result.step_count == 100
 
 
 def test_decode_resistance_level_range_small_step_count():
-    result = decode_resistance_level_range(bytes([0, 10, 1]))
+    payload = struct.pack("<hhH", 0, 10, 1)
+    result = decode_resistance_level_range(payload)
     assert result.step_count == 10
 
 
 def test_decode_resistance_level_range_raises_on_short_payload():
     with pytest.raises(ValueError, match="too short"):
-        decode_resistance_level_range(bytes([0, 100]))
+        decode_resistance_level_range(bytes([0, 100, 0, 0, 0]))
 
 
 # --- _normalize_resistance tests ---
@@ -372,7 +376,7 @@ def test_normalize_resistance_with_range_maps_linearly():
     assert _normalize_resistance(100.0, range_) == 100
 
 
-def test_normalize_resistance_clamps_to_uint8_bounds():
+def test_normalize_resistance_clamps_to_sint16_bounds():
     range_ = ResistanceLevelRange(minimum=0.0, maximum=25.5, minimum_increment=0.1)
     assert _normalize_resistance(100.0, range_) == 255
 
@@ -391,8 +395,8 @@ def test_ftms_control_normalizes_resistance_with_range():
 
     control.set_resistance_level(50.0)
 
-    # opcode 0x04 + raw byte 50
-    assert transport.writes[-1] == bytes([0x04, 50])
+    # opcode 0x04 + SINT16 LE 50
+    assert transport.writes[-1] == struct.pack("<Bh", 0x04, 50)
 
 
 def test_ftms_control_resistance_range_read_only_once():
@@ -412,7 +416,8 @@ def test_ftms_control_resistance_fallback_without_range():
 
     control.set_resistance_level(42.3)
 
-    assert transport.writes[-1] == bytes([0x04, 42])
+    # opcode 0x04 + SINT16 LE 42 (fallback: round(level_percent))
+    assert transport.writes[-1] == struct.pack("<Bh", 0x04, 42)
 
 
 # --- FTMSFeatures decoder tests ---

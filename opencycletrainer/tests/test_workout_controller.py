@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import struct
 from types import SimpleNamespace
 import time
 from concurrent.futures import Future
@@ -1902,7 +1903,7 @@ def test_free_ride_with_trainer_sends_initial_resistance_command():
 
     assert _wait_until(
         app,
-        lambda: bytes([0x04, 33]) in transport.writes,
+        lambda: struct.pack("<Bh", 0x04, 33) in transport.writes,
     ), "Expected initial Free Ride resistance command"
 
     controller.shutdown()
@@ -1989,7 +1990,7 @@ def test_free_ride_resistance_jog_sends_updated_resistance_command():
 
     assert _wait_until(
         app,
-        lambda: bytes([0x04, 43]) in transport.writes,
+        lambda: struct.pack("<Bh", 0x04, 43) in transport.writes,
     ), "Expected Free Ride resistance jog to update trainer resistance"
 
     controller.shutdown()

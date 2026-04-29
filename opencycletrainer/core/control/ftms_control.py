@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import logging
+import struct
 import threading
 from typing import Protocol
 
@@ -136,13 +137,13 @@ class FTMSControl:
 
         Maps 0–100 linearly onto [range.minimum, range.maximum] from the trainer's
         Supported Resistance Level Range characteristic (0x2AD6). Falls back to
-        raw 0–100 if the range is unavailable. Encoded as UINT8 per FTMS spec (opcode 0x04).
+        raw 0–100 if the range is unavailable. Encoded as SINT16 per FTMS spec (opcode 0x04).
         """
         level_f = float(level)
         if level_f < 0 or level_f > 100:
             raise ValueError("Resistance level must be between 0 and 100.")
         raw = _normalize_resistance(level_f, self._ensure_resistance_range())
-        payload = bytes([_OPCODE_SET_TARGET_RESISTANCE, raw])
+        payload = struct.pack("<Bh", _OPCODE_SET_TARGET_RESISTANCE, raw)
         return self._send_command_with_ack(
             request_opcode=_OPCODE_SET_TARGET_RESISTANCE,
             payload=payload,
@@ -547,14 +548,17 @@ def _interpolate_interval(
 
 
 def _normalize_resistance(level_percent: float, range_: ResistanceLevelRange | None) -> int:
-    """Map 0–100% onto the trainer's raw UINT8 range. Falls back to round(level) if unavailable."""
+    """Map 0–100% onto the trainer's SINT16 resistance value (0.1 spec units).
+
+    Falls back to raw 0–100 if range is unavailable or degenerate.
+    """
     if range_ is None or range_.maximum <= range_.minimum:
         return int(round(level_percent))
     raw_float = (
         range_.minimum * 10
         + (level_percent / 100.0) * (range_.maximum - range_.minimum) * 10
     )
-    return max(0, min(255, int(round(raw_float))))
+    return max(-32768, min(32767, int(round(raw_float))))
 
 
 def _opcode_label(opcode: int) -> str:
