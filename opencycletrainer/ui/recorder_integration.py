@@ -39,7 +39,7 @@ class RecorderIntegration:
         screen: object,
         settings: AppSettings,
         utc_now: Callable[[], datetime],
-        strava_upload_fn: Callable[[Path, Path | None], None] | None,
+        strava_upload_fn: Callable[[Path], None] | None,
         alert_signal: Callable[[str, str], None],
         mode_state: object,
     ) -> None:
@@ -139,7 +139,7 @@ class RecorderIntegration:
                 f"{summary.fit_file_path.stem}.png"
             )
             self._screen.export_chart_image(chart_image_path)
-            self._enqueue_strava_upload(summary.fit_file_path, chart_image_path)
+            self._enqueue_strava_upload(summary.fit_file_path)
         self._workout = None
 
     def discard(self) -> None:
@@ -264,14 +264,14 @@ class RecorderIntegration:
             # Recorder is active; new setting takes effect next session.
             return
 
-    def _enqueue_strava_upload(self, fit_path: Path, chart_image_path: Path | None) -> None:
+    def _enqueue_strava_upload(self, fit_path: Path) -> None:
         if self._upload_executor is None:
             self._upload_executor = ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="strava_upload",
             )
         fut: Future[None] = self._upload_executor.submit(
-            self._strava_upload_fn, fit_path, chart_image_path
+            self._strava_upload_fn, fit_path
         )
         fut.add_done_callback(self._on_upload_done)
 

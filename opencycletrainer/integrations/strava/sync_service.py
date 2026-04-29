@@ -21,7 +21,6 @@ class DuplicateUploadError(Exception):
 
 def upload_fit_to_strava(
     fit_path: Path,
-    chart_image_path: Path | None = None,
     *,
     _token_getter: Callable[[], StravaTokenBundle | None] | None = None,
     _token_saver: Callable[[StravaTokenBundle], None] | None = None,
@@ -29,12 +28,8 @@ def upload_fit_to_strava(
     _refresh_impl: Callable[[StravaTokenBundle], StravaTokenBundle] | None = None,
     _history_checker: Callable[[Path], bool] | None = None,
     _history_recorder: Callable[[Path], None] | None = None,
-    _image_uploader: Callable[[str, Path, str], None] | None = None,
 ) -> None:
     """Upload a FIT file to Strava with duplicate detection, token refresh, and bounded retries.
-
-    If chart_image_path is provided and the FIT upload returns an activity ID, the image
-    is attached to the activity on a best-effort basis.
 
     Raises:
         DuplicateUploadError: if this file has already been successfully uploaded.
@@ -48,7 +43,6 @@ def upload_fit_to_strava(
     refresh_fn = _refresh_impl if _refresh_impl is not None else _refresh_tokens
     history_checker = _history_checker if _history_checker is not None else is_already_uploaded
     history_recorder = _history_recorder if _history_recorder is not None else record_upload
-    image_uploader = _image_uploader if _image_uploader is not None else _do_image_upload
 
     if history_checker(fit_path):
         _logger.info("Skipping duplicate Strava upload for %s", fit_path.name)
@@ -65,10 +59,9 @@ def upload_fit_to_strava(
 
     _logger.info("Starting Strava upload for %s", fit_path.name)
     last_exc: Exception | None = None
-    activity_id: str | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            activity_id = upload_fn(fit_path, tokens.access_token)
+            upload_fn(fit_path, tokens.access_token)
             history_recorder(fit_path)
             _logger.info("Strava upload succeeded for %s", fit_path.name)
             break
@@ -84,29 +77,6 @@ def upload_fit_to_strava(
         raise RuntimeError(
             f"Strava upload failed after {_MAX_ATTEMPTS} attempts"
         ) from last_exc
-
-    if chart_image_path and activity_id:
-        _try_upload_chart_image(
-            activity_id=activity_id,
-            chart_image_path=chart_image_path,
-            access_token=tokens.access_token,
-            image_uploader=image_uploader,
-        )
-
-
-def _try_upload_chart_image(
-    *,
-    activity_id: str,
-    chart_image_path: Path,
-    access_token: str,
-    image_uploader: Callable[[str, Path, str], None],
-) -> None:
-    """Upload a chart image to the activity, best-effort."""
-    try:
-        image_uploader(activity_id, chart_image_path, access_token)
-        _logger.info("Chart image uploaded to Strava activity %s", activity_id)
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning("Strava chart image upload failed (non-blocking): %s", exc)
 
 
 def _refresh_tokens(tokens: StravaTokenBundle) -> StravaTokenBundle:
@@ -160,17 +130,3 @@ def _do_upload(fit_path: Path, access_token: str) -> str | None:
         raise
 
 
-def _do_image_upload(activity_id: str, image_path: Path, access_token: str) -> None:
-    """Upload a chart image to the Strava activity photo gallery."""
-    import requests  # noqa: PLC0415
-
-    url = f"https://www.strava.com/api/v3/activities/{activity_id}/photos"
-    with image_path.open("rb") as f:
-        resp = requests.post(
-            url,
-            headers={"Authorization": f"Bearer {access_token}"},
-            files={"file": (image_path.name, f, "image/png")},
-            data={"caption": "Workout Power Chart"},
-            timeout=30,
-        )
-    resp.raise_for_status()

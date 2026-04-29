@@ -990,7 +990,7 @@ def test_finalize_recorder_enqueues_strava_upload_when_enabled():
     app = _get_or_create_qapp()
     uploaded: list[Path] = []
 
-    def fake_upload(path: Path, chart_image_path: Path | None) -> None:  # noqa: ARG001
+    def fake_upload(path: Path) -> None:
         uploaded.append(path)
 
     controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
@@ -1004,34 +1004,13 @@ def test_finalize_recorder_enqueues_strava_upload_when_enabled():
     controller.shutdown()
 
 
-def test_finalize_recorder_passes_chart_image_path_to_upload_fn():
-    """Controller passes a PNG chart image path alongside the FIT path to the upload function."""
-    app = _get_or_create_qapp()
-    received: list[Path | None] = []
-
-    def fake_upload(_path: Path, chart_image_path: Path | None) -> None:
-        received.append(chart_image_path)
-
-    controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
-
-    screen.end_button.click()
-    app.processEvents()
-
-    assert _wait_until(app, lambda: len(received) == 1)
-    assert received[0] is not None
-    assert received[0].suffix == ".png"
-    assert received[0].parent.name == "png"
-
-    controller.shutdown()
-
-
 def test_finalize_recorder_skips_strava_upload_when_disabled():
     app = _get_or_create_qapp()
     uploaded: list[Path] = []
 
     controller, screen = _make_controller_with_upload(
         app,
-        lambda p, _c: uploaded.append(p),
+        lambda p: uploaded.append(p),
         strava_auto_sync_enabled=False,
     )
 
@@ -1071,7 +1050,7 @@ def test_finalize_recorder_no_error_when_upload_fn_is_none():
 def test_strava_upload_success_shows_success_alert():
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path, _chart_image_path: Path | None) -> None:
+    def fake_upload(_path: Path) -> None:
         pass  # success
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -1087,7 +1066,7 @@ def test_strava_upload_success_shows_success_alert():
 def test_strava_upload_failure_shows_error_alert():
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path, _chart_image_path: Path | None) -> None:
+    def fake_upload(_path: Path) -> None:
         raise RuntimeError("Strava upload failed after 3 attempts")
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -1104,7 +1083,7 @@ def test_strava_duplicate_upload_shows_already_synced_alert():
     from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path, _chart_image_path: Path | None) -> None:
+    def fake_upload(_path: Path) -> None:
         raise DuplicateUploadError("already uploaded")
 
     controller, screen = _make_controller_with_upload(app, fake_upload)

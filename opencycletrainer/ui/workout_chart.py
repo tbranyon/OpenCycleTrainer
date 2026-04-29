@@ -290,7 +290,23 @@ class WorkoutChartWidget(QWidget):
         The raw grab is scaled to ``_EXPORT_WIDTH`` × ``_EXPORT_HEIGHT`` so the
         saved image always has a consistent 16:9 aspect ratio regardless of the
         current window size.
+
+        In free ride mode the X axis expands in 30-minute blocks, so the right
+        portion is often empty at the moment of capture.  We temporarily trim the
+        range to the actual elapsed data before grabbing.
         """
+        trimmed = False
+        original_x = self._workout_plot.getViewBox().viewRange()[0]
+
+        if self._free_ride_mode:
+            xdata, _ = self._workout_actual.getData()
+            if xdata is not None and len(xdata) > 0:
+                actual_max = float(xdata[-1])
+                if actual_max < original_x[1] - 1.0:
+                    self._workout_plot.setXRange(0.0, actual_max, padding=0)
+                    self._workout_plot.repaint()
+                    trimmed = True
+
         pixmap = self._workout_plot.grab()
         scaled = pixmap.scaled(
             _EXPORT_WIDTH,
@@ -299,6 +315,10 @@ class WorkoutChartWidget(QWidget):
             Qt.SmoothTransformation,
         )
         scaled.save(str(path), "PNG")
+
+        if trimmed:
+            self._workout_plot.setXRange(original_x[0], original_x[1], padding=0)
+
         return path
 
     def clear(self) -> None:

@@ -12,6 +12,6 @@
     - In `WorkoutScreen`, connect those signals to a sound-playback slot using PySide6's `QSoundEffect`. Bundle two short audio clips (warning beep, transition chime) in `res/`. Fall back gracefully if audio is unavailable (log a warning, do not crash).
     - Ensure alerts don't fire spuriously on pause/resume or when skipping intervals manually.
     - Consider also flashing the existing alert banner with the upcoming interval's power target as a visual accompaniment.
-8. Strava upload
-    - Image upload doesn't appear to work. Tested from installed flatpak, so didn't get to see log output. Either didn't work or it's very large so took > 5 minutes to upload or was rejected.
-    - Captured image in png folder looks bad. We should rescale the plot to fill the x-axis (e.g. in free ride where the user may have a large empty span on the x-axis when they stop).
+8. Start/Pause/Resume/Stop buttons should be modified to be state-dependent. i.e., Start should be visible when no workout is running. Pause and Stop should be visible during a workout. Resume and Stop should be visible when paused.
+9. Power jog hotkeys weren't working in free ride ERG on last Linux test
+10. "T" hotkey to change trainer mode didn't appear to work when in ERG mode specifically in last Linux free ride test.
