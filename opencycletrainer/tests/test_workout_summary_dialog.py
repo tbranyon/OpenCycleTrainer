@@ -4,11 +4,16 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget
 
 from opencycletrainer.core.recorder import RecorderSample
 from opencycletrainer.core.workout_metrics import compute_workout_metrics
 from opencycletrainer.ui.workout_summary_dialog import (
+    INTERVAL_PERCENT_COLOR_GREEN,
+    INTERVAL_PERCENT_COLOR_RED,
+    INTERVAL_PERCENT_COLOR_YELLOW,
+    IntervalResult,
     WorkoutSummary,
     WorkoutSummaryDialog,
     compute_tss,
@@ -29,6 +34,7 @@ def _make_summary(
     normalized_power: int | None = 200,
     tss: float | None = 64.0,
     avg_hr: int | None = 145,
+    interval_results: tuple[IntervalResult, ...] = (),
 ) -> WorkoutSummary:
     return WorkoutSummary(
         elapsed_seconds=elapsed_seconds,
@@ -36,6 +42,27 @@ def _make_summary(
         normalized_power=normalized_power,
         tss=tss,
         avg_hr=avg_hr,
+        interval_results=interval_results,
+    )
+
+
+def _make_interval_result(
+    interval_number: int = 1,
+    duration_seconds: int = 300,
+    target_watts: int | None = 200,
+    target_percent_ftp: float | None = 80.0,
+    avg_watts: int | None = 190,
+    avg_hr: int | None = 145,
+    skipped: bool = False,
+) -> IntervalResult:
+    return IntervalResult(
+        interval_number=interval_number,
+        duration_seconds=duration_seconds,
+        target_watts=target_watts,
+        target_percent_ftp=target_percent_ftp,
+        avg_watts=avg_watts,
+        avg_hr=avg_hr,
+        skipped=skipped,
     )
 
 
@@ -337,3 +364,219 @@ def test_dialog_shows_placeholder_when_metrics_has_no_hr() -> None:
 
     assert metrics.avg_hr is None
     assert "--" in label_texts
+
+
+# ---------------------------------------------------------------------------
+# IntervalResult dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_interval_result_stores_all_fields():
+    result = _make_interval_result()
+    assert result.interval_number == 1
+    assert result.duration_seconds == 300
+    assert result.target_watts == 200
+    assert result.target_percent_ftp == pytest.approx(80.0)
+    assert result.avg_watts == 190
+    assert result.avg_hr == 145
+    assert result.skipped is False
+
+
+def test_interval_result_skipped_defaults_to_false():
+    result = IntervalResult(
+        interval_number=1,
+        duration_seconds=60,
+        target_watts=200,
+        target_percent_ftp=80.0,
+        avg_watts=190,
+        avg_hr=None,
+    )
+    assert result.skipped is False
+
+
+def test_interval_result_supports_none_fields_for_free_ride():
+    result = IntervalResult(
+        interval_number=1,
+        duration_seconds=300,
+        target_watts=None,
+        target_percent_ftp=None,
+        avg_watts=None,
+        avg_hr=None,
+    )
+    assert result.target_watts is None
+    assert result.target_percent_ftp is None
+
+
+# ---------------------------------------------------------------------------
+# WorkoutSummaryDialog – interval breakdown table structure
+# ---------------------------------------------------------------------------
+
+
+def test_dialog_shows_interval_table_when_results_provided():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(),))
+    dialog = WorkoutSummaryDialog(summary)
+    tables = dialog.findChildren(QTableWidget)
+    assert tables, "Expected a QTableWidget when interval results are present"
+
+
+def test_dialog_has_no_interval_table_when_results_empty():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=())
+    dialog = WorkoutSummaryDialog(summary)
+    tables = dialog.findChildren(QTableWidget)
+    assert not tables, "Expected no QTableWidget when interval_results is empty"
+
+
+def test_dialog_interval_table_has_six_columns():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.columnCount() == 6
+
+
+def test_dialog_interval_table_column_headers():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    headers = [table.horizontalHeaderItem(c).text() for c in range(table.columnCount())]
+    assert headers == ["#", "Duration", "Target (W)", "Actual Avg (W)", "% of Target", "Avg HR"]
+
+
+def test_dialog_interval_table_row_count_matches_results():
+    _get_or_create_qapp()
+    results = (_make_interval_result(1), _make_interval_result(2), _make_interval_result(3))
+    summary = _make_summary(interval_results=results)
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.rowCount() == 3
+
+
+def test_dialog_interval_table_shows_interval_number():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(interval_number=3),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 0).text() == "3"
+
+
+def test_dialog_interval_table_shows_duration_as_mss():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(duration_seconds=300),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 1).text() == "5:00"
+
+
+def test_dialog_interval_table_shows_target_watts():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(target_watts=250),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 2).text() == "250"
+
+
+def test_dialog_interval_table_shows_actual_avg_watts():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(avg_watts=195),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 3).text() == "195"
+
+
+def test_dialog_interval_table_shows_avg_hr():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(avg_hr=152),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 5).text() == "152"
+
+
+def test_dialog_interval_table_shows_dash_for_no_avg_hr():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(avg_hr=None),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 5).text() == "-"
+
+
+# ---------------------------------------------------------------------------
+# WorkoutSummaryDialog – % of Target display and color coding
+# ---------------------------------------------------------------------------
+
+
+def test_dialog_interval_table_shows_percent_of_target():
+    """190 W actual vs 200 W target = 95%."""
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(target_watts=200, avg_watts=190),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 4).text() == "95%"
+
+
+def test_dialog_interval_percent_cell_green_at_or_above_95_percent():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(target_watts=200, avg_watts=190),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    color = table.item(0, 4).background().color()
+    assert color == INTERVAL_PERCENT_COLOR_GREEN
+
+
+def test_dialog_interval_percent_cell_yellow_between_85_and_94_percent():
+    """170 W actual vs 200 W target = 85%."""
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(target_watts=200, avg_watts=170),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    color = table.item(0, 4).background().color()
+    assert color == INTERVAL_PERCENT_COLOR_YELLOW
+
+
+def test_dialog_interval_percent_cell_red_below_85_percent():
+    """160 W actual vs 200 W target = 80%."""
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(target_watts=200, avg_watts=160),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    color = table.item(0, 4).background().color()
+    assert color == INTERVAL_PERCENT_COLOR_RED
+
+
+def test_dialog_interval_percent_cell_uncolored_when_no_avg_watts():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(target_watts=200, avg_watts=None),))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    item = table.item(0, 4)
+    assert item.text() == "-"
+    color = item.background().color()
+    assert color != INTERVAL_PERCENT_COLOR_GREEN
+    assert color != INTERVAL_PERCENT_COLOR_YELLOW
+    assert color != INTERVAL_PERCENT_COLOR_RED
+
+
+# ---------------------------------------------------------------------------
+# WorkoutSummaryDialog – free-ride and skipped intervals
+# ---------------------------------------------------------------------------
+
+
+def test_dialog_interval_table_shows_dash_for_free_ride_target():
+    _get_or_create_qapp()
+    result = _make_interval_result(target_watts=None, target_percent_ftp=None)
+    summary = _make_summary(interval_results=(result,))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert table.item(0, 2).text() == "-"
+    assert table.item(0, 4).text() == "-"
+
+
+def test_dialog_interval_table_marks_skipped_interval():
+    _get_or_create_qapp()
+    result = _make_interval_result(skipped=True)
+    summary = _make_summary(interval_results=(result,))
+    dialog = WorkoutSummaryDialog(summary)
+    table = dialog.findChildren(QTableWidget)[0]
+    assert "Skipped" in table.item(0, 0).text()

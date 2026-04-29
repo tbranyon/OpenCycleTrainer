@@ -2201,3 +2201,122 @@ def test_power_timestamp_resets_on_workout_restart():
     assert controller.last_snapshot.state == EngineState.RUNNING
 
     controller.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Interval result tracking
+# ---------------------------------------------------------------------------
+
+
+def _make_captured_summary_factory():
+    """Returns (factory, captured_list). Factory captures WorkoutSummary and returns None."""
+    captured: list[object] = []
+
+    def factory(summary, parent):  # noqa: ARG001
+        captured.append(summary)
+        return None
+
+    return factory, captured
+
+
+def _make_controller_for_interval_tests(app):
+    """Controller with step_only.mrc loaded and started (3 × 300 s intervals)."""
+    screen = WorkoutScreen(settings=AppSettings())
+    factory, captured = _make_captured_summary_factory()
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(ftp=250),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+        summary_dialog_factory=factory,
+    )
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "step_only.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    return controller, screen, captured
+
+
+def test_summary_interval_results_count_matches_intervals_after_natural_finish():
+    app = _get_or_create_qapp()
+    controller, screen, captured = _make_controller_for_interval_tests(app)
+
+    # step_only.mrc: 3 intervals of 300 s each (total 900 s)
+    controller.process_tick(1.0)    # first tick initialises the engine clock
+    controller.process_tick(301.0)  # past end of interval 1 → interval 2 starts
+    controller.process_tick(601.0)  # past end of interval 2 → interval 3 starts
+    controller.process_tick(901.0)  # past end of interval 3 → workout FINISHED
+
+    assert captured, "Expected summary dialog to have been shown"
+    summary = captured[0]
+    assert len(summary.interval_results) == 3
+
+    controller.shutdown()
+
+
+def test_summary_interval_results_have_sequential_numbers():
+    app = _get_or_create_qapp()
+    controller, screen, captured = _make_controller_for_interval_tests(app)
+
+    controller.process_tick(1.0)
+    controller.process_tick(301.0)
+    controller.process_tick(601.0)
+    controller.process_tick(901.0)
+
+    numbers = [r.interval_number for r in captured[0].interval_results]
+    assert numbers == [1, 2, 3]
+
+    controller.shutdown()
+
+
+def test_summary_interval_result_avg_watts_reflects_received_power():
+    app = _get_or_create_qapp()
+    controller, screen, captured = _make_controller_for_interval_tests(app)
+
+    # Feed 200 W during interval 1, then stop before stale-power auto-pause fires.
+    controller.process_tick(1.0)
+    controller.receive_power_watts(200, now_monotonic=1.0)
+    controller.receive_power_watts(200, now_monotonic=2.0)
+    screen.end_button.click()
+    app.processEvents()
+
+    assert captured, "Expected summary to be shown after stop"
+    assert captured[0].interval_results[0].avg_watts == 200
+
+    controller.shutdown()
+
+
+def test_summary_interval_result_skipped_flag_set_when_skip_used():
+    app = _get_or_create_qapp()
+    controller, screen, captured = _make_controller_for_interval_tests(app)
+
+    controller.process_tick(1.0)
+    screen.skip_interval_requested.emit()  # skip interval 1
+    app.processEvents()
+    controller.process_tick(601.0)
+    controller.process_tick(901.0)
+
+    results = captured[0].interval_results
+    assert results[0].skipped is True
+    assert results[1].skipped is False
+
+    controller.shutdown()
+
+
+def test_summary_interval_result_captured_for_stopped_workout():
+    """When the user stops mid-workout, the in-progress interval is still captured."""
+    app = _get_or_create_qapp()
+    controller, screen, captured = _make_controller_for_interval_tests(app)
+
+    controller.process_tick(1.0)
+    controller.receive_power_watts(180, now_monotonic=1.0)
+    screen.end_button.click()  # stop mid interval 1
+    app.processEvents()
+
+    assert captured, "Expected summary to be shown after stop"
+    results = captured[0].interval_results
+    assert len(results) == 1
+    assert results[0].interval_number == 1
+    assert results[0].avg_watts == 180
+
+    controller.shutdown()

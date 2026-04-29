@@ -1,18 +1,39 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDialog,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+INTERVAL_PERCENT_COLOR_GREEN = QColor(76, 175, 80)
+INTERVAL_PERCENT_COLOR_YELLOW = QColor(255, 193, 7)
+INTERVAL_PERCENT_COLOR_RED = QColor(244, 67, 54)
+
+
+@dataclass(frozen=True)
+class IntervalResult:
+    """Per-interval performance snapshot captured when an interval completes."""
+
+    interval_number: int
+    duration_seconds: int
+    target_watts: int | None
+    target_percent_ftp: float | None
+    avg_watts: int | None
+    avg_hr: int | None
+    skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -24,6 +45,7 @@ class WorkoutSummary:
     normalized_power: int | None
     tss: float | None
     avg_hr: int | None
+    interval_results: tuple[IntervalResult, ...] = ()
 
 
 def compute_tss(
@@ -69,6 +91,62 @@ def _format_tss(tss: float | None) -> str:
 
 def _format_hr(hr: int | None) -> str:
     return f"{hr} bpm" if hr is not None else "--"
+
+
+def _format_duration(seconds: int) -> str:
+    m, s = divmod(seconds, 60)
+    return f"{m}:{s:02d}"
+
+
+def _interval_percent_color(pct: int) -> QColor | None:
+    if pct >= 95:
+        return INTERVAL_PERCENT_COLOR_GREEN
+    if pct >= 85:
+        return INTERVAL_PERCENT_COLOR_YELLOW
+    return INTERVAL_PERCENT_COLOR_RED
+
+
+def _build_interval_table(results: tuple[IntervalResult, ...]) -> QTableWidget:
+    headers = ["#", "Duration", "Target (W)", "Actual Avg (W)", "% of Target", "Avg HR"]
+    table = QTableWidget(len(results), len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+    for row, result in enumerate(results):
+        number_text = f"{result.interval_number} (Skipped)" if result.skipped else str(result.interval_number)
+        table.setItem(row, 0, QTableWidgetItem(number_text))
+        table.setItem(row, 1, QTableWidgetItem(_format_duration(result.duration_seconds)))
+
+        if result.target_watts is None:
+            table.setItem(row, 2, QTableWidgetItem("-"))
+            pct_item = QTableWidgetItem("-")
+            table.setItem(row, 4, pct_item)
+        else:
+            table.setItem(row, 2, QTableWidgetItem(str(result.target_watts)))
+            if result.avg_watts is not None and result.target_watts > 0:
+                pct = round(result.avg_watts / result.target_watts * 100)
+                pct_item = QTableWidgetItem(f"{pct}%")
+                color = _interval_percent_color(pct)
+                pct_item.setBackground(color)
+            else:
+                pct_item = QTableWidgetItem("-")
+            table.setItem(row, 4, pct_item)
+
+        avg_w_text = str(result.avg_watts) if result.avg_watts is not None else "-"
+        table.setItem(row, 3, QTableWidgetItem(avg_w_text))
+
+        avg_hr_text = str(result.avg_hr) if result.avg_hr is not None else "-"
+        table.setItem(row, 5, QTableWidgetItem(avg_hr_text))
+
+        for col in range(table.columnCount()):
+            item = table.item(row, col)
+            if item is not None:
+                item.setTextAlignment(Qt.AlignCenter)
+
+    return table
 
 
 def _sans_font(base: QFont, *, bold: bool = False, size_delta: int = 0) -> QFont:
@@ -140,6 +218,20 @@ class WorkoutSummaryDialog(QDialog):
             grid.addWidget(tile, i // 3, i % 3)
 
         root.addLayout(grid)
+
+        # Interval breakdown table (only shown when per-interval data is available)
+        if summary.interval_results:
+            breakdown_label = QLabel("Interval Breakdown", self)
+            breakdown_label.setAlignment(Qt.AlignCenter)
+            breakdown_label.setFont(_sans_font(breakdown_label.font(), bold=True))
+            root.addWidget(breakdown_label)
+
+            table = _build_interval_table(summary.interval_results)
+            scroll = QScrollArea(self)
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(table)
+            scroll.setMaximumHeight(220)
+            root.addWidget(scroll)
 
         # Action buttons
         finish_btn = QPushButton("Finish", self)

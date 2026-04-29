@@ -64,6 +64,9 @@ def get_config_dir() -> Path:
         if appdata:
             return Path(appdata) / APP_NAME_WINDOWS
         return _home_dir() / "AppData" / "Roaming" / APP_NAME_WINDOWS
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        return Path(xdg_config) / APP_NAME_UNIX
     return _home_dir() / ".config" / APP_NAME_UNIX
 
 
@@ -72,6 +75,9 @@ def get_data_dir() -> Path:
     if system_name == "windows":
         # Windows spec currently defines %APPDATA% as the storage root.
         return get_config_dir()
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    if xdg_data:
+        return Path(xdg_data) / APP_NAME_UNIX
     return _home_dir() / ".local" / "share" / APP_NAME_UNIX
 
 

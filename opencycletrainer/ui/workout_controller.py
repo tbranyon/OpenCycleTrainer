@@ -37,7 +37,7 @@ from .recorder_integration import RecorderIntegration, SensorSnapshot
 from .tile_computation import TileComputation
 from .trainer_connection import TrainerConnection
 from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
-from .workout_summary_dialog import WorkoutSummary, WorkoutSummaryDialog, compute_tss
+from .workout_summary_dialog import IntervalResult, WorkoutSummary, WorkoutSummaryDialog, compute_tss
 
 
 _POWER_STALE_PAUSE_SECONDS = 3.0
@@ -99,6 +99,8 @@ class WorkoutSessionController(QObject):
         self._cadence_hist = CadenceHistory()
         self._interval_stats = IntervalStats()
         self._active_interval_index: int | None = None
+        self._interval_results: list[IntervalResult] = []
+        self._current_interval_is_skipped: bool = False
         self._last_power_watts: int | None = None
         self._last_bike_power_watts: int | None = None
         self._last_hr_bpm: int | None = None
@@ -318,6 +320,8 @@ class WorkoutSessionController(QObject):
         self._power_history.reset()
         self._interval_stats.reset_workout()
         self._active_interval_index = None
+        self._interval_results = []
+        self._current_interval_is_skipped = False
         self._last_power_watts = None
         self._last_bike_power_watts = None
         self._last_hr_bpm = None
@@ -431,6 +435,7 @@ class WorkoutSessionController(QObject):
     def _skip_interval(self) -> None:
         elapsed_before = self._last_snapshot.elapsed_seconds if self._last_snapshot else 0.0
         mono_now = float(self._monotonic_clock())
+        self._current_interval_is_skipped = True
         snapshot = self._engine.skip_interval()
         elapsed_after = snapshot.elapsed_seconds
         if elapsed_after > elapsed_before and self._chart_history.chart_start_monotonic is not None:
@@ -492,6 +497,11 @@ class WorkoutSessionController(QObject):
 
         current_index = snapshot.current_interval_index
         if current_index != self._active_interval_index:
+            if self._active_interval_index is not None:
+                self._capture_interval_result(
+                    self._active_interval_index, skipped=self._current_interval_is_skipped
+                )
+            self._current_interval_is_skipped = False
             self._active_interval_index = current_index
             self._reset_interval_accumulators()
             self._mode_state.reset_jog()
@@ -566,6 +576,11 @@ class WorkoutSessionController(QObject):
 
     def _show_workout_summary(self, recorder_summary: object = None) -> None:
         """Build a WorkoutSummary from recorder-derived metrics and display the modal."""
+        # Capture the in-progress interval for workouts stopped before natural completion.
+        if self._active_interval_index is not None:
+            self._capture_interval_result(self._active_interval_index, skipped=False)
+            self._active_interval_index = None
+
         elapsed = self._last_snapshot.elapsed_seconds if self._last_snapshot else 0.0
         ftp = max(1, int(self._settings.ftp))
 
@@ -585,6 +600,7 @@ class WorkoutSessionController(QObject):
             normalized_power=np_watts,
             tss=tss,
             avg_hr=avg_hr,
+            interval_results=tuple(self._interval_results),
         )
         dialog = self._summary_dialog_factory(summary, self._screen)
         if dialog is not None:
@@ -731,6 +747,27 @@ class WorkoutSessionController(QObject):
         bike_watts: int | None,
     ) -> None:
         self._opentrueup_state.feed(now, trainer_watts=trainer_watts, bike_watts=bike_watts)
+
+    def _capture_interval_result(self, index: int, *, skipped: bool) -> None:
+        if self._workout is None or index < 0 or index >= len(self._workout.intervals):
+            return
+        interval = self._workout.intervals[index]
+        if interval.free_ride:
+            target_watts = None
+            target_percent_ftp = None
+        else:
+            target_watts = (interval.start_target_watts + interval.end_target_watts) // 2
+            target_percent_ftp = (interval.start_percent_ftp + interval.end_percent_ftp) / 2.0
+        duration = interval.duration_seconds + self._interval_extra_seconds.get(index, 0)
+        self._interval_results.append(IntervalResult(
+            interval_number=index + 1,
+            duration_seconds=duration,
+            target_watts=target_watts,
+            target_percent_ftp=target_percent_ftp,
+            avg_watts=self._interval_stats.interval_avg_watts(),
+            avg_hr=self._interval_stats.interval_avg_hr(),
+            skipped=skipped,
+        ))
 
     def _reset_interval_accumulators(self) -> None:
         self._interval_stats.reset_interval()
