@@ -288,3 +288,90 @@ def test_set_free_ride_mode_false_disables_editing():
 
     screen.set_free_ride_mode(False)
     assert screen.target_power_tile.editing_enabled is False
+
+
+def test_control_buttons_initial_state_shows_only_start():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    assert not screen.start_button.isHidden()
+    assert screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert screen.end_button.isHidden()
+
+
+def test_control_buttons_idle_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("idle")
+
+    assert not screen.start_button.isHidden()
+    assert screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert screen.end_button.isHidden()
+
+
+def test_control_buttons_ready_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("ready")
+
+    assert not screen.start_button.isHidden()
+    assert screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert screen.end_button.isHidden()
+
+
+def test_control_buttons_running_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("running")
+
+    assert screen.start_button.isHidden()
+    assert not screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert not screen.end_button.isHidden()
+
+
+def test_control_buttons_ramp_in_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("ramp_in")
+
+    assert screen.start_button.isHidden()
+    assert not screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert not screen.end_button.isHidden()
+
+
+def test_control_buttons_paused_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("paused")
+
+    assert screen.start_button.isHidden()
+    assert screen.pause_button.isHidden()
+    assert not screen.resume_button.isHidden()
+    assert not screen.end_button.isHidden()
+
+
+def test_control_buttons_stopped_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("stopped")
+
+    assert not screen.start_button.isHidden()
+    assert screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert screen.end_button.isHidden()
+
+
+def test_control_buttons_finished_state():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_session_state("finished")
+
+    assert not screen.start_button.isHidden()
+    assert screen.pause_button.isHidden()
+    assert screen.resume_button.isHidden()
+    assert screen.end_button.isHidden()

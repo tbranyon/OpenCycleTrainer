@@ -32,13 +32,20 @@ from opencycletrainer.devices.decoders.ftms import (
     decode_ftms_supported_power_range,
     decode_resistance_level_range,
 )
+from opencycletrainer.devices.decoders.cps import (
+    CPSCapabilities,
+    decode_cps_features,
+    decode_cps_sensor_location,
+)
 from opencycletrainer.devices.decoders.hrs import (
     HRSCapabilities,
     decode_hrs_body_sensor_location,
 )
 from opencycletrainer.devices.device_manager import DeviceManager
 from opencycletrainer.devices.types import (
+    CPS_FEATURE_CHARACTERISTIC_UUID,
     CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+    CPS_SENSOR_LOCATION_CHARACTERISTIC_UUID,
     CSC_MEASUREMENT_CHARACTERISTIC_UUID,
     DeviceInfo,
     DeviceType,
@@ -73,6 +80,7 @@ class DevicesScreen(QWidget):
     _reading_received = Signal(str, str)  # (device_id, reading_text)
     _capabilities_ready = Signal(str, object)  # (device_name, FTMSCapabilities)
     _hrs_capabilities_ready = Signal(str, object)  # (device_name, HRSCapabilities)
+    _cps_capabilities_ready = Signal(str, object)  # (device_name, CPSCapabilities)
     _device_connection_changed = Signal(str, bool)  # (device_id, connected) from BLE thread
 
     def __init__(
@@ -99,6 +107,7 @@ class DevicesScreen(QWidget):
         self._reading_received.connect(self._on_reading_received)
         self._capabilities_ready.connect(self._show_ftms_capabilities_dialog)
         self._hrs_capabilities_ready.connect(self._show_hrs_capabilities_dialog)
+        self._cps_capabilities_ready.connect(self._show_cps_capabilities_dialog)
         self._device_connection_changed.connect(self._on_device_connection_changed)
         if isinstance(self._backend, BleakDeviceBackend):
             self._backend.device_connection_changed_callback = self._on_device_connection_changed_background
@@ -470,6 +479,12 @@ class DevicesScreen(QWidget):
                 args=(device_id, device.name),
                 daemon=True,
             ).start()
+        elif device.device_type is DeviceType.POWER_METER:
+            threading.Thread(
+                target=self._fetch_and_show_cps_capabilities,
+                args=(device_id, device.name),
+                daemon=True,
+            ).start()
 
     def _fetch_and_show_capabilities(self, device_id: str, device_name: str) -> None:
         """Background thread: reads FTMS capability characteristics and emits result."""
@@ -528,6 +543,34 @@ class DevicesScreen(QWidget):
     def _show_hrs_capabilities_dialog(self, device_name: str, capabilities: object) -> None:
         from opencycletrainer.ui.hrs_capabilities_dialog import HRSCapabilitiesDialog
         dialog = HRSCapabilitiesDialog(device_name, capabilities, parent=self)  # type: ignore[arg-type]
+        dialog.exec()
+        self.status_label.setText(f"Capabilities displayed for {device_name}.")
+
+    def _fetch_and_show_cps_capabilities(self, device_id: str, device_name: str) -> None:
+        """Background thread: reads CPS capability characteristics and emits result."""
+        features = None
+        sensor_location = None
+        try:
+            data = self._backend.read_gatt_characteristic(
+                device_id, CPS_FEATURE_CHARACTERISTIC_UUID
+            ).result(timeout=5.0)
+            features = decode_cps_features(data)
+        except Exception:
+            pass
+        try:
+            data = self._backend.read_gatt_characteristic(
+                device_id, CPS_SENSOR_LOCATION_CHARACTERISTIC_UUID
+            ).result(timeout=5.0)
+            sensor_location = decode_cps_sensor_location(data)
+        except Exception:
+            pass
+        capabilities = CPSCapabilities(features=features, sensor_location=sensor_location)
+        self._cps_capabilities_ready.emit(device_name, capabilities)
+
+    @Slot(str, object)
+    def _show_cps_capabilities_dialog(self, device_name: str, capabilities: object) -> None:
+        from opencycletrainer.ui.cps_capabilities_dialog import CPSCapabilitiesDialog
+        dialog = CPSCapabilitiesDialog(device_name, capabilities, parent=self)  # type: ignore[arg-type]
         dialog.exec()
         self.status_label.setText(f"Capabilities displayed for {device_name}.")
 

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QPushButton, QTableWidget
 
 from opencycletrainer.core.sensors import SensorSample
 from opencycletrainer.devices.device_manager import completed_future
+from opencycletrainer.devices.decoders.cps import CPSCapabilities
 from opencycletrainer.devices.decoders.ftms import FTMSCapabilities
 from opencycletrainer.devices.decoders.hrs import HRSCapabilities
 from opencycletrainer.devices.mock_backend import DeviceType, MockDevice, MockDeviceBackend
@@ -346,7 +347,7 @@ def test_double_click_disconnected_trainer_does_not_emit_signal():
     assert not received, "Expected no signal for disconnected trainer"
 
 
-def test_double_click_non_trainer_device_does_not_emit_signal():
+def test_double_click_non_trainer_device_does_not_emit_ftms_signal():
     app = _get_or_create_qapp()
     backend = _CapabilitiesMockBackend(devices=[
         MockDevice(
@@ -361,6 +362,8 @@ def test_double_click_non_trainer_device_does_not_emit_signal():
     ])
     screen = DevicesScreen(backend=backend)
     received = _detach_dialog_slot(screen)
+    # Also detach the CPS slot so the CPS background thread doesn't open a blocking dialog.
+    _detach_cps_dialog_slot(screen)
 
     screen.paired_table.cellDoubleClicked.emit(0, 0)
 
@@ -368,7 +371,7 @@ def test_double_click_non_trainer_device_does_not_emit_signal():
     time.sleep(0.05)
     app.processEvents()
 
-    assert not received, "Expected no signal for non-trainer device"
+    assert not received, "Expected no FTMS signal for a power meter device"
 
 
 def _detach_hrs_dialog_slot(screen: DevicesScreen) -> list[tuple[str, object]]:
@@ -426,3 +429,61 @@ def test_double_click_disconnected_hrm_does_not_emit_hrs_signal():
     app.processEvents()
 
     assert not received, "Expected no signal for disconnected HRM"
+
+
+def _detach_cps_dialog_slot(screen: DevicesScreen) -> list[tuple[str, object]]:
+    """Disconnect the CPS dialog slot and return a list that will collect signal emissions."""
+    received: list[tuple[str, object]] = []
+    screen._cps_capabilities_ready.disconnect(screen._show_cps_capabilities_dialog)
+    screen._cps_capabilities_ready.connect(lambda name, caps: received.append((name, caps)))
+    return received
+
+
+def test_double_click_connected_power_meter_emits_cps_capabilities_ready_signal():
+    app = _get_or_create_qapp()
+    backend = _CapabilitiesMockBackend(devices=[
+        MockDevice(
+            device_id="pm-1",
+            name="Garmin Rally",
+            device_type=DeviceType.POWER_METER,
+            paired=True,
+            connected=True,
+            battery_percent=80,
+            supports_calibration=True,
+        ),
+    ])
+    screen = DevicesScreen(backend=backend)
+    received = _detach_cps_dialog_slot(screen)
+
+    screen.paired_table.cellDoubleClicked.emit(0, 0)
+
+    _wait_for_signal(app, received)
+
+    assert received, "Expected _cps_capabilities_ready signal to be emitted"
+    name, caps = received[0]
+    assert name == "Garmin Rally"
+    assert isinstance(caps, CPSCapabilities)
+
+
+def test_double_click_disconnected_power_meter_does_not_emit_cps_signal():
+    app = _get_or_create_qapp()
+    backend = _CapabilitiesMockBackend(devices=[
+        MockDevice(
+            device_id="pm-disc",
+            name="Disconnected PM",
+            device_type=DeviceType.POWER_METER,
+            paired=True,
+            connected=False,
+            battery_percent=None,
+        ),
+    ])
+    screen = DevicesScreen(backend=backend)
+    received = _detach_cps_dialog_slot(screen)
+
+    screen.paired_table.cellDoubleClicked.emit(0, 0)
+
+    app.processEvents()
+    time.sleep(0.05)
+    app.processEvents()
+
+    assert not received, "Expected no signal for disconnected power meter"

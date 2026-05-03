@@ -172,6 +172,7 @@ class MetricTile(QFrame):
             self._edit_input.deleteLater()
             self._edit_input = None
         self.value_label.show()
+        self.setFocus()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -322,10 +323,10 @@ class WorkoutScreen(QWidget):
         can_resume = state_key == "paused"
         can_stop = state_key in {"running", "ramp_in", "paused"}
 
-        self.start_button.setEnabled(can_start)
-        self.pause_button.setEnabled(can_pause)
-        self.resume_button.setEnabled(can_resume)
-        self.end_button.setEnabled(can_stop)
+        self.start_button.setVisible(can_start)
+        self.pause_button.setVisible(can_pause)
+        self.resume_button.setVisible(can_resume)
+        self.end_button.setVisible(can_stop)
 
     def set_mode_state(self, mode: str) -> None:
         if mode not in MODE_OPTIONS:
@@ -457,6 +458,7 @@ class WorkoutScreen(QWidget):
         controls_row.addWidget(self.end_button)
         controls_row.addStretch(1)
         root_layout.addLayout(controls_row)
+        self.set_session_state("idle")
 
     def _wire_button_state_tracking(self) -> None:
         self.pause_button.clicked.connect(lambda: self._set_paused(True))

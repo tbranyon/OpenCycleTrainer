@@ -123,6 +123,51 @@ def test_hotkey_space_toggles_pause_then_resume():
     assert pause_resume_count == 2
 
 
+def test_jog_hotkeys_work_after_inline_erg_editor_committed():
+    app = _get_or_create_qapp()
+    screen = _show_screen()
+    screen.set_free_ride_mode(True)
+    app.processEvents()
+
+    tile = screen.target_power_tile
+    tile._open_edit()
+    app.processEvents()
+
+    assert isinstance(QApplication.focusWidget(), QLineEdit)
+
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key_Return)
+    app.processEvents()
+
+    jog_values: list[int] = []
+    screen.jog_requested.connect(lambda delta: jog_values.append(int(delta)))
+    QTest.keyClick(screen, Qt.Key_Up)
+    app.processEvents()
+
+    assert jog_values == [1]
+
+
+def test_toggle_mode_hotkey_works_after_inline_erg_editor_cancelled():
+    app = _get_or_create_qapp()
+    screen = _show_screen()
+    screen.set_free_ride_mode(True)
+    screen.set_mode_state("ERG")
+    app.processEvents()
+
+    tile = screen.target_power_tile
+    tile._open_edit()
+    app.processEvents()
+
+    assert isinstance(QApplication.focusWidget(), QLineEdit)
+
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key_Escape)
+    app.processEvents()
+
+    QTest.keyClick(screen, Qt.Key_T)
+    app.processEvents()
+
+    assert screen.mode_selector.currentText() == "Resistance"
+
+
 def test_hotkeys_do_not_trigger_when_text_input_has_focus():
     app = _get_or_create_qapp()
     screen = _show_screen()
