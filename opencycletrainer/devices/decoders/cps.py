@@ -184,15 +184,14 @@ class CyclingPowerDecoder:
         if power_watts < 0 or power_watts > _MAX_POWER_WATTS:
             _logger.warning("CPS power out of expected range (%d W)", power_watts)
         cadence_rpm: float | None = None
+        pedal_balance_left_pct: float | None = None
 
-        index = _skip_optional_field(
-            payload,
-            index,
-            flags,
-            _PEDAL_POWER_BALANCE_PRESENT,
-            1,
-            "pedal power balance",
-        )
+        if flags & _PEDAL_POWER_BALANCE_PRESENT:
+            if len(payload) < index + 1:
+                raise ValueError("CPS pedal power balance payload too short")
+            # BLE CPS spec: value in 0.5% units, represents left-side contribution
+            pedal_balance_left_pct = payload[index] * 0.5
+            index += 1
         index = _skip_optional_field(
             payload,
             index,
@@ -258,16 +257,19 @@ class CyclingPowerDecoder:
             2,
             "bottom dead spot angle",
         )
-        index = _skip_optional_field(
-            payload,
-            index,
-            flags,
-            _ACCUMULATED_ENERGY_PRESENT,
-            2,
-            "accumulated energy",
-        )
+        accumulated_energy_kj: float | None = None
+        if flags & _ACCUMULATED_ENERGY_PRESENT:
+            if len(payload) < index + 2:
+                raise ValueError("CPS accumulated energy payload too short")
+            accumulated_energy_kj = float(int.from_bytes(payload[index:index + 2], "little"))
+            index += 2
 
-        return DecodedMetrics(power_watts=power_watts, cadence_rpm=cadence_rpm)
+        return DecodedMetrics(
+            power_watts=power_watts,
+            cadence_rpm=cadence_rpm,
+            accumulated_energy_kj=accumulated_energy_kj,
+            pedal_balance_left_pct=pedal_balance_left_pct,
+        )
 
     def _calculate_cadence(self, crank_revolutions: int, crank_event_time: int) -> float | None:
         previous_revs = self._state.last_crank_revolutions

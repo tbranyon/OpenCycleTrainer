@@ -9,3 +9,5 @@ class DecodedMetrics:
     cadence_rpm: float | None = None
     heart_rate_bpm: int | None = None
     speed_mps: float | None = None
+    accumulated_energy_kj: float | None = None
+    pedal_balance_left_pct: float | None = None

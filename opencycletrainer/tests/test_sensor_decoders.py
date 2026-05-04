@@ -221,5 +221,94 @@ def test_ftms_cadence_out_of_range_is_rejected():
 
     sample = decoder.decode_notification(FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_CADENCE_OUT_OF_RANGE)
 
+
+# CPS: bit 11 (accumulated energy) set; 150W, 42 kJ accumulated.
+# flags=0x0800 LE, power=150 LE, accumulated_energy=42 LE
+_CPS_WITH_ACCUMULATED_ENERGY = bytes.fromhex("000896002a00")
+
+# FTMS: INSTANTANEOUS_POWER (bit 6) | EXPENDED_ENERGY (bit 8); 200W, 100 kcal total.
+# flags=0x0140 LE, speed=1000 LE, power=200 LE, total_energy=100 LE, per_hour=0 LE, per_min=0
+_FTMS_WITH_EXPENDED_ENERGY = bytes.fromhex("4001e803c8006400000000")
+
+
+def test_cps_accumulated_energy_decoded_when_present():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_WITH_ACCUMULATED_ENERGY)
+    assert sample is not None
+    assert sample.power_watts == 150
+    assert sample.accumulated_energy_kj == pytest.approx(42.0)
+
+
+def test_cps_accumulated_energy_is_none_when_flag_not_set():
+    decoder = SensorStreamDecoder()
+    # CPS_SAMPLE_1 does not have accumulated energy flag set
+    sample = decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, CPS_SAMPLE_1)
+    assert sample is not None
+    assert sample.accumulated_energy_kj is None
+
+
+def test_ftms_expended_energy_decoded_in_kj_when_present():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_WITH_EXPENDED_ENERGY)
+    assert sample is not None
+    assert sample.power_watts == 200
+    # 100 kcal * 4.184 kJ/kcal
+    assert sample.accumulated_energy_kj == pytest.approx(100 * 4.184, rel=1e-4)
+
+
+def test_ftms_expended_energy_is_none_when_flag_not_set():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, FTMS_SAMPLE_SPEED_ONLY)
+    assert sample is not None
+    assert sample.accumulated_energy_kj is None
+
     assert sample is not None
     assert sample.cadence_rpm is None
+
+
+# CPS: flags=0x0001 (pedal balance present), power=200W, balance raw=96 → 48.0% left
+_CPS_WITH_PEDAL_BALANCE = bytes.fromhex("0100c80060")
+
+# CPS: flags=0x0001, power=150W, balance raw=104 → 52.0% left
+_CPS_WITH_PEDAL_BALANCE_52_LEFT = bytes.fromhex("0100960068")
+
+
+def test_cps_pedal_balance_decoded_when_present():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_WITH_PEDAL_BALANCE)
+    assert sample is not None
+    assert sample.power_watts == 200
+    assert sample.pedal_balance_left_pct == pytest.approx(48.0)
+
+
+def test_cps_pedal_balance_decoded_correctly_52_left():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_WITH_PEDAL_BALANCE_52_LEFT)
+    assert sample is not None
+    assert sample.power_watts == 150
+    assert sample.pedal_balance_left_pct == pytest.approx(52.0)
+
+
+def test_cps_pedal_balance_is_none_when_flag_not_set():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(CPS_MEASUREMENT_CHARACTERISTIC_UUID, CPS_SAMPLE_1)
+    assert sample is not None
+    assert sample.pedal_balance_left_pct is None
+
+
+def test_cps_pedal_balance_present_alongside_crank_data():
+    """Balance field is decoded without corrupting the crank offset used for cadence."""
+    decoder = SensorStreamDecoder()
+    sample_1 = decoder.decode_notification(
+        CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+        _CPS_WITH_PEDAL_BALANCE_AND_TORQUE_1,
+    )
+    sample_2 = decoder.decode_notification(
+        CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+        _CPS_WITH_PEDAL_BALANCE_AND_TORQUE_2,
+    )
+    assert sample_1 is not None
+    assert sample_1.pedal_balance_left_pct == pytest.approx(32.0)
+    assert sample_2 is not None
+    assert sample_2.pedal_balance_left_pct == pytest.approx(32.0)
+    assert sample_2.cadence_rpm == pytest.approx(120.0)

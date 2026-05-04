@@ -16,6 +16,7 @@ from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.cadence_history import CadenceHistory
+from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.power_history import PowerHistory
 from opencycletrainer.core.recorder import WorkoutRecorder
@@ -96,6 +97,8 @@ class WorkoutSessionController(QObject):
         self._last_snapshot: WorkoutEngineSnapshot | None = None
 
         self._power_history = PowerHistory()
+        self._pm_energy_tracker = ExternalEnergyTracker()
+        self._ftms_energy_tracker = ExternalEnergyTracker()
         self._cadence_hist = CadenceHistory()
         self._interval_stats = IntervalStats()
         self._active_interval_index: int | None = None
@@ -105,6 +108,7 @@ class WorkoutSessionController(QObject):
         self._last_bike_power_watts: int | None = None
         self._last_hr_bpm: int | None = None
         self._last_speed_mps: float | None = None
+        self._last_pedal_balance_left_pct: float | None = None
         self._last_power_received_at: float | None = None
 
         self._pause_state = PauseState(self._screen, self._resume_workout)
@@ -139,6 +143,9 @@ class WorkoutSessionController(QObject):
             self._interval_stats,
             self._monotonic_clock,
             lambda: self._last_hr_bpm,
+            self._pm_energy_tracker,
+            self._ftms_energy_tracker,
+            balance_source=lambda: self._last_pedal_balance_left_pct,
         )
 
         self._timer = QTimer(self)
@@ -247,6 +254,7 @@ class WorkoutSessionController(QObject):
         self._screen.load_workout_requested.connect(self._request_load_workout_from_file)
         self._screen.free_ride_requested.connect(self._start_free_ride)
         self._screen.erg_target_entered.connect(self._on_erg_target_entered)
+        self._screen.kj_source_selected.connect(self._on_kj_source_selected)
 
     def _set_no_workout_state(self) -> None:
         self._workout = None
@@ -325,6 +333,7 @@ class WorkoutSessionController(QObject):
         self._last_power_watts = None
         self._last_bike_power_watts = None
         self._last_hr_bpm = None
+        self._last_pedal_balance_left_pct = None
         self._last_power_received_at = None
         self._chart_history.reset()
         self._pause_state.reset()
@@ -352,6 +361,7 @@ class WorkoutSessionController(QObject):
         self._last_power_watts = None
         self._last_bike_power_watts = None
         self._last_hr_bpm = None
+        self._last_pedal_balance_left_pct = None
         self._last_power_received_at = None
         self._chart_history.reset()
         self._pause_state.reset()
@@ -714,6 +724,23 @@ class WorkoutSessionController(QObject):
         """Feed a live speed reading (m/s) for inclusion in recorder samples."""
         self._last_speed_mps = mps
 
+    def receive_pedal_balance(self, left_pct: float | None) -> None:
+        """Feed a live left-pedal power balance reading (%) from a CPS power meter."""
+        self._last_pedal_balance_left_pct = left_pct
+
+    def receive_bike_energy_kj(self, kj: float | None) -> None:
+        """Feed a cumulative energy reading (kJ) from a CPS power meter."""
+        if kj is not None:
+            self._pm_energy_tracker.update(float(kj))
+
+    def receive_trainer_energy_kj(self, kj: float | None) -> None:
+        """Feed a cumulative energy reading (kJ) from an FTMS trainer."""
+        if kj is not None:
+            self._ftms_energy_tracker.update(float(kj))
+
+    def _on_kj_source_selected(self, source_key: str) -> None:
+        self._tile_computation.kj_workout_source = source_key
+
     def _dispatch_power_sample(
         self,
         *,
@@ -773,6 +800,7 @@ class WorkoutSessionController(QObject):
         self._interval_stats.reset_interval()
 
     def _update_tiles(self, snapshot: WorkoutEngineSnapshot) -> None:
+        self._screen.update_kj_tile_sources(self._tile_computation.available_kj_sources())
         self._tile_computation.update_screen(self._screen, snapshot, self._settings)
 
     def _compute_tile_value(self, key: str, snapshot: WorkoutEngineSnapshot) -> str:
@@ -785,10 +813,18 @@ class WorkoutSessionController(QObject):
         return self._cadence_hist.windowed_avg(now)
 
     def _on_chart_tick(self) -> None:
+        erg_target_watts: int | None = None
+        if (
+            self._mode_state.is_free_ride
+            and self._mode_state.active_control_mode(self._last_snapshot, self._workout) == "ERG"
+            and self._mode_state.free_ride_erg_target is not None
+        ):
+            erg_target_watts = self._mode_state.free_ride_erg_target + int(round(self._mode_state.erg_jog_watts))
         self._chart_history.on_tick(
             self._last_snapshot,
             self._workout,
             self._mode_state.is_free_ride,
+            erg_target_watts,
         )
 
     def _compute_normalized_power(self) -> int | None:

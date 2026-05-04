@@ -192,6 +192,57 @@ class MetricTile(QFrame):
         super().mouseReleaseEvent(event)
 
 
+_KJ_SOURCE_LABELS: dict[str, str] = {
+    "calculated": "Calculated",
+    "pm": "Power Meter",
+    "ftms": "FTMS",
+}
+
+
+class KJMetricTile(MetricTile):
+    """kJ tile with a compact source-selector combo box."""
+
+    kj_source_changed = Signal(str)  # emits source key: "calculated", "pm", "ftms"
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        key: str,
+        prominent: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(title=title, key=key, prominent=prominent, parent=parent)
+        self._source_combo = QComboBox(self)
+        self._source_combo.addItem(_KJ_SOURCE_LABELS["calculated"], "calculated")
+        combo_font = self._source_combo.font()
+        combo_font.setPointSize(max(7, combo_font.pointSize() - 2))
+        self._source_combo.setFont(combo_font)
+        self._source_combo.setMaximumHeight(22)
+        self._source_combo.currentIndexChanged.connect(self._on_source_changed)
+        self.layout().addWidget(self._source_combo)
+
+    def set_available_sources(self, source_keys: list[str]) -> None:
+        """Rebuild the combo with the given source keys, preserving current selection."""
+        current_key = self._source_combo.currentData()
+        self._source_combo.blockSignals(True)
+        self._source_combo.clear()
+        for key in source_keys:
+            self._source_combo.addItem(_KJ_SOURCE_LABELS.get(key, key), key)
+        idx = self._source_combo.findData(current_key)
+        self._source_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._source_combo.blockSignals(False)
+        # Notify if selection changed due to rebuild
+        new_key = self._source_combo.currentData()
+        if new_key != current_key:
+            self.kj_source_changed.emit(new_key or "calculated")
+
+    def _on_source_changed(self) -> None:
+        key = self._source_combo.currentData()
+        if key:
+            self.kj_source_changed.emit(key)
+
+
 class WorkoutScreen(QWidget):
     toggle_mode_requested = Signal(str)
     extend_interval_requested = Signal(int, bool)
@@ -203,6 +254,7 @@ class WorkoutScreen(QWidget):
     free_ride_requested = Signal()
     erg_target_entered = Signal(int)
     tile_order_changed = Signal(list)  # emits new list[str] of tile keys after drag reorder
+    kj_source_selected = Signal(str)  # emits source key when user changes kJ source combo
 
     def __init__(
         self,
@@ -518,8 +570,9 @@ class WorkoutScreen(QWidget):
         elapsed_seconds: float,
         power_series: list,
         hr_series: list,
+        erg_target_watts: int | None = None,
     ) -> None:
-        self.chart_widget.update_free_ride_charts(elapsed_seconds, power_series, hr_series)
+        self.chart_widget.update_free_ride_charts(elapsed_seconds, power_series, hr_series, erg_target_watts)
 
     def set_free_ride_mode(self, active: bool) -> None:
         """Enable or disable inline ERG target editing on the target power tile."""
@@ -586,6 +639,12 @@ class WorkoutScreen(QWidget):
         if tile is not None:
             tile.value_label.setText(text)
 
+    def update_kj_tile_sources(self, source_keys: list[str]) -> None:
+        """Update the available sources in the kJ tile's source combo."""
+        tile = self._tile_by_key.get("kj_work_completed")
+        if isinstance(tile, KJMetricTile):
+            tile.set_available_sources(source_keys)
+
     def _render_selected_tiles(self) -> None:
         self._tile_by_key = {}
         while self.tile_display_layout.count():
@@ -605,7 +664,11 @@ class WorkoutScreen(QWidget):
         for index, key in enumerate(self._selected_tiles):
             row = index // 4
             column = index % 4
-            tile = MetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
+            if key == "kj_work_completed":
+                tile: MetricTile = KJMetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
+                tile.kj_source_changed.connect(self.kj_source_selected)
+            else:
+                tile = MetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
             tile.drag_requested.connect(self._on_drag_started)
             self._tile_by_key[key] = tile
             self.tile_display_layout.addWidget(tile, row, column)

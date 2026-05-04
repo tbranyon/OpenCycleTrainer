@@ -93,7 +93,7 @@ class ChartHistory:
         """Record a completed pause (including ramp-in) so data timestamps are adjusted."""
         self._pause_events.append((end_mono, duration))
 
-    def on_tick(self, snapshot: Any, workout: Any, is_free_ride: bool) -> None:
+    def on_tick(self, snapshot: Any, workout: Any, is_free_ride: bool, erg_target_watts: int | None = None) -> None:
         """Recompute elapsed time and push updated series to the screen."""
         if self._chart_start_monotonic is None:
             return
@@ -134,6 +134,6 @@ class ChartHistory:
         )
 
         if is_free_ride:
-            self._screen.update_free_ride_charts(elapsed, power_series, hr_series)
+            self._screen.update_free_ride_charts(elapsed, power_series, hr_series, erg_target_watts)
         else:
             self._screen.update_charts(elapsed, interval_index, power_series, hr_series)

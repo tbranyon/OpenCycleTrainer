@@ -457,3 +457,91 @@ def test_rebuild_target_series_updates_interval_range():
     x_min_1, x_max_1 = widget._interval_plot.getViewBox().viewRange()[0]
     assert x_min_1 == pytest.approx(360.0 - _CONTEXT)
     assert x_max_1 == pytest.approx(960.0)
+
+
+# ── Free-ride ERG target line ─────────────────────────────────────────────────
+
+def test_free_ride_erg_target_line_hidden_initially():
+    """ERG target line is not visible after load_free_ride with no target."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_free_ride()
+
+    assert not widget._workout_erg_target.isVisible()
+
+
+def test_free_ride_erg_target_line_visible_when_set():
+    """ERG target line is visible and positioned at the given wattage."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_free_ride()
+
+    power = [(float(i), 150) for i in range(10)]
+    widget.update_free_ride_charts(10.0, power, [], erg_target_watts=200)
+
+    assert widget._workout_erg_target.isVisible()
+    assert widget._workout_erg_target.value() == pytest.approx(200.0)
+
+
+def test_free_ride_erg_target_line_hidden_when_none():
+    """ERG target line is hidden when erg_target_watts is None."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_free_ride()
+
+    widget.update_free_ride_charts(10.0, [], [], erg_target_watts=200)
+    assert widget._workout_erg_target.isVisible()
+
+    widget.update_free_ride_charts(10.0, [], [], erg_target_watts=None)
+    assert not widget._workout_erg_target.isVisible()
+
+
+def test_free_ride_erg_target_line_reset_on_clear():
+    """ERG target line is hidden after clear()."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_free_ride()
+    widget.update_free_ride_charts(10.0, [], [], erg_target_watts=150)
+    assert widget._workout_erg_target.isVisible()
+
+    widget.clear()
+    assert not widget._workout_erg_target.isVisible()
+
+
+def test_free_ride_erg_target_line_reset_on_load_free_ride():
+    """Calling load_free_ride() again hides the ERG target line."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_free_ride()
+    widget.update_free_ride_charts(10.0, [], [], erg_target_watts=250)
+    assert widget._workout_erg_target.isVisible()
+
+    widget.load_free_ride()
+    assert not widget._workout_erg_target.isVisible()
+
+
+# ── auto-range button ─────────────────────────────────────────────────────────
+
+def test_plot_autorange_button_hidden():
+    """The 'A' auto-range button must be permanently hidden on both plots.
+
+    Clicking it triggers PyQtGraph's auto-range which includes InfiniteLine
+    items (position cursor, FTP line) whose bounds are unbounded, causing the
+    view to scale to infinity.
+    """
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    assert widget._interval_plot.getPlotItem().buttonsHidden
+    assert widget._workout_plot.getPlotItem().buttonsHidden

@@ -44,6 +44,7 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     cadence_rpm: float | None = None
     power_watts: int | None = None
     heart_rate_bpm: int | None = None
+    accumulated_energy_kj: float | None = None
 
     if flags & _AVERAGE_SPEED_PRESENT:
         index += 2
@@ -74,8 +75,15 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     if flags & _AVERAGE_POWER_PRESENT:
         index += 2
 
+    _KCAL_TO_KJ = 4.184
     if flags & _EXPENDED_ENERGY_PRESENT:
+        if len(payload) < index + 5:
+            raise ValueError("FTMS expended energy payload too short")
+        total_energy_kcal = int.from_bytes(payload[index:index + 2], "little")
+        accumulated_energy_kj = float(total_energy_kcal) * _KCAL_TO_KJ
         index += 5
+    else:
+        accumulated_energy_kj = None
 
     if flags & _HEART_RATE_PRESENT:
         heart_rate_bpm = payload[index]
@@ -100,6 +108,7 @@ def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
         cadence_rpm=cadence_rpm,
         heart_rate_bpm=heart_rate_bpm,
         speed_mps=speed_mps,
+        accumulated_energy_kj=accumulated_energy_kj,
     )
 
 

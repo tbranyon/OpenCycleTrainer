@@ -121,6 +121,7 @@ class WorkoutChartWidget(QWidget):
         self._workout_pos     = _make_position_line()
         self._workout_ftp_line = _make_ftp_line()
         self._workout_ftp_text = _make_ftp_text()
+        self._workout_erg_target = _make_erg_target_line()
 
         self._skip_markers: list[tuple[pg.LinearRegionItem, pg.LinearRegionItem]] = []
 
@@ -133,6 +134,7 @@ class WorkoutChartWidget(QWidget):
         for item in (
             self._workout_target, self._workout_actual, self._workout_hr,
             self._workout_ftp_line, self._workout_ftp_text, self._workout_pos,
+            self._workout_erg_target,
         ):
             self._workout_plot.addItem(item)
 
@@ -335,6 +337,7 @@ class WorkoutChartWidget(QWidget):
             pos.setValue(0.0)
         for text in (self._interval_ftp_text, self._workout_ftp_text):
             text.setText("")
+        self._workout_erg_target.setVisible(False)
         self._clear_skip_markers()
 
     def set_interval_plot_visible(self, visible: bool) -> None:
@@ -385,6 +388,7 @@ class WorkoutChartWidget(QWidget):
             pos.setValue(0.0)
         for text in (self._interval_ftp_text, self._workout_ftp_text):
             text.setText("")
+        self._workout_erg_target.setVisible(False)
         self._clear_skip_markers()
         self._workout_plot.setXRange(0.0, float(self._free_ride_x_window_seconds), padding=0)
         _configure_y_axis(self._workout_plot, 400.0)
@@ -394,6 +398,7 @@ class WorkoutChartWidget(QWidget):
         elapsed_seconds: float,
         power_series: list[tuple[float, int]],
         hr_series: list[tuple[float, int]],
+        erg_target_watts: int | None = None,
     ) -> None:
         """Update live traces on the workout overview chart for free ride mode."""
         while elapsed_seconds >= self._free_ride_x_window_seconds:
@@ -416,6 +421,12 @@ class WorkoutChartWidget(QWidget):
 
         self._workout_actual.setData(pt, pw)
         self._workout_hr.setData(ht, hw)
+
+        if erg_target_watts is not None:
+            self._workout_erg_target.setValue(float(erg_target_watts))
+            self._workout_erg_target.setVisible(True)
+        else:
+            self._workout_erg_target.setVisible(False)
 
         if pt.size or hw.size:
             peaks = []
@@ -469,6 +480,7 @@ def _make_plot() -> pg.PlotWidget:
     plot.setMouseEnabled(x=False, y=False)
     plot.setMenuEnabled(False)
     plot.getViewBox().disableAutoRange()
+    plot.getPlotItem().hideButtons()
     return plot
 
 
@@ -501,6 +513,15 @@ def _make_ftp_line() -> pg.InfiniteLine:
         pos=0, angle=0, movable=False,
         pen=pg.mkPen(color=_FTP_LINE_PEN, width=1, style=Qt.PenStyle.DashLine),
     )
+
+
+def _make_erg_target_line() -> pg.InfiniteLine:
+    line = pg.InfiniteLine(
+        pos=0, angle=0, movable=False,
+        pen=pg.mkPen(color=_TARGET_PEN, width=2),
+    )
+    line.setVisible(False)
+    return line
 
 
 def _make_ftp_text() -> pg.TextItem:

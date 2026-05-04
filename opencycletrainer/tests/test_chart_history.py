@@ -73,12 +73,14 @@ class _FakeScreen:
         elapsed: float,
         power_series: list,
         hr_series: list,
+        erg_target_watts: int | None = None,
     ) -> None:
         self.free_ride_calls.append(
             {
                 "elapsed": elapsed,
                 "power_series": power_series,
                 "hr_series": hr_series,
+                "erg_target_watts": erg_target_watts,
             }
         )
 

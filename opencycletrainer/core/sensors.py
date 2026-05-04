@@ -42,6 +42,8 @@ class SensorSample:
     cadence_rpm: float | None = None
     heart_rate_bpm: int | None = None
     speed_mps: float | None = None
+    accumulated_energy_kj: float | None = None
+    pedal_balance_left_pct: float | None = None
 
 
 class SensorStreamDecoder:
@@ -79,4 +81,6 @@ class SensorStreamDecoder:
             cadence_rpm=metrics.cadence_rpm,
             heart_rate_bpm=metrics.heart_rate_bpm,
             speed_mps=metrics.speed_mps,
+            accumulated_energy_kj=metrics.accumulated_energy_kj,
+            pedal_balance_left_pct=metrics.pedal_balance_left_pct,
         )

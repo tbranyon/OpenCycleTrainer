@@ -27,6 +27,7 @@ from opencycletrainer.devices.device_manager import DeviceManager
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
 from .theme import apply_application_theme
+from .workout_builder_screen import WorkoutBuilderScreen
 from .workout_controller import WorkoutSessionController
 from .workout_library_screen import WorkoutLibraryScreen
 from .workout_screen import WorkoutScreen
@@ -83,8 +84,14 @@ class MainWindow(QMainWindow):
             ftp_getter=lambda: self._settings.ftp,
             parent=self,
         )
+        self.workout_builder_screen = WorkoutBuilderScreen(
+            library=self._workout_library,
+            ftp_getter=lambda: self._settings.ftp,
+            parent=self,
+        )
         self.tabs.addTab(self.workout_screen, "Workout")
         self.tabs.addTab(self.workout_library_screen, "Library")
+        self.tabs.addTab(self.workout_builder_screen, "Builder")
         self.tabs.addTab(self.devices_screen, "Devices")
         self.tabs.addTab(self.settings_screen, "Settings")
         self.setCentralWidget(self.tabs)
@@ -93,6 +100,8 @@ class MainWindow(QMainWindow):
         self._workout_tab_index = self.tabs.indexOf(self.workout_screen)
         self.workout_screen.load_from_library_requested.connect(self._navigate_to_library)
         self.workout_library_screen.workout_selected.connect(self._on_library_workout_selected)
+        self.workout_builder_screen.workout_saved.connect(self.workout_library_screen.refresh)
+        self.workout_builder_screen.workout_load_requested.connect(self._on_library_workout_selected)
         QApplication.instance().styleHints().colorSchemeChanged.connect(
             self._on_system_color_scheme_changed
         )
@@ -110,11 +119,18 @@ class MainWindow(QMainWindow):
     def _on_sensor_sample(self, sample: object) -> None:
         if not isinstance(sample, SensorSample):
             return
-        if sample.power_watts is not None:
-            if sample.source_characteristic_uuid == CPS_MEASUREMENT_CHARACTERISTIC_UUID:
+        if sample.source_characteristic_uuid == CPS_MEASUREMENT_CHARACTERISTIC_UUID:
+            if sample.power_watts is not None:
                 self.workout_controller.receive_bike_power_watts(sample.power_watts)
-            else:
+            if sample.accumulated_energy_kj is not None:
+                self.workout_controller.receive_bike_energy_kj(sample.accumulated_energy_kj)
+            if sample.pedal_balance_left_pct is not None:
+                self.workout_controller.receive_pedal_balance(sample.pedal_balance_left_pct)
+        else:
+            if sample.power_watts is not None:
                 self.workout_controller.receive_power_watts(sample.power_watts)
+            if sample.accumulated_energy_kj is not None:
+                self.workout_controller.receive_trainer_energy_kj(sample.accumulated_energy_kj)
         if sample.heart_rate_bpm is not None:
             self.workout_controller.receive_hr_bpm(sample.heart_rate_bpm)
         if sample.cadence_rpm is not None:

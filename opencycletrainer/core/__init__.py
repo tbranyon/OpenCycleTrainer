@@ -17,6 +17,7 @@ from .control import (
     HybridModeStatus,
     WorkoutEngineFTMSBridge,
 )
+from .energy_tracker import ExternalEnergyTracker
 from .fit_exporter import FitExportSample, FitExporter, JsonFitWriterBackend
 from .mrc_parser import MRCParseError, parse_mrc_file, parse_mrc_text
 from .recorder import RecorderSample, RecorderSession, RecorderSummary, WorkoutRecorder
@@ -27,6 +28,7 @@ from .workout_model import Workout, WorkoutInterval
 __all__ = [
     "ControlMode",
     "EngineState",
+    "ExternalEnergyTracker",
     "FTMSControl",
     "FTMSControlAck",
     "FTMSControlAckError",

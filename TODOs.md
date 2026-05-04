@@ -10,4 +10,3 @@
     - In the workout engine tick (or `WorkoutSessionController`), detect when remaining interval time crosses the configured threshold and when it reaches 0 (transition). Emit a distinct signal for each event - e.g. `interval_warning` and `interval_changed`.
     - In `WorkoutScreen`, connect those signals to a sound-playback slot using PySide6's `QSoundEffect`. Bundle two short audio clips (warning beep, transition chime) in `res/`. Fall back gracefully if audio is unavailable (log a warning, do not crash).
     - Ensure alerts don't fire spuriously on pause/resume or when skipping intervals manually.
-    - Consider also flashing the existing alert banner with the upcoming interval's power target as a visual accompaniment.

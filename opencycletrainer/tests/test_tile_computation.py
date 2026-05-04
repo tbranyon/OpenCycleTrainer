@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.storage.settings import AppSettings
 from opencycletrainer.ui.tile_computation import TileComputation
@@ -88,11 +89,16 @@ def _make_tile(
     interval_stats=None,
     now=1.0,
     hr_bpm=None,
+    pm_energy=None,
+    ftms_energy=None,
+    balance_left_pct=None,
 ) -> TileComputation:
     ph = power_history or _MockPowerHistory()
     ch = cadence_history or _MockCadenceHistory()
     ist = interval_stats or _MockIntervalStats()
-    return TileComputation(ph, ch, ist, lambda: now, lambda: hr_bpm)
+    pm = pm_energy if pm_energy is not None else ExternalEnergyTracker()
+    ftms = ftms_energy if ftms_energy is not None else ExternalEnergyTracker()
+    return TileComputation(ph, ch, ist, lambda: now, lambda: hr_bpm, pm, ftms, balance_source=lambda: balance_left_pct)
 
 
 class TestWindowedAvgPower:
@@ -239,6 +245,33 @@ class TestCadenceRpm:
         assert result == "--"
 
 
+class TestPedalBalance:
+    def test_returns_left_right_split_when_available(self):
+        tc = _make_tile(balance_left_pct=48.0)
+        result = tc.compute("pedal_balance", _make_snapshot(), AppSettings())
+        assert result == "48 / 52 %"
+
+    def test_rounds_fractional_balance(self):
+        tc = _make_tile(balance_left_pct=49.5)
+        result = tc.compute("pedal_balance", _make_snapshot(), AppSettings())
+        assert result == "50 / 50 %"
+
+    def test_returns_dash_when_none(self):
+        tc = _make_tile(balance_left_pct=None)
+        result = tc.compute("pedal_balance", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+    def test_returns_dash_when_no_balance_source(self):
+        ph = _MockPowerHistory()
+        ch = _MockCadenceHistory()
+        ist = _MockIntervalStats()
+        pm = ExternalEnergyTracker()
+        ftms = ExternalEnergyTracker()
+        tc = TileComputation(ph, ch, ist, lambda: 1.0, lambda: None, pm, ftms)
+        result = tc.compute("pedal_balance", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+
 class TestUnknownKey:
     def test_unknown_key_returns_dash(self):
         tc = _make_tile()
@@ -289,3 +322,83 @@ class TestUpdateScreen:
 
         assert screen.set_calls["heart_rate"] == "130 bpm"
         assert screen.set_calls["cadence_rpm"] == "75 rpm"
+
+
+class TestKjWorkCompletedSourceSelection:
+    def _tracker_with(self, *values: float) -> ExternalEnergyTracker:
+        t = ExternalEnergyTracker()
+        for v in values:
+            t.update(v)
+        return t
+
+    def test_default_source_is_calculated(self):
+        ph = _MockPowerHistory(workout_avg=200, workout_kj=10.0)
+        tc = _make_tile(power_history=ph)
+        assert tc.kj_workout_source == "calculated"
+
+    def test_calculated_source_uses_power_history(self):
+        ph = _MockPowerHistory(workout_avg=200, workout_kj=10.0)
+        tc = _make_tile(power_history=ph)
+        result = tc.compute("kj_work_completed", _make_snapshot(), AppSettings())
+        assert result == "10.0 kJ"
+
+    def test_pm_source_shows_delta_when_selected(self):
+        pm = self._tracker_with(100.0, 135.0)
+        tc = _make_tile(pm_energy=pm)
+        tc.kj_workout_source = "pm"
+        result = tc.compute("kj_work_completed", _make_snapshot(), AppSettings())
+        assert result == "35.0 kJ"
+
+    def test_ftms_source_shows_delta_when_selected(self):
+        ftms = self._tracker_with(200.0, 260.0)
+        tc = _make_tile(ftms_energy=ftms)
+        tc.kj_workout_source = "ftms"
+        result = tc.compute("kj_work_completed", _make_snapshot(), AppSettings())
+        assert result == "60.0 kJ"
+
+    def test_pm_source_shows_dash_when_no_data(self):
+        tc = _make_tile()  # empty pm tracker
+        tc.kj_workout_source = "pm"
+        result = tc.compute("kj_work_completed", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+    def test_ftms_source_shows_dash_when_no_data(self):
+        tc = _make_tile()  # empty ftms tracker
+        tc.kj_workout_source = "ftms"
+        result = tc.compute("kj_work_completed", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+
+class TestAvailableKjSources:
+    def _tracker_with(self, *values: float) -> ExternalEnergyTracker:
+        t = ExternalEnergyTracker()
+        for v in values:
+            t.update(v)
+        return t
+
+    def test_only_calculated_available_by_default(self):
+        tc = _make_tile()
+        assert tc.available_kj_sources() == ["calculated"]
+
+    def test_pm_included_when_tracker_has_data(self):
+        pm = self._tracker_with(100.0)
+        tc = _make_tile(pm_energy=pm)
+        sources = tc.available_kj_sources()
+        assert "calculated" in sources
+        assert "pm" in sources
+        assert "ftms" not in sources
+
+    def test_ftms_included_when_tracker_has_data(self):
+        ftms = self._tracker_with(200.0)
+        tc = _make_tile(ftms_energy=ftms)
+        sources = tc.available_kj_sources()
+        assert "calculated" in sources
+        assert "ftms" in sources
+        assert "pm" not in sources
+
+    def test_all_three_when_both_trackers_have_data(self):
+        pm = self._tracker_with(50.0)
+        ftms = self._tracker_with(100.0)
+        tc = _make_tile(pm_energy=pm, ftms_energy=ftms)
+        sources = tc.available_kj_sources()
+        assert sources == ["calculated", "pm", "ftms"]

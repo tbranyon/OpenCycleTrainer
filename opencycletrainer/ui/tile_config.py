@@ -13,6 +13,7 @@ TILE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("kj_work_completed", "kJ Work Completed"),
     ("kj_work_completed_interval", "kJ Work (Interval)"),
     ("cadence_rpm", "Cadence"),
+    ("pedal_balance", "L/R Balance"),
 )
 
 TILE_LABEL_BY_KEY = {key: label for key, label in TILE_OPTIONS}
