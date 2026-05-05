@@ -117,6 +117,29 @@ def test_theme_mode_missing_key_defaults_to_system():
     assert loaded.theme_mode == "system"
 
 
+def test_lead_time_increasing_only_defaults_to_true():
+    assert AppSettings().lead_time_increasing_only is True
+
+
+def test_lead_time_increasing_only_round_trips_through_serialization():
+    settings_file = _settings_file()
+    settings = AppSettings(lead_time_increasing_only=False)
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.lead_time_increasing_only is False
+
+
+def test_lead_time_increasing_only_missing_key_defaults_to_true():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.lead_time_increasing_only is True
+
+
 def test_theme_mode_invalid_value_defaults_to_system():
     settings_file = _settings_file()
     settings_file.write_text('{"theme_mode": "banana"}', encoding="utf-8")

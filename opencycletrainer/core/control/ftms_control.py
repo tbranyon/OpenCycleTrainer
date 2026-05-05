@@ -260,6 +260,7 @@ class WorkoutEngineFTMSBridge:
         opentrueup: OpenTrueUpController | None = None,
         opentrueup_status_callback: Callable[[OpenTrueUpStatus], None] | None = None,
         lead_time_seconds: int = 0,
+        lead_time_increasing_only: bool = False,
         kj_mode: bool = False,
     ) -> None:
         self._control = control
@@ -267,6 +268,7 @@ class WorkoutEngineFTMSBridge:
         self._opentrueup = opentrueup
         self._opentrueup_status_callback = opentrueup_status_callback
         self._lead_time_seconds = lead_time_seconds
+        self._lead_time_increasing_only = lead_time_increasing_only
         self._kj_mode = kj_mode
         self._last_state: EngineState | None = None
         self._last_interval_index: int | None = None
@@ -465,7 +467,25 @@ class WorkoutEngineFTMSBridge:
             return False
         if workout.intervals[idx].is_ramp:
             return False
-        return idx + 1 < len(workout.intervals)
+        if idx + 1 >= len(workout.intervals):
+            return False
+        if self._lead_time_increasing_only and not self._is_increasing_transition(idx, snapshot, workout):
+            return False
+        return True
+
+    def _is_increasing_transition(
+        self, idx: int, snapshot: WorkoutEngineSnapshot, workout: Workout
+    ) -> bool:
+        """Return True if the next interval's starting target is higher than the current interval's ending target."""
+        current = workout.intervals[idx]
+        nxt = workout.intervals[idx + 1]
+        if self._control.mode is ControlMode.ERG:
+            current_end = _resolve_interval_target_watts(current, current.duration_seconds)
+            next_start = _resolve_interval_target_watts(nxt, 0.0)
+        else:
+            current_end = _resolve_interval_percent(current, current.duration_seconds)
+            next_start = _resolve_interval_percent(nxt, 0.0)
+        return next_start > current_end
 
     def _apply_lead_time_setpoint(
         self, snapshot: WorkoutEngineSnapshot, workout: Workout

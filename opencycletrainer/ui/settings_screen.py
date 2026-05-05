@@ -174,6 +174,10 @@ class SettingsScreen(QWidget):
         self.lead_time_spinbox.setValue(self._settings.lead_time)
         general_layout.addRow("Lead Time (s)", self.lead_time_spinbox)
 
+        self.lead_time_increasing_only_checkbox = QCheckBox("Increasing power only", general_group)
+        self.lead_time_increasing_only_checkbox.setChecked(self._settings.lead_time_increasing_only)
+        general_layout.addRow("Lead Time Direction", self.lead_time_increasing_only_checkbox)
+
         self.windowed_power_window_spinbox = QSpinBox(general_group)
         self.windowed_power_window_spinbox.setRange(1, 10)
         self.windowed_power_window_spinbox.setValue(self._settings.windowed_power_window_seconds)
@@ -279,6 +283,7 @@ class SettingsScreen(QWidget):
             self._settings,
             ftp=self.ftp_spinbox.value(),
             lead_time=self.lead_time_spinbox.value(),
+            lead_time_increasing_only=self.lead_time_increasing_only_checkbox.isChecked(),
             opentrueup_enabled=self.opentrueup_checkbox.isChecked(),
             tile_selections=list(self._selected_tiles),
             theme_mode=str(self.theme_mode_combo.currentData()),
@@ -316,6 +321,7 @@ class SettingsScreen(QWidget):
         """Wire every editable widget to _autosave so changes persist on the fly."""
         self.ftp_spinbox.valueChanged.connect(self._autosave)
         self.lead_time_spinbox.valueChanged.connect(self._autosave)
+        self.lead_time_increasing_only_checkbox.toggled.connect(self._autosave)
         self.windowed_power_window_spinbox.valueChanged.connect(self._autosave)
         self.theme_mode_combo.currentIndexChanged.connect(self._autosave)
         self.workout_data_dir_edit.editingFinished.connect(self._autosave)

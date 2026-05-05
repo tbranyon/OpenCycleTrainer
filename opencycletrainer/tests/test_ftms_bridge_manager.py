@@ -71,6 +71,7 @@ class _FakeOpenTrueUpState:
 
 class _FakeSettings:
     lead_time: float = 0.0
+    lead_time_increasing_only: bool = False
 
 
 def _make_manager(

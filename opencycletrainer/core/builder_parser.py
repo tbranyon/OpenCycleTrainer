@@ -10,7 +10,7 @@ _WATTS_RE = re.compile(r"^(\d+(?:\.\d+)?)w$", re.IGNORECASE)
 _RAMP_PCT_RE = re.compile(r"^ramp\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)%$", re.IGNORECASE)
 _RAMP_WATTS_RE = re.compile(r"^ramp\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)w$", re.IGNORECASE)
 _FREE_RE = re.compile(r"^free(?:ride)?$", re.IGNORECASE)
-_REPEAT_RE = re.compile(r"^(\d+)x\((.+)\)$", re.IGNORECASE)
+_REPEAT_RE = re.compile(r"^(\d+)x\((.+)\)(!?)$", re.IGNORECASE)
 
 # (duration_s, start_pct_0to100, end_pct_0to100, start_watts, end_watts, free_ride)
 _Step = tuple[int, float, float, int, int, bool]
@@ -105,6 +105,7 @@ def parse_builder_text(
         m = _REPEAT_RE.match(body)
         if m:
             count = int(m.group(1))
+            omit_trailing = bool(m.group(3))
             sub_steps: list[_Step] = []
             ok = True
             for sub in (s.strip() for s in m.group(2).split(",")):
@@ -115,7 +116,10 @@ def parse_builder_text(
                 else:
                     sub_steps.append(result)
             if ok and sub_steps:
-                steps.extend(sub_steps * count)
+                expanded = sub_steps * count
+                if omit_trailing and expanded:
+                    expanded = expanded[:-1]
+                steps.extend(expanded)
             continue
 
         result = _parse_step(body, ftp_watts)

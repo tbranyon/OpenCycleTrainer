@@ -266,6 +266,78 @@ def test_bridge_does_not_send_lead_time_for_last_interval():
     assert stub_control.erg_targets == [150, 225]
 
 
+def _build_workout_decreasing() -> Workout:
+    """225W → 150W workout for testing decreasing transitions."""
+    intervals = (
+        WorkoutInterval(
+            start_offset_seconds=0,
+            duration_seconds=10,
+            start_percent_ftp=75.0,
+            end_percent_ftp=75.0,
+            start_target_watts=225,
+            end_target_watts=225,
+        ),
+        WorkoutInterval(
+            start_offset_seconds=10,
+            duration_seconds=20,
+            start_percent_ftp=50.0,
+            end_percent_ftp=50.0,
+            start_target_watts=150,
+            end_target_watts=150,
+        ),
+    )
+    return Workout(name="Decreasing Test", ftp_watts=300, intervals=intervals)
+
+
+def test_bridge_lead_time_skips_decreasing_transition_when_increasing_only():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, lead_time_seconds=3, lead_time_increasing_only=True)
+    workout = _build_workout_decreasing()  # 225W → 150W
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+    engine.tick(7)   # 3s remaining, next is 150W (lower) — lead time should NOT fire
+    engine.tick(10)  # interval transition fires normally
+
+    assert stub_control.erg_targets == [225, 150]
+
+
+def test_bridge_lead_time_fires_for_increasing_transition_when_increasing_only():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, lead_time_seconds=3, lead_time_increasing_only=True)
+    workout = _build_workout()  # 150W → 225W
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+    engine.tick(7)   # 3s remaining, next is 225W (higher) — lead time SHOULD fire
+
+    assert stub_control.erg_targets == [150, 225]
+
+
+def test_bridge_lead_time_applies_to_decreasing_transition_when_not_increasing_only():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, lead_time_seconds=3, lead_time_increasing_only=False)
+    workout = _build_workout_decreasing()  # 225W → 150W
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+    engine.tick(7)   # 3s remaining, next is 150W — lead time fires because increasing_only=False
+
+    assert stub_control.erg_targets == [225, 150]
+
+
 def test_bridge_updates_erg_target_continuously_during_ramp_interval():
     intervals = (
         WorkoutInterval(

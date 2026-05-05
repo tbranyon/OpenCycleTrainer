@@ -33,6 +33,13 @@ _CSC_SAMPLE_1 = bytes.fromhex("03102700000008c8000008")
 _CSC_SAMPLE_2 = bytes.fromhex("031a270000000cca00000c")
 _FTMS_SAMPLE = bytes.fromhex("4402100eb400fa0096")
 
+# CPS: flags=0x0001 (pedal balance present), power=200W, balance raw=96 → 48.0% left
+_CPS_WITH_PEDAL_BALANCE = bytes.fromhex("0100c80060")
+# CPS: flags=0x0800 (accumulated energy present), power=100W, energy=42kJ
+_CPS_WITH_ENERGY = bytes.fromhex("000864002a00")
+# FTMS: flags=0x0140 (power + expended energy), speed=0, power=200W, energy=5kcal→20.92kJ
+_FTMS_WITH_ENERGY = bytes.fromhex("40010000c8000500000000")
+
 
 def _get_or_create_qapp() -> QApplication:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -194,6 +201,54 @@ def test_decode_notification_ftms_returns_power_cadence_speed():
     assert sample.cadence_rpm == pytest.approx(90.0)
     assert sample.speed_mps == pytest.approx(10.0)
     assert text == "250 W"
+
+
+def test_decode_notification_cps_includes_pedal_balance():
+    _get_or_create_qapp()
+    screen = DevicesScreen(backend=MockDeviceBackend())
+    now = _now_utc()
+
+    sample, _ = screen._decode_notification("dev-1", CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_WITH_PEDAL_BALANCE, now)
+
+    assert sample is not None
+    assert sample.pedal_balance_left_pct == pytest.approx(48.0)
+
+
+def test_decode_notification_cps_includes_accumulated_energy():
+    _get_or_create_qapp()
+    screen = DevicesScreen(backend=MockDeviceBackend())
+    now = _now_utc()
+
+    sample, _ = screen._decode_notification("dev-1", CPS_MEASUREMENT_CHARACTERISTIC_UUID, _CPS_WITH_ENERGY, now)
+
+    assert sample is not None
+    assert sample.accumulated_energy_kj == pytest.approx(42.0)
+
+
+def test_decode_notification_ftms_includes_accumulated_energy():
+    _get_or_create_qapp()
+    screen = DevicesScreen(backend=MockDeviceBackend())
+    now = _now_utc()
+
+    sample, _ = screen._decode_notification(
+        "dev-trainer", FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_WITH_ENERGY, now
+    )
+
+    assert sample is not None
+    assert sample.accumulated_energy_kj == pytest.approx(5 * 4.184)
+
+
+def test_decode_notification_ftms_includes_heart_rate():
+    _get_or_create_qapp()
+    screen = DevicesScreen(backend=MockDeviceBackend())
+    now = _now_utc()
+
+    sample, _ = screen._decode_notification(
+        "dev-trainer", FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_SAMPLE, now
+    )
+
+    assert sample is not None
+    assert sample.heart_rate_bpm == 150
 
 
 def test_on_notification_emits_sensor_sample_received_signal():

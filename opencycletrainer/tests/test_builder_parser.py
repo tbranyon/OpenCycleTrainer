@@ -127,6 +127,43 @@ def test_repeat_mixed_with_regular_steps():
     assert len(workout.intervals) == 6  # 1 + 4 + 1
 
 
+def test_repeat_omit_trailing_drops_last_step():
+    # 3x(1m 120%, 1m 50%)! → work,rest,work,rest,work (last rest dropped)
+    workout, errors = _parse("- 3x(1m 120%, 1m 50%)!")
+    assert not errors
+    assert len(workout.intervals) == 5
+    expected_pct = [120.0, 50.0, 120.0, 50.0, 120.0]
+    for iv, pct in zip(workout.intervals, expected_pct):
+        assert iv.start_percent_ftp == pytest.approx(pct)
+
+
+def test_repeat_omit_trailing_offsets():
+    workout, _ = _parse("- 3x(1m 120%, 1m 50%)!")
+    offsets = [iv.start_offset_seconds for iv in workout.intervals]
+    assert offsets == [0, 60, 120, 180, 240]
+
+
+def test_repeat_omit_trailing_single_rep():
+    # 1x(1m 120%, 1m 50%)! → only the work interval
+    workout, errors = _parse("- 1x(1m 120%, 1m 50%)!")
+    assert not errors
+    assert len(workout.intervals) == 1
+    assert workout.intervals[0].start_percent_ftp == pytest.approx(120.0)
+
+
+def test_repeat_without_bang_unchanged():
+    # Ensure omit-trailing syntax does not break normal repeat
+    workout, errors = _parse("- 3x(1m 120%, 1m 50%)")
+    assert not errors
+    assert len(workout.intervals) == 6
+
+
+def test_repeat_omit_trailing_mixed_with_regular_steps():
+    workout, errors = _parse("- 5m 50%\n- 3x(1m 120%, 1m 50%)!\n- 5m 50%")
+    assert not errors
+    assert len(workout.intervals) == 7  # 1 + 5 + 1
+
+
 # ── Comments and blank lines ──────────────────────────────────────────────────
 
 def test_comment_lines_are_ignored():

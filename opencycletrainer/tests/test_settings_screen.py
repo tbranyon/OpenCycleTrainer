@@ -477,6 +477,40 @@ def test_show_interval_plot_checkbox_autosaves():
     assert load_settings(settings_path).show_interval_plot is False
 
 
+# ── Lead time increasing only ─────────────────────────────────────────────────
+
+
+def test_lead_time_increasing_only_checkbox_defaults_to_checked():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.lead_time_increasing_only_checkbox.isChecked()
+
+
+def test_lead_time_increasing_only_checkbox_reflects_saved_setting():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(lead_time_increasing_only=False), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert not screen.lead_time_increasing_only_checkbox.isChecked()
+
+
+def test_lead_time_increasing_only_checkbox_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(lead_time_increasing_only=True), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.lead_time_increasing_only_checkbox.setChecked(False)
+
+    assert load_settings(settings_path).lead_time_increasing_only is False
+
+
 def test_sync_now_defaults_to_fit_subfolder_under_workout_data_dir(tmp_path: Path) -> None:
     _get_or_create_qapp()
     settings_path = _test_settings_path()

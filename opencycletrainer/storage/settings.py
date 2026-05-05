@@ -41,6 +41,7 @@ def _restore_dir(value: str | None) -> Path | None:
 class AppSettings:
     ftp: int = 250
     lead_time: int = 0
+    lead_time_increasing_only: bool = True
     opentrueup_enabled: bool = False
     tile_selections: list[str] = field(default_factory=list)
     theme_mode: str = DEFAULT_THEME_MODE
@@ -57,6 +58,7 @@ class AppSettings:
         return {
             "ftp": self.ftp,
             "lead_time": self.lead_time,
+            "lead_time_increasing_only": self.lead_time_increasing_only,
             "opentrueup_enabled": self.opentrueup_enabled,
             "tile_selections": self.tile_selections,
             "theme_mode": self.theme_mode,
@@ -89,6 +91,7 @@ class AppSettings:
         return cls(
             ftp=int(data.get("ftp", 250)),
             lead_time=int(data.get("lead_time", 0)),
+            lead_time_increasing_only=bool(data.get("lead_time_increasing_only", True)),
             opentrueup_enabled=bool(data.get("opentrueup_enabled", False)),
             tile_selections=list(data.get("tile_selections", [])),
             theme_mode=theme_mode,

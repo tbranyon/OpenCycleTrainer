@@ -332,6 +332,8 @@ class DevicesScreen(QWidget):
                 device_id=device_id,
                 power_watts=metrics.power_watts,
                 cadence_rpm=metrics.cadence_rpm,
+                accumulated_energy_kj=metrics.accumulated_energy_kj,
+                pedal_balance_left_pct=metrics.pedal_balance_left_pct,
             )
             reading_text = f"{metrics.power_watts} W" if metrics.power_watts is not None else None
             return sample, reading_text
@@ -345,6 +347,8 @@ class DevicesScreen(QWidget):
                 power_watts=metrics.power_watts,
                 cadence_rpm=metrics.cadence_rpm,
                 speed_mps=metrics.speed_mps,
+                heart_rate_bpm=metrics.heart_rate_bpm,
+                accumulated_energy_kj=metrics.accumulated_energy_kj,
             )
             reading_text = f"{metrics.power_watts} W" if metrics.power_watts is not None else None
             return sample, reading_text

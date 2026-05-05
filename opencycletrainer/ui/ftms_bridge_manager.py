@@ -92,6 +92,7 @@ class FTMSBridgeManager:
             opentrueup=self._opentrueup_state.controller,
             opentrueup_status_callback=self._opentrueup_state.handle_bridge_status,
             lead_time_seconds=max(0, int(self._settings.lead_time)),
+            lead_time_increasing_only=self._settings.lead_time_increasing_only,
             kj_mode=self._engine.kj_mode,
         )
         self._ftms_bridge_executor = ThreadPoolExecutor(
