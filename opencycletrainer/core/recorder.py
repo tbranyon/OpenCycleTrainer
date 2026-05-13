@@ -200,7 +200,7 @@ class WorkoutRecorder:
             self._flush_pending_rows()
         return True
 
-    def stop(self, finished_at_utc: datetime | None = None) -> RecorderSummary:
+    def stop(self, finished_at_utc: datetime | None = None, activity_name: str | None = None) -> RecorderSummary:
         session = self._session
         if session is None:
             raise RuntimeError("Recorder is not active.")
@@ -238,9 +238,10 @@ class WorkoutRecorder:
             )
             for sample in self._recorded_samples
         ]
+        effective_name = activity_name or session.workout_name
         try:
             self._fit_exporter.export_activity(
-                workout_name=session.workout_name,
+                workout_name=effective_name,
                 started_at_utc=session.started_at_utc,
                 finished_at_utc=finish_time_utc,
                 fit_file_path=session.fit_file_path,
@@ -256,7 +257,7 @@ class WorkoutRecorder:
             _logger.info("FIT file written: %s (%.1f KB)", session.fit_file_path, size_kb)
 
         summary = RecorderSummary(
-            workout_name=session.workout_name,
+            workout_name=effective_name,
             start_time_utc=session.started_at_utc,
             duration_seconds=duration_seconds,
             avg_power_watts=avg_power_watts,

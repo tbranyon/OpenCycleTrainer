@@ -611,18 +611,19 @@ class WorkoutSessionController(QObject):
             tss=tss,
             avg_hr=avg_hr,
             interval_results=tuple(self._interval_results),
+            workout_name=self._workout.name if self._workout else "",
         )
         dialog = self._summary_dialog_factory(summary, self._screen)
         if dialog is not None:
-            dialog.accepted.connect(self._on_summary_finish)
+            dialog.accepted.connect(lambda: self._on_summary_finish(dialog.activity_name()))
             dialog.rejected.connect(self._on_summary_discard)
             dialog.open()
         else:
             self._recorder_integration.commit()
             self._set_no_workout_state()
 
-    def _on_summary_finish(self) -> None:
-        self._recorder_integration.commit()
+    def _on_summary_finish(self, activity_name: str | None = None) -> None:
+        self._recorder_integration.commit(activity_name=activity_name or None)
         self._set_no_workout_state()
 
     def _on_summary_discard(self) -> None:

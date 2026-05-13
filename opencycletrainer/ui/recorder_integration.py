@@ -118,13 +118,13 @@ class RecorderIntegration:
             )
         return None
 
-    def commit(self) -> None:
+    def commit(self, activity_name: str | None = None) -> None:
         """Write files and trigger Strava sync. Call after prepare_summary()."""
         if not self._pending_finalize:
             return
         self._pending_finalize = False
         try:
-            summary = self._recorder.stop(finished_at_utc=self._utc_now())
+            summary = self._recorder.stop(finished_at_utc=self._utc_now(), activity_name=activity_name)
         except RuntimeError as exc:
             _logger.warning("Recorder stop failed: %s", exc)
             self._workout = None

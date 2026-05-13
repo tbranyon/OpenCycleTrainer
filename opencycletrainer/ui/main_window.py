@@ -123,7 +123,11 @@ class MainWindow(QMainWindow):
             if sample.power_watts is not None:
                 self.workout_controller.receive_bike_power_watts(sample.power_watts)
             if sample.accumulated_energy_kj is not None:
-                self.workout_controller.receive_bike_energy_kj(sample.accumulated_energy_kj)
+                trainer_id = self.devices_screen.connected_trainer_device_id()
+                if trainer_id is not None and sample.device_id == trainer_id:
+                    self.workout_controller.receive_trainer_energy_kj(sample.accumulated_energy_kj)
+                else:
+                    self.workout_controller.receive_bike_energy_kj(sample.accumulated_energy_kj)
             if sample.pedal_balance_left_pct is not None:
                 self.workout_controller.receive_pedal_balance(sample.pedal_balance_left_pct)
         else:

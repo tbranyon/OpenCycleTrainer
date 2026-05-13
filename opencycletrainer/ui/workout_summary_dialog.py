@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -46,6 +47,7 @@ class WorkoutSummary:
     tss: float | None
     avg_hr: int | None
     interval_results: tuple[IntervalResult, ...] = ()
+    workout_name: str = ""
 
 
 def compute_tss(
@@ -201,6 +203,15 @@ class WorkoutSummaryDialog(QDialog):
         header.setFont(_sans_font(header.font(), bold=True, size_delta=8))
         root.addWidget(header)
 
+        # Activity name field
+        name_row = QHBoxLayout()
+        name_label = QLabel("Activity Name:", self)
+        name_label.setFont(_sans_font(name_label.font()))
+        self._name_field = QLineEdit(summary.workout_name, self)
+        name_row.addWidget(name_label)
+        name_row.addWidget(self._name_field)
+        root.addLayout(name_row)
+
         # Metric tiles in a 3-column grid (row 0: Time, kJ, NP; row 1: TSS, Avg HR)
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
@@ -244,3 +255,6 @@ class WorkoutSummaryDialog(QDialog):
         btn_row.addWidget(finish_btn)
         btn_row.addStretch()
         root.addLayout(btn_row)
+
+    def activity_name(self) -> str:
+        return self._name_field.text().strip()
