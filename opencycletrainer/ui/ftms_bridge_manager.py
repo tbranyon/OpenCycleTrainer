@@ -176,9 +176,14 @@ class FTMSBridgeManager:
 
         if active_mode == "Resistance":
             bridge.set_mode_resistance()
+            bridge.on_engine_snapshot(
+                snapshot,
+                workout,
+                manual_resistance_level=self._mode_state.resistance_target_percent(),
+            )
         else:
             bridge.set_mode_erg()
-        bridge.on_engine_snapshot(snapshot, workout)
+            bridge.on_engine_snapshot(snapshot, workout)
 
     def _create_transport(
         self,

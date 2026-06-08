@@ -329,9 +329,11 @@ class WorkoutEngineFTMSBridge:
         self,
         snapshot: WorkoutEngineSnapshot,
         workout: Workout | None,
+        *,
+        manual_resistance_level: float | None = None,
     ) -> None:
         try:
-            self._apply_snapshot(snapshot, workout)
+            self._apply_snapshot(snapshot, workout, manual_resistance_level=manual_resistance_level)
         except FTMSControlError as exc:
             self._report_error("Error communicating with trainer")
 
@@ -374,6 +376,8 @@ class WorkoutEngineFTMSBridge:
         self,
         snapshot: WorkoutEngineSnapshot,
         workout: Workout | None,
+        *,
+        manual_resistance_level: float | None = None,
     ) -> None:
         if workout is None:
             self._last_state = snapshot.state
@@ -397,14 +401,14 @@ class WorkoutEngineFTMSBridge:
         entered_running = self._last_state != EngineState.RUNNING
         if interval_changed or entered_running:
             self._lead_time_sent_for_interval = None
-            self._apply_interval_setpoint(snapshot, workout)
+            self._apply_interval_setpoint(snapshot, workout, manual_resistance_level=manual_resistance_level)
         elif (
             snapshot.current_interval_index is not None
             and workout.intervals[snapshot.current_interval_index].is_ramp
         ):
-            self._apply_ramp_update(snapshot, workout)
+            self._apply_ramp_update(snapshot, workout, manual_resistance_level=manual_resistance_level)
         elif self._should_apply_lead_time(snapshot, workout):
-            self._apply_lead_time_setpoint(snapshot, workout)
+            self._apply_lead_time_setpoint(snapshot, workout, manual_resistance_level=manual_resistance_level)
 
         self._last_state = snapshot.state
         self._last_interval_index = snapshot.current_interval_index
@@ -416,7 +420,13 @@ class WorkoutEngineFTMSBridge:
         else:
             self._send_resistance_level(0, force=True)
 
-    def _apply_interval_setpoint(self, snapshot: WorkoutEngineSnapshot, workout: Workout) -> None:
+    def _apply_interval_setpoint(
+        self,
+        snapshot: WorkoutEngineSnapshot,
+        workout: Workout,
+        *,
+        manual_resistance_level: float | None = None,
+    ) -> None:
         interval_index = snapshot.current_interval_index
         if interval_index is None:
             return
@@ -431,10 +441,20 @@ class WorkoutEngineFTMSBridge:
             self._send_erg_target(adjusted_target_watts)
         else:
             self._current_erg_target_base_watts = None
-            resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)
+            resistance_level = (
+                manual_resistance_level
+                if manual_resistance_level is not None
+                else _resolve_interval_percent(interval, elapsed_in_interval)
+            )
             self._send_resistance_level(resistance_level)
 
-    def _apply_ramp_update(self, snapshot: WorkoutEngineSnapshot, workout: Workout) -> None:
+    def _apply_ramp_update(
+        self,
+        snapshot: WorkoutEngineSnapshot,
+        workout: Workout,
+        *,
+        manual_resistance_level: float | None = None,
+    ) -> None:
         """Update trainer target for the current tick of an active ramp interval, preserving any jog offset."""
         interval_index = snapshot.current_interval_index
         if interval_index is None:
@@ -448,7 +468,11 @@ class WorkoutEngineFTMSBridge:
             self._send_erg_target(self._apply_opentrueup_target(jogged))
         else:
             self._current_erg_target_base_watts = None
-            resistance_level = _resolve_interval_percent(interval, elapsed_in_interval)
+            resistance_level = (
+                manual_resistance_level
+                if manual_resistance_level is not None
+                else _resolve_interval_percent(interval, elapsed_in_interval)
+            )
             self._send_resistance_level(resistance_level)
 
     def _should_apply_lead_time(
@@ -488,7 +512,11 @@ class WorkoutEngineFTMSBridge:
         return next_start > current_end
 
     def _apply_lead_time_setpoint(
-        self, snapshot: WorkoutEngineSnapshot, workout: Workout
+        self,
+        snapshot: WorkoutEngineSnapshot,
+        workout: Workout,
+        *,
+        manual_resistance_level: float | None = None,
     ) -> None:
         next_index = snapshot.current_interval_index + 1  # type: ignore[operator]
         next_interval = workout.intervals[next_index]
@@ -499,7 +527,11 @@ class WorkoutEngineFTMSBridge:
             self._send_erg_target(adjusted_target_watts)
         else:
             self._current_erg_target_base_watts = None
-            resistance_level = _resolve_interval_percent(next_interval, 0.0)
+            resistance_level = (
+                manual_resistance_level
+                if manual_resistance_level is not None
+                else _resolve_interval_percent(next_interval, 0.0)
+            )
             self._send_resistance_level(resistance_level)
         self._lead_time_sent_for_interval = snapshot.current_interval_index
 

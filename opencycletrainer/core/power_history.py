@@ -48,7 +48,11 @@ class PowerHistory:
     def windowed_avg(self, now: float, window_seconds: int) -> int | None:
         """Return the mean watts for all samples within the trailing window, or None."""
         cutoff = now - float(window_seconds)
-        in_window = [w for t, w in self._samples if t >= cutoff]
+        in_window = []
+        for t, w in reversed(self._samples):
+            if t < cutoff:
+                break
+            in_window.append(w)
         if not in_window:
             return None
         return round(sum(in_window) / len(in_window))
@@ -113,31 +117,27 @@ class PowerHistory:
 
         For each sample at time T, averages all samples in [T - window_seconds, T],
         weighted by the duration each value was "held" between consecutive samples.
+
+        Uses a sliding window pointer — O(n) — since timestamps are monotonically
+        non-decreasing and the window start only ever advances forward.
         """
         samples = list(self._samples)
         if not samples:
             return []
         result: list[tuple[float, int]] = []
+        win_left = 0  # first index with timestamp >= current window_start
         for i, (t, _) in enumerate(samples):
             window_start = t - window_seconds
-            # Collect samples in the window; include the last sample before the window
-            # as the carry-in value from window_start.
-            in_window: list[tuple[float, int]] = []
-            carry_in: int | None = None
-            for j in range(i + 1):
-                jt, jw = samples[j]
-                if jt < window_start:
-                    carry_in = jw
-                else:
-                    in_window.append((jt, jw))
+            while win_left < i and samples[win_left][0] < window_start:
+                win_left += 1
 
-            if not in_window:
-                result.append((t, samples[i][1]))
-                continue
+            # The sample just before win_left is the carry-in: its value was "held"
+            # from window_start until the first in-window sample.
+            carry_in = samples[win_left - 1][1] if win_left > 0 else None
+            in_window = samples[win_left:i + 1]
 
-            # Build (timestamp, watts) pairs anchored at window_start.
-            anchored = [(window_start, carry_in if carry_in is not None else in_window[0][1])]
-            anchored.extend(in_window)
+            anchor_w = carry_in if carry_in is not None else in_window[0][1]
+            anchored = [(window_start, anchor_w)] + in_window
 
             total_weight = 0.0
             weighted_sum = 0.0
@@ -145,7 +145,6 @@ class PowerHistory:
                 duration = anchored[k + 1][0] - anchored[k][0]
                 weighted_sum += anchored[k][1] * duration
                 total_weight += duration
-            # Final sample holds until t
             last_duration = t - anchored[-1][0]
             if last_duration > 0:
                 weighted_sum += anchored[-1][1] * last_duration

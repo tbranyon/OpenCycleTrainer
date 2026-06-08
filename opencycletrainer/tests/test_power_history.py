@@ -201,3 +201,68 @@ class TestReset:
         ph.reset()
         ph.record(1000, now=10.0, recording_active=True)
         assert ph.workout_actual_kj() == 0.0
+
+
+class TestSmoothedSeries:
+    def test_empty_returns_empty(self):
+        ph = PowerHistory()
+        assert ph.smoothed_series() == []
+
+    def test_single_sample_returns_itself(self):
+        ph = PowerHistory()
+        ph.record(200, now=10.0, recording_active=False)
+        assert ph.smoothed_series() == [(10.0, 200)]
+
+    def test_length_matches_sample_count(self):
+        ph = PowerHistory()
+        for i in range(5):
+            ph.record(200, now=float(i), recording_active=False)
+        assert len(ph.smoothed_series()) == 5
+
+    def test_timestamps_preserved(self):
+        ph = PowerHistory()
+        ph.record(100, now=5.0, recording_active=False)
+        ph.record(200, now=6.0, recording_active=False)
+        result = ph.smoothed_series()
+        assert result[0][0] == 5.0
+        assert result[1][0] == 6.0
+
+    def test_constant_power_unchanged(self):
+        """Smoothing constant power leaves all values unchanged."""
+        ph = PowerHistory()
+        for i in range(10):
+            ph.record(250, now=float(i), recording_active=False)
+        assert all(w == 250 for _, w in ph.smoothed_series())
+
+    def test_spike_at_latest_sample_smoothed_to_prior_power(self):
+        """A spike arriving at the last sample contributes zero hold-duration to the
+        window, so the smoothed value reflects the prior steady power."""
+        ph = PowerHistory()
+        for i in range(5):
+            ph.record(100, now=float(i), recording_active=False)
+        ph.record(500, now=5.0, recording_active=False)
+        result = ph.smoothed_series()
+        # window [4.0, 5.0]: 100 W held from 4.0 to 5.0, 500 W arrives at 5.0 (0 duration)
+        assert result[-1][1] == 100
+
+    def test_carry_in_from_outside_window_contributes(self):
+        """The last sample before the window acts as carry-in from window_start."""
+        ph = PowerHistory()
+        ph.record(1000, now=0.0, recording_active=False)
+        ph.record(200, now=5.0, recording_active=False)
+        result = ph.smoothed_series()
+        # i=1, t=5.0, window=[4.0, 5.0]: carry_in=1000, in_window=[(5.0, 200)]
+        # anchored=[(4.0, 1000), (5.0, 200)]; 1000 W held 1.0 s; avg=1000
+        assert result[-1][1] == 1000
+
+    def test_carry_in_weighted_by_duration_before_next_sample(self):
+        """Carry-in and in-window samples share the window by their respective durations."""
+        ph = PowerHistory()
+        ph.record(100, now=0.0, recording_active=False)
+        ph.record(200, now=1.5, recording_active=False)
+        ph.record(300, now=2.0, recording_active=False)
+        result = ph.smoothed_series()
+        # i=2, t=2.0, window=[1.0, 2.0]: carry_in=100 (from t=0.0)
+        # anchored=[(1.0, 100), (1.5, 200), (2.0, 300)]
+        # 100 W for 0.5 s, 200 W for 0.5 s; 300 W at 2.0 (0 duration) → avg = 150
+        assert result[2][1] == 150

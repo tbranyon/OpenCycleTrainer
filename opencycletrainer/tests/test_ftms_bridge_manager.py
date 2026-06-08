@@ -40,12 +40,16 @@ class _FakeScreen:
 
 
 class _FakeModeState:
-    def __init__(self, mode: str = "ERG") -> None:
+    def __init__(self, mode: str = "ERG", resistance_percent: float = 33.0) -> None:
         self._mode = mode
+        self._resistance_percent = resistance_percent
         self.resistance_step_count: int | None = None
 
     def active_control_mode(self, snapshot, workout) -> str:
         return self._mode
+
+    def resistance_target_percent(self) -> float:
+        return self._resistance_percent
 
     def set_trainer_resistance_step_count(self, count: int | None) -> None:
         self.resistance_step_count = count
@@ -78,10 +82,11 @@ def _make_manager(
     transport_factory=None,
     mode: str = "ERG",
     resistance_range=None,
+    resistance_percent: float = 33.0,
 ) -> tuple[FTMSBridgeManager, _FakeScreen, _FakeModeState, _FakeTransport]:
     transport = _FakeTransport(resistance_range=resistance_range)
     screen = _FakeScreen()
-    mode_state = _FakeModeState(mode=mode)
+    mode_state = _FakeModeState(mode=mode, resistance_percent=resistance_percent)
     opentrueup_state = _FakeOpenTrueUpState()
     engine = _FakeEngine()
     settings = _FakeSettings()
@@ -281,6 +286,45 @@ def test_submit_snapshot_applies_resistance_mode():
     manager.submit_snapshot(snapshot, None)
     manager._ftms_bridge_executor.shutdown(wait=True)
     assert resistance_calls
+
+
+def test_workout_resistance_mode_uses_manual_level_not_interval_ftp_percent():
+    """Resistance mode in a workout must send the user's manual resistance, not the interval's FTP%."""
+    from opencycletrainer.core.workout_engine import WorkoutEngine, EngineState
+    from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+
+    # Interval at 100% FTP — in ERG mode this is the power target, but in
+    # resistance mode the user's 45% setting must be sent, not 100%.
+    interval = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=60,
+        start_target_watts=300,
+        end_target_watts=300,
+        start_percent_ftp=100.0,
+        end_percent_ftp=100.0,
+    )
+    workout = Workout(name="Test", ftp_watts=300, intervals=[interval])
+
+    manager, _, _, transport = _configured_manager(mode="Resistance", resistance_percent=45.0)
+
+    engine = WorkoutEngine()
+    engine.load_workout(workout)
+    engine.start()
+    snapshot = engine.snapshot()
+    assert snapshot.state == EngineState.RUNNING
+
+    manager.submit_snapshot(snapshot, workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    # FTMS opcode 0x04 = SET_TARGET_RESISTANCE; the value at byte index 1 is the
+    # resistance level (0–100 mapped via _normalize_resistance with no range → raw int).
+    resistance_writes = [w for w in transport.writes if w[0] == 0x04]
+    assert resistance_writes, "No SET_TARGET_RESISTANCE command sent"
+    sent_level = resistance_writes[-1][1]
+    assert sent_level == 45, (
+        f"Expected manual resistance 45%, got {sent_level}% "
+        f"(interval FTP% is 100%, which would be wrong)"
+    )
 
 
 # ── Tests: submit_power_sample ─────────────────────────────────────────────────
