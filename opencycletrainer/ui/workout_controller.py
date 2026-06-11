@@ -63,6 +63,7 @@ class WorkoutSessionController(QObject):
         monotonic_clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] | None = None,
         strava_upload_fn: Callable[[Path, Path | None], None] | None = None,
+        intervals_icu_upload_fn: Callable[[Path, Path | None], None] | None = None,
         tick_interval_ms: int = 250,
         parent: QObject | None = None,
     ) -> None:
@@ -124,6 +125,7 @@ class WorkoutSessionController(QObject):
             settings=self._settings,
             utc_now=self._utc_now,
             strava_upload_fn=strava_upload_fn,
+            intervals_icu_upload_fn=intervals_icu_upload_fn,
             alert_signal=self._strava_alert_signal.emit,
             mode_state=self._mode_state,
         )
@@ -210,6 +212,7 @@ class WorkoutSessionController(QObject):
             )
         elif was_enabled and not now_enabled:
             self._opentrueup_state.disable()
+        self._ftms_bridge_manager.set_erg_jog_persistent(settings.erg_jog_persistent)
         self._ftms_bridge_manager.configure(
             self._trainer_connection.backend,
             self._trainer_connection.device_id,
@@ -502,8 +505,10 @@ class WorkoutSessionController(QObject):
         if active_mode == "Resistance":
             value, show_percent = self._mode_state.resistance_display()
             self._screen.set_resistance_level(value, show_percent=show_percent)
+            self._screen.set_jog_offset(None)
         else:
             self._screen.set_resistance_level(None)
+            self._screen.set_jog_offset(int(round(self._mode_state.erg_jog_watts)))
 
         current_index = snapshot.current_interval_index
         if current_index != self._active_interval_index:
@@ -514,7 +519,8 @@ class WorkoutSessionController(QObject):
             self._current_interval_is_skipped = False
             self._active_interval_index = current_index
             self._reset_interval_accumulators()
-            self._mode_state.reset_jog()
+            if not self._settings.erg_jog_persistent:
+                self._mode_state.reset_jog()
 
         elapsed_seconds = int(round(snapshot.riding_elapsed_seconds))
         window = max(1, int(self._settings.windowed_power_window_seconds))
@@ -612,6 +618,7 @@ class WorkoutSessionController(QObject):
             avg_hr=avg_hr,
             interval_results=tuple(self._interval_results),
             workout_name=self._workout.name if self._workout else "",
+            power_samples=tuple(self._power_history.as_series()),
         )
         dialog = self._summary_dialog_factory(summary, self._screen)
         if dialog is not None:
@@ -654,14 +661,20 @@ class WorkoutSessionController(QObject):
             return
         self._last_power_received_at = now
         recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
-        accepted = self._power_history.record(
-            int(watts),
-            now,
-            recording_active,
-            source=PowerSource.TRAINER,
-        )
-        if accepted:
-            self._interval_stats.record_power(int(watts), now, recording_active)
+        if recording_active:
+            accepted = self._power_history.record(
+                int(watts),
+                now,
+                recording_active,
+                source=PowerSource.TRAINER,
+            )
+            if accepted:
+                self._interval_stats.record_power(int(watts), now, recording_active)
+        else:
+            # While paused (or ramping back in), feed only the live trailing-window
+            # display so windowed tiles stay current without recording onto the plot,
+            # workout averages, or the FIT file.
+            self._power_history.record_live(int(watts), now, source=PowerSource.TRAINER)
         self._dispatch_power_sample(
             timestamp=now,
             trainer_watts=watts,
@@ -686,14 +699,20 @@ class WorkoutSessionController(QObject):
             return
         self._last_power_received_at = now
         recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
-        accepted = self._power_history.record(
-            int(watts),
-            now,
-            recording_active,
-            source=PowerSource.POWER_METER,
-        )
-        if accepted:
-            self._interval_stats.record_power(int(watts), now, recording_active)
+        if recording_active:
+            accepted = self._power_history.record(
+                int(watts),
+                now,
+                recording_active,
+                source=PowerSource.POWER_METER,
+            )
+            if accepted:
+                self._interval_stats.record_power(int(watts), now, recording_active)
+        else:
+            # While paused (or ramping back in), feed only the live trailing-window
+            # display so windowed tiles stay current without recording onto the plot,
+            # workout averages, or the FIT file.
+            self._power_history.record_live(int(watts), now, source=PowerSource.POWER_METER)
         self._dispatch_power_sample(
             timestamp=now,
             trainer_watts=None,
@@ -704,6 +723,11 @@ class WorkoutSessionController(QObject):
         """Feed a live heart rate reading (bpm) into the metric computation pipeline."""
         self._last_hr_bpm = bpm
         if bpm is None:
+            return
+        recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
+        # While paused (or ramping back in), HR is not recorded into the
+        # interval/plot history so the trace freezes instead of capturing pause data.
+        if not recording_active:
             return
         self._interval_stats.record_hr(int(bpm))
         if self._recorder_integration.recorder_active:

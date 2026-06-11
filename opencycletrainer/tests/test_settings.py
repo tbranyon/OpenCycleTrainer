@@ -94,6 +94,75 @@ def test_strava_athlete_name_missing_key_defaults_to_empty_string():
     assert loaded.strava_athlete_name == ""
 
 
+def test_intervals_icu_auto_sync_defaults_to_false():
+    assert AppSettings().intervals_icu_auto_sync_enabled is False
+
+
+def test_intervals_icu_auto_sync_round_trips_through_serialization():
+    settings_file = _settings_file()
+    settings = AppSettings(intervals_icu_auto_sync_enabled=True)
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.intervals_icu_auto_sync_enabled is True
+
+
+def test_intervals_icu_auto_sync_missing_key_defaults_to_false():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.intervals_icu_auto_sync_enabled is False
+
+
+def test_intervals_icu_athlete_name_defaults_to_empty_string():
+    assert AppSettings().intervals_icu_athlete_name == ""
+
+
+def test_intervals_icu_athlete_name_round_trips_through_serialization():
+    settings_file = _settings_file()
+    settings = AppSettings(intervals_icu_athlete_name="Jane Smith")
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.intervals_icu_athlete_name == "Jane Smith"
+
+
+def test_intervals_icu_athlete_name_missing_key_defaults_to_empty_string():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.intervals_icu_athlete_name == ""
+
+
+def test_erg_jog_persistent_defaults_to_false():
+    assert AppSettings().erg_jog_persistent is False
+
+
+def test_erg_jog_persistent_round_trips_through_serialization():
+    settings_file = _settings_file()
+    settings = AppSettings(erg_jog_persistent=True)
+
+    save_settings(settings, settings_file)
+    loaded = load_settings(settings_file)
+
+    assert loaded.erg_jog_persistent is True
+
+
+def test_erg_jog_persistent_missing_key_defaults_to_false():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.erg_jog_persistent is False
+
+
 def test_theme_mode_defaults_to_system():
     assert AppSettings().theme_mode == "system"
 

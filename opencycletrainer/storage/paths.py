@@ -118,6 +118,10 @@ def get_paired_devices_file_path() -> Path:
     return get_config_dir() / "paired_devices.json"
 
 
+def get_blocks_file_path() -> Path:
+    return get_config_dir() / "blocks.json"
+
+
 def get_user_workouts_dir() -> Path:
     """Return (and create) the platform-specific user workouts directory."""
     return ensure_dir(get_data_dir() / "workouts")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import struct
 from dataclasses import dataclass
+from enum import Enum
 
 from .base import DecodedMetrics
 
@@ -226,6 +227,52 @@ def decode_ftms_fitness_machine_features(payload: bytes) -> FTMSFeatures:
     fitness = int.from_bytes(payload[0:4], "little")
     target = int.from_bytes(payload[4:8], "little")
     return FTMSFeatures(fitness_machine_features=fitness, target_setting_features=target)
+
+
+# --- Fitness Machine Status (0x2ADA) ---
+
+_SPIN_DOWN_STATUS_OPCODE = 0x14
+
+
+class SpinDownStatus(Enum):
+    """Spin Down Status values from the Fitness Machine Status characteristic (Table 4.27)."""
+
+    REQUESTED = 0x01
+    SUCCESS = 0x02
+    ERROR = 0x03
+    STOP_PEDALING = 0x04
+
+
+@dataclass(frozen=True)
+class FitnessMachineStatus:
+    """Decoded Fitness Machine Status (0x2ADA) notification.
+
+    Only the Spin Down Status op code (0x14) is parsed; for any other op code
+    ``spin_down_status`` is None.
+    """
+
+    opcode: int
+    spin_down_status: SpinDownStatus | None = None
+
+
+def decode_fitness_machine_status(payload: bytes) -> FitnessMachineStatus:
+    """Decode a Fitness Machine Status (0x2ADA) notification.
+
+    The first octet is the status op code. For Spin Down Status (0x14) the second
+    octet is the Spin Down Status Value (UINT8); unknown values decode to None.
+    """
+    if len(payload) < 1:
+        raise ValueError("Fitness Machine Status payload too short")
+    opcode = payload[0]
+    if opcode != _SPIN_DOWN_STATUS_OPCODE:
+        return FitnessMachineStatus(opcode=opcode)
+    if len(payload) < 2:
+        raise ValueError("Spin Down Status payload missing status value")
+    try:
+        status = SpinDownStatus(payload[1])
+    except ValueError:
+        status = None
+    return FitnessMachineStatus(opcode=opcode, spin_down_status=status)
 
 
 # --- Supported Power Range (0x2AD8) ---

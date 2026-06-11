@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencycletrainer"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenCycleTrainer desktop app scaffold"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = [
   "pyqtgraph>=0.13",
   "matplotlib>=3.8",
   "stravalib>=2.0",
+  "requests>=2.31",
 ]
 
 [project.optional-dependencies]

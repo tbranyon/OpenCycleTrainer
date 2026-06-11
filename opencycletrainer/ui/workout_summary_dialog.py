@@ -19,9 +19,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer.core.power_history import compute_power_duration_curve
+
+from .workout_chart import PowerDurationChartWidget
+
 INTERVAL_PERCENT_COLOR_GREEN = QColor(76, 175, 80)
 INTERVAL_PERCENT_COLOR_YELLOW = QColor(255, 193, 7)
 INTERVAL_PERCENT_COLOR_RED = QColor(244, 67, 54)
+
+DIALOG_MIN_WIDTH = 760
+DIALOG_MIN_HEIGHT = 760
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,7 @@ class WorkoutSummary:
     avg_hr: int | None
     interval_results: tuple[IntervalResult, ...] = ()
     workout_name: str = ""
+    power_samples: tuple[tuple[float, int], ...] = ()
 
 
 def compute_tss(
@@ -192,6 +200,8 @@ class WorkoutSummaryDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Workout Complete")
         self.setModal(True)
+        self.setMinimumSize(DIALOG_MIN_WIDTH, DIALOG_MIN_HEIGHT)
+        self.resize(DIALOG_MIN_WIDTH, DIALOG_MIN_HEIGHT)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -243,6 +253,18 @@ class WorkoutSummaryDialog(QDialog):
             scroll.setWidget(table)
             scroll.setMaximumHeight(220)
             root.addWidget(scroll)
+
+        # Power-duration curve (only shown when raw power samples are available)
+        if summary.power_samples:
+            curve_label = QLabel("Power Curve", self)
+            curve_label.setAlignment(Qt.AlignCenter)
+            curve_label.setFont(_sans_font(curve_label.font(), bold=True))
+            root.addWidget(curve_label)
+
+            chart = PowerDurationChartWidget(self)
+            chart.setMinimumHeight(180)
+            chart.set_curve(compute_power_duration_curve(list(summary.power_samples)))
+            root.addWidget(chart, 1)
 
         # Action buttons
         finish_btn = QPushButton("Finish", self)

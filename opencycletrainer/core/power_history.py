@@ -6,6 +6,12 @@ from opencycletrainer.core.sensors import PowerSource
 
 _POWER_SOURCE_STALENESS_SECONDS = 3.0
 
+# Log-spaced durations (seconds) used to build the power-duration curve.
+_CURVE_DURATION_CANDIDATES = (
+    1, 2, 3, 5, 8, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300,
+    420, 600, 900, 1200, 1800, 2400, 3600, 5400, 7200, 10800, 14400,
+)
+
 
 class PowerHistory:
     """Rolling power sample store with workout-level aggregation."""
@@ -13,6 +19,7 @@ class PowerHistory:
     def __init__(self, staleness_seconds: float = _POWER_SOURCE_STALENESS_SECONDS) -> None:
         self._staleness_seconds = float(staleness_seconds)
         self._samples: deque[tuple[float, int]] = deque()
+        self._live_samples: deque[tuple[float, int]] = deque()
         self._source_last_times: dict[PowerSource, float] = {}
         self._workout_power_sum = 0.0
         self._workout_power_count = 0
@@ -26,13 +33,13 @@ class PowerHistory:
         recording_active: bool,
         source: PowerSource = PowerSource.TRAINER,
     ) -> bool:
-        """Append an accepted power sample and update workout-level accumulators."""
-        if watts is None:
-            self._source_last_times.pop(source, None)
-            return False
+        """Append an accepted power sample to the plot/stats history and live display.
 
-        self._source_last_times[source] = float(now)
-        if self.active_source(now) != source:
+        Updates the workout-level accumulators (averages, plot series, kJ). Use
+        record_live() instead while paused to keep the live trailing-window display
+        current without polluting the plot or workout averages.
+        """
+        if not self._accept_live(watts, now, source):
             return False
 
         self._samples.append((now, int(watts)))
@@ -45,11 +52,45 @@ class PowerHistory:
         self._last_actual_power_tick = now
         return True
 
+    def record_live(
+        self,
+        watts: int | None,
+        now: float,
+        source: PowerSource = PowerSource.TRAINER,
+    ) -> bool:
+        """Append a sample to the live trailing-window display only.
+
+        Used while paused so windowed-average tiles keep reflecting the current
+        reading, without adding to the plot series, workout averages, or kJ.
+        """
+        return self._accept_live(watts, now, source)
+
+    def _accept_live(
+        self,
+        watts: int | None,
+        now: float,
+        source: PowerSource,
+    ) -> bool:
+        """Apply source-priority gating and append to the live window; return acceptance."""
+        if watts is None:
+            self._source_last_times.pop(source, None)
+            return False
+
+        self._source_last_times[source] = float(now)
+        if self.active_source(now) != source:
+            return False
+
+        self._live_samples.append((now, int(watts)))
+        return True
+
     def windowed_avg(self, now: float, window_seconds: int) -> int | None:
-        """Return the mean watts for all samples within the trailing window, or None."""
+        """Return the mean watts for all live samples within the trailing window, or None.
+
+        Reads the live buffer so the value stays current even while paused.
+        """
         cutoff = now - float(window_seconds)
         in_window = []
-        for t, w in reversed(self._samples):
+        for t, w in reversed(self._live_samples):
             if t < cutoff:
                 break
             in_window.append(w)
@@ -102,6 +143,7 @@ class PowerHistory:
     def reset(self) -> None:
         """Clear all samples and accumulators."""
         self._samples.clear()
+        self._live_samples.clear()
         self._source_last_times.clear()
         self._workout_power_sum = 0.0
         self._workout_power_count = 0
@@ -153,3 +195,40 @@ class PowerHistory:
             avg = round(weighted_sum / total_weight) if total_weight > 0 else samples[i][1]
             result.append((t, avg))
         return result
+
+
+def compute_power_duration_curve(samples: list[tuple[float, int]]) -> list[tuple[int, int]]:
+    """Compute the mean-max power-duration curve from recorded power samples.
+
+    Bins samples into one-second buckets, then for a fixed set of log-spaced
+    durations (plus the total recorded duration) finds the highest average
+    power sustained over any window of that length. Returns a list of
+    ``(duration_seconds, watts)`` pairs sorted by duration.
+    """
+    if len(samples) < 2:
+        return []
+
+    start_t = samples[0][0]
+    end_t = samples[-1][0]
+    total_seconds = int(end_t - start_t)
+    if total_seconds < 1:
+        return []
+
+    n_bins = total_seconds + 1
+    bins: list[list[int]] = [[] for _ in range(n_bins)]
+    for t, w in samples:
+        idx = min(int(t - start_t), n_bins - 1)
+        bins[idx].append(w)
+    per_second = [sum(b) / len(b) if b else 0.0 for b in bins]
+
+    prefix = [0.0]
+    for v in per_second:
+        prefix.append(prefix[-1] + v)
+
+    durations = sorted({d for d in _CURVE_DURATION_CANDIDATES if d <= n_bins} | {n_bins})
+
+    curve: list[tuple[int, int]] = []
+    for d in durations:
+        best = max(prefix[i + d] - prefix[i] for i in range(n_bins - d + 1))
+        curve.append((d, round(best / d)))
+    return curve

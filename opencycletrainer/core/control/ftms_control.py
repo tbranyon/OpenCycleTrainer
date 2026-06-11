@@ -21,7 +21,11 @@ from opencycletrainer.devices.types import FTMS_CONTROL_POINT_CHARACTERISTIC_UUI
 _OPCODE_REQUEST_CONTROL = 0x00
 _OPCODE_SET_TARGET_RESISTANCE = 0x04
 _OPCODE_SET_TARGET_POWER = 0x05
+_OPCODE_SPIN_DOWN_CONTROL = 0x13
 _OPCODE_RESPONSE_CODE = 0x80
+
+_SPIN_DOWN_START = 0x01
+_SPIN_DOWN_IGNORE = 0x02
 
 _RESULT_SUCCESS = 0x01
 
@@ -29,6 +33,7 @@ _OPCODE_LABELS = {
     _OPCODE_REQUEST_CONTROL: "request_control",
     _OPCODE_SET_TARGET_RESISTANCE: "set_target_resistance",
     _OPCODE_SET_TARGET_POWER: "set_target_power",
+    _OPCODE_SPIN_DOWN_CONTROL: "spin_down_control",
 }
 
 _RESULT_LABELS = {
@@ -58,9 +63,18 @@ class FTMSControlAckError(FTMSControlError):
 
 
 @dataclass(frozen=True)
+class SpinDownTargetSpeeds:
+    """Target coast-down speed band returned by a Spin Down Control request (km/h)."""
+
+    low_kmh: float
+    high_kmh: float
+
+
+@dataclass(frozen=True)
 class FTMSControlAck:
     request_opcode: int
     result_code: int
+    parameters: bytes = b""
 
     @property
     def request_label(self) -> str:
@@ -83,12 +97,16 @@ class FTMSControlTransport(Protocol):
     def read_resistance_level_range(self) -> ResistanceLevelRange | None:
         """Return trainer's supported resistance range, or None if unavailable."""
 
+    def subscribe_status(self, handler: Callable[[bytes], None]) -> None:
+        """Register a callback for Fitness Machine Status (0x2ADA) notifications."""
+
 
 @dataclass
 class _PendingAck:
     expected_opcode: int
     event: threading.Event
     result_code: int | None = None
+    result_parameters: bytes = b""
 
 
 class FTMSControl:
@@ -160,6 +178,24 @@ class FTMSControl:
         self._resistance_range_loaded = True
         return self._resistance_range
 
+    def start_spin_down(self) -> SpinDownTargetSpeeds:
+        """Request a spin-down calibration (opcode 0x13, Start) and return the trainer's
+        target coast-down speed band parsed from the response parameters."""
+        payload = bytes([_OPCODE_SPIN_DOWN_CONTROL, _SPIN_DOWN_START])
+        ack = self._send_command_with_ack(
+            request_opcode=_OPCODE_SPIN_DOWN_CONTROL,
+            payload=payload,
+        )
+        return _parse_spin_down_target_speeds(ack.parameters)
+
+    def ignore_spin_down(self) -> FTMSControlAck:
+        """Decline a spin-down calibration (opcode 0x13, Ignore)."""
+        payload = bytes([_OPCODE_SPIN_DOWN_CONTROL, _SPIN_DOWN_IGNORE])
+        return self._send_command_with_ack(
+            request_opcode=_OPCODE_SPIN_DOWN_CONTROL,
+            payload=payload,
+        )
+
     def handle_control_point_indication(self, payload: bytes) -> None:
         if len(payload) < 3:
             return
@@ -177,6 +213,7 @@ class FTMSControl:
             return
 
         pending.result_code = result_code
+        pending.result_parameters = bytes(payload[3:])
         pending.event.set()
 
     def _send_command_with_ack(self, *, request_opcode: int, payload: bytes) -> FTMSControlAck:
@@ -241,6 +278,7 @@ class FTMSControl:
             return FTMSControlAck(
                 request_opcode=request_opcode,
                 result_code=result_code,
+                parameters=pending.result_parameters,
             )
         finally:
             with self._pending_lock:
@@ -262,6 +300,7 @@ class WorkoutEngineFTMSBridge:
         lead_time_seconds: int = 0,
         lead_time_increasing_only: bool = False,
         kj_mode: bool = False,
+        erg_jog_persistent: bool = False,
     ) -> None:
         self._control = control
         self._alert_callback = alert_callback
@@ -270,6 +309,7 @@ class WorkoutEngineFTMSBridge:
         self._lead_time_seconds = lead_time_seconds
         self._lead_time_increasing_only = lead_time_increasing_only
         self._kj_mode = kj_mode
+        self._erg_jog_persistent = erg_jog_persistent
         self._last_state: EngineState | None = None
         self._last_interval_index: int | None = None
         self._lead_time_sent_for_interval: int | None = None
@@ -312,6 +352,10 @@ class WorkoutEngineFTMSBridge:
         if self._current_erg_target_base_watts is not None:
             jogged = int(round(self._current_erg_target_base_watts + offset_watts))
             self._send_erg_target(self._apply_opentrueup_target(jogged), force=True)
+
+    def set_erg_jog_persistent(self, persistent: bool) -> None:
+        """Control whether the manual ERG jog offset survives interval boundaries."""
+        self._erg_jog_persistent = persistent
 
     def apply_manual_erg_target(self, target_watts: int) -> None:
         """Apply a Free Ride ERG target while preserving any active jog offset."""
@@ -434,10 +478,12 @@ class WorkoutEngineFTMSBridge:
         interval = workout.intervals[interval_index]
         elapsed_in_interval = snapshot.current_interval_elapsed_seconds or 0.0
         if self._control.mode is ControlMode.ERG:
-            self._erg_jog_offset_watts = 0.0
+            if not self._erg_jog_persistent:
+                self._erg_jog_offset_watts = 0.0
             target_watts = _resolve_interval_target_watts(interval, elapsed_in_interval)
             self._current_erg_target_base_watts = target_watts
-            adjusted_target_watts = self._apply_opentrueup_target(target_watts)
+            jogged_target = int(round(target_watts + self._erg_jog_offset_watts))
+            adjusted_target_watts = self._apply_opentrueup_target(jogged_target)
             self._send_erg_target(adjusted_target_watts)
         else:
             self._current_erg_target_base_watts = None
@@ -597,6 +643,19 @@ def _interpolate_interval(
     elapsed_clamped = min(max(float(elapsed_seconds), 0.0), float(duration_seconds))
     ratio = elapsed_clamped / float(duration_seconds)
     return start_value + (end_value - start_value) * ratio
+
+
+def _parse_spin_down_target_speeds(parameters: bytes) -> SpinDownTargetSpeeds:
+    """Parse Target Speed Low/High (two UINT16 LE, 0.01 km/h) from a spin-down response.
+
+    The two values are sorted so the lower bound is always ``low_kmh``, guarding against
+    vendor variance in field ordering.
+    """
+    if len(parameters) < 4:
+        raise FTMSControlError("Spin down response missing target speed parameters.")
+    first, second = struct.unpack_from("<HH", parameters)
+    low_raw, high_raw = sorted((first, second))
+    return SpinDownTargetSpeeds(low_kmh=low_raw / 100.0, high_kmh=high_raw / 100.0)
 
 
 def _normalize_resistance(level_percent: float, range_: ResistanceLevelRange | None) -> int:

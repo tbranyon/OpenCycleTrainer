@@ -22,11 +22,14 @@ _CADENCE_SOURCE_BY_UUID: dict[str, CadenceSource] = {
 }
 from opencycletrainer.integrations.strava.sync_service import upload_fit_to_strava
 from opencycletrainer.integrations.strava.token_store import get_tokens
+from opencycletrainer.integrations.intervalsicu.sync_service import upload_fit_to_intervals_icu
+from opencycletrainer.integrations.intervalsicu.key_store import get_api_key
 from opencycletrainer.storage.settings import AppSettings, save_settings
 from opencycletrainer.devices.device_manager import DeviceManager
 from .devices_screen import DevicesScreen
 from .settings_screen import SettingsScreen
 from .theme import apply_application_theme
+from .toast import ToastOverlay
 from .workout_builder_screen import WorkoutBuilderScreen
 from .workout_controller import WorkoutSessionController
 from .workout_library_screen import WorkoutLibraryScreen
@@ -60,6 +63,8 @@ class MainWindow(QMainWindow):
             settings_path=settings_path,
             strava_connected=get_tokens() is not None,
             strava_sync_fn=upload_fit_to_strava,
+            intervals_icu_connected=get_api_key() is not None,
+            intervals_icu_sync_fn=upload_fit_to_intervals_icu,
             opentrueup_devices_available=self.devices_screen.has_opentrueup_devices(),
             parent=self,
         )
@@ -68,6 +73,7 @@ class MainWindow(QMainWindow):
             settings=self._settings,
             settings_path=settings_path,
             strava_upload_fn=upload_fit_to_strava,
+            intervals_icu_upload_fn=upload_fit_to_intervals_icu,
             parent=self,
         )
         self.settings_screen.settings_applied.connect(self._on_settings_applied)
@@ -96,10 +102,15 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.settings_screen, "Settings")
         self.setCentralWidget(self.tabs)
 
+        self._toast_overlay = ToastOverlay(self)
+        self.devices_screen.device_connected.connect(self._on_device_connected)
+
         self._library_tab_index = self.tabs.indexOf(self.workout_library_screen)
+        self._builder_tab_index = self.tabs.indexOf(self.workout_builder_screen)
         self._workout_tab_index = self.tabs.indexOf(self.workout_screen)
         self.workout_screen.load_from_library_requested.connect(self._navigate_to_library)
         self.workout_library_screen.workout_selected.connect(self._on_library_workout_selected)
+        self.workout_library_screen.workout_edit_requested.connect(self._on_library_workout_edit_requested)
         self.workout_builder_screen.workout_saved.connect(self.workout_library_screen.refresh)
         self.workout_builder_screen.workout_load_requested.connect(self._on_library_workout_selected)
         QApplication.instance().styleHints().colorSchemeChanged.connect(
@@ -115,6 +126,14 @@ class MainWindow(QMainWindow):
             self.devices_screen.connected_trainer_device_id(),
             self.devices_screen.connected_power_meter_device_id(),
         )
+
+    def start_autoconnect(self) -> None:
+        """Kick off unattended reconnection to previously paired devices."""
+        self.devices_screen.start_autoconnect()
+
+    def _on_device_connected(self, device_name: object) -> None:
+        if isinstance(device_name, str):
+            self._toast_overlay.show_message(f"Connected to {device_name}")
 
     def _on_sensor_sample(self, sample: object) -> None:
         if not isinstance(sample, SensorSample):
@@ -165,6 +184,10 @@ class MainWindow(QMainWindow):
     def _on_library_workout_selected(self, path: Path) -> None:
         self.workout_controller.load_workout(path)
         self.tabs.setCurrentIndex(self._workout_tab_index)
+
+    def _on_library_workout_edit_requested(self, path: Path) -> None:
+        self.workout_builder_screen.load_for_edit(path)
+        self.tabs.setCurrentIndex(self._builder_tab_index)
 
     def _on_trainer_device_changed(self, backend: object, trainer_device_id: object) -> None:
         trainer_id = trainer_device_id if isinstance(trainer_device_id, str) else None

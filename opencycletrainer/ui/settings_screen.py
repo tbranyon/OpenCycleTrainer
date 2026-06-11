@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer import __version__
 from opencycletrainer.integrations.strava.app_credentials import (
     has_app_credentials,
     load_app_credentials,
@@ -31,6 +32,15 @@ from opencycletrainer.integrations.strava.app_credentials import (
 from opencycletrainer.integrations.strava.oauth_flow import OAuthResult, run_oauth_flow
 from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
 from opencycletrainer.integrations.strava.token_store import clear_tokens, is_available, save_tokens
+from opencycletrainer.integrations.intervalsicu.sync_service import (
+    DuplicateUploadError as IntervalsIcuDuplicateUploadError,
+    validate_api_key,
+)
+from opencycletrainer.integrations.intervalsicu.key_store import (
+    clear_api_key,
+    get_api_key,
+    save_api_key,
+)
 from opencycletrainer.storage.paths import get_workout_fit_dir
 from opencycletrainer.storage.settings import (
     AppSettings,
@@ -41,12 +51,17 @@ from opencycletrainer.storage.settings import (
     save_settings,
 )
 from .tile_config import MAX_CONFIGURABLE_TILES, TILE_OPTIONS, normalize_tile_selections
+from .toggle_switch import ToggleSwitch
 
 OPENTRUEUP_TOOLTIP = (
     "OpenTrueUp computes the offset between your on-bike power meter and your trainer "
     "and adjusts the ERG target accordingly so that ERG holds the desired power target "
     "according to your on-bike PM"
 )
+
+SPINBOX_MAX_WIDTH = 100
+COMBO_MAX_WIDTH = 180
+TEXT_FIELD_MAX_WIDTH = 360
 
 THEME_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Use System Theme", THEME_MODE_SYSTEM),
@@ -128,6 +143,8 @@ class _OAuthWorker(QObject):
 class SettingsScreen(QWidget):
     settings_applied = Signal(object)
     _sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
+    _intervals_icu_sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
+    _intervals_icu_connect_signal = Signal(str)  # "ok:{name}" | "error:{msg}"
 
     def __init__(
         self,
@@ -136,6 +153,8 @@ class SettingsScreen(QWidget):
         settings_path: Path | None = None,
         strava_connected: bool = False,
         strava_sync_fn: object = None,
+        intervals_icu_connected: bool = False,
+        intervals_icu_sync_fn: object = None,
         opentrueup_devices_available: bool = False,
         parent: QWidget | None = None,
     ) -> None:
@@ -143,11 +162,15 @@ class SettingsScreen(QWidget):
         self._settings_path = settings_path
         self._settings = settings if settings is not None else load_settings(settings_path)
         self._strava_sync_fn = strava_sync_fn
+        self._intervals_icu_sync_fn = intervals_icu_sync_fn
         self._selected_tiles = normalize_tile_selections(self._settings.tile_selections)
         self._tile_checkboxes: dict[str, QCheckBox] = {}
         self._strava_connected = strava_connected
+        self._intervals_icu_connected = intervals_icu_connected
         self._oauth_thread: QThread | None = None
         self._sync_now_signal.connect(self._on_sync_now_result)
+        self._intervals_icu_sync_now_signal.connect(self._on_intervals_icu_sync_now_result)
+        self._intervals_icu_connect_signal.connect(self._on_intervals_icu_connect_result)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
@@ -167,21 +190,32 @@ class SettingsScreen(QWidget):
         self.ftp_spinbox = QSpinBox(general_group)
         self.ftp_spinbox.setRange(50, 2000)
         self.ftp_spinbox.setValue(self._settings.ftp)
+        self.ftp_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
         general_layout.addRow("FTP (W)", self.ftp_spinbox)
 
         self.lead_time_spinbox = QSpinBox(general_group)
         self.lead_time_spinbox.setRange(0, 30)
         self.lead_time_spinbox.setValue(self._settings.lead_time)
+        self.lead_time_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
         general_layout.addRow("Lead Time (s)", self.lead_time_spinbox)
 
-        self.lead_time_increasing_only_checkbox = QCheckBox("Increasing power only", general_group)
+        self.lead_time_increasing_only_checkbox = ToggleSwitch("Increasing power only", general_group)
         self.lead_time_increasing_only_checkbox.setChecked(self._settings.lead_time_increasing_only)
         general_layout.addRow("Lead Time Direction", self.lead_time_increasing_only_checkbox)
 
         self.windowed_power_window_spinbox = QSpinBox(general_group)
         self.windowed_power_window_spinbox.setRange(1, 10)
         self.windowed_power_window_spinbox.setValue(self._settings.windowed_power_window_seconds)
+        self.windowed_power_window_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
         general_layout.addRow("Power Averaging Time (s)", self.windowed_power_window_spinbox)
+
+        self.erg_jog_persistent_checkbox = ToggleSwitch("Persist power jogs across whole workout", general_group)
+        self.erg_jog_persistent_checkbox.setChecked(self._settings.erg_jog_persistent)
+        self.erg_jog_persistent_checkbox.setToolTip(
+            "When enabled, manual ERG power jogs carry over to subsequent intervals "
+            "instead of resetting at each interval boundary."
+        )
+        general_layout.addRow("Power Jog", self.erg_jog_persistent_checkbox)
 
         self.theme_mode_combo = QComboBox(general_group)
         for label, value in THEME_OPTIONS:
@@ -190,9 +224,11 @@ class SettingsScreen(QWidget):
         if selected_theme_index < 0:
             selected_theme_index = self.theme_mode_combo.findData(THEME_MODE_SYSTEM)
         self.theme_mode_combo.setCurrentIndex(selected_theme_index)
+        self.theme_mode_combo.setMaximumWidth(COMBO_MAX_WIDTH)
         general_layout.addRow("Theme", self.theme_mode_combo)
 
         self.workout_data_dir_edit = QLineEdit(general_group)
+        self.workout_data_dir_edit.setMaximumWidth(TEXT_FIELD_MAX_WIDTH)
         if self._settings.workout_data_dir is not None:
             self.workout_data_dir_edit.setText(str(self._settings.workout_data_dir))
         self.workout_data_dir_button = QPushButton("Browse...", general_group)
@@ -207,7 +243,7 @@ class SettingsScreen(QWidget):
 
         self.opentrueup_label = QLabel("OpenTrueUp", general_group)
         self.opentrueup_label.setToolTip(OPENTRUEUP_TOOLTIP)
-        self.opentrueup_checkbox = QCheckBox("Enable OpenTrueUp", general_group)
+        self.opentrueup_checkbox = ToggleSwitch("Enable OpenTrueUp", general_group)
         self.opentrueup_checkbox.setChecked(self._settings.opentrueup_enabled)
         self.opentrueup_checkbox.setToolTip(OPENTRUEUP_TOOLTIP)
         general_layout.addRow(self.opentrueup_label, self.opentrueup_checkbox)
@@ -218,7 +254,7 @@ class SettingsScreen(QWidget):
         tiles_layout = QVBoxLayout(tiles_group)
         selector_layout = QGridLayout()
         for index, (key, label) in enumerate(TILE_OPTIONS):
-            checkbox = QCheckBox(label, tiles_group)
+            checkbox = ToggleSwitch(label, tiles_group)
             checkbox.toggled.connect(lambda checked, tile_key=key: self._on_tile_toggled(tile_key, checked))
             checkbox.setChecked(key in self._selected_tiles)
             row = index // 2
@@ -235,7 +271,7 @@ class SettingsScreen(QWidget):
 
         charts_group = QGroupBox("Charts", self)
         charts_layout = QFormLayout(charts_group)
-        self.show_interval_plot_checkbox = QCheckBox("Show interval plot", charts_group)
+        self.show_interval_plot_checkbox = ToggleSwitch("Show interval plot", charts_group)
         self.show_interval_plot_checkbox.setChecked(self._settings.show_interval_plot)
         charts_layout.addRow(self.show_interval_plot_checkbox)
         root_layout.addWidget(charts_group)
@@ -255,7 +291,7 @@ class SettingsScreen(QWidget):
         self.strava_disconnect_button.clicked.connect(self.disconnect_strava)
         strava_layout.addRow(self.strava_disconnect_button)
 
-        self.strava_auto_sync_checkbox = QCheckBox("Automatically sync rides with Strava", strava_group)
+        self.strava_auto_sync_checkbox = ToggleSwitch("Automatically sync rides with Strava", strava_group)
         self.strava_auto_sync_checkbox.setChecked(self._settings.strava_auto_sync_enabled)
         strava_layout.addRow(self.strava_auto_sync_checkbox)
 
@@ -269,10 +305,62 @@ class SettingsScreen(QWidget):
             self._settings.strava_athlete_name,
         )
 
+        intervals_icu_group = QGroupBox("intervals.icu", self)
+        intervals_icu_layout = QFormLayout(intervals_icu_group)
+
+        self.intervals_icu_status_label = QLabel("", intervals_icu_group)
+        self.intervals_icu_status_label.setObjectName("intervalsIcuStatusLabel")
+        intervals_icu_layout.addRow("Status", self.intervals_icu_status_label)
+
+        self.intervals_icu_api_key_edit = QLineEdit(intervals_icu_group)
+        self.intervals_icu_api_key_edit.setMaximumWidth(TEXT_FIELD_MAX_WIDTH)
+        self.intervals_icu_api_key_edit.setEchoMode(QLineEdit.Password)
+        self.intervals_icu_api_key_edit.setPlaceholderText(
+            "Paste your API key (intervals.icu → Settings → Developer Settings)"
+        )
+        existing_key = get_api_key()
+        if existing_key:
+            self.intervals_icu_api_key_edit.setText(existing_key)
+        intervals_icu_layout.addRow("API Key", self.intervals_icu_api_key_edit)
+
+        self.intervals_icu_connect_button = QPushButton("Connect", intervals_icu_group)
+        self.intervals_icu_connect_button.clicked.connect(self._on_intervals_icu_connect)
+        intervals_icu_layout.addRow(self.intervals_icu_connect_button)
+
+        self.intervals_icu_disconnect_button = QPushButton("Disconnect", intervals_icu_group)
+        self.intervals_icu_disconnect_button.clicked.connect(self.disconnect_intervals_icu)
+        intervals_icu_layout.addRow(self.intervals_icu_disconnect_button)
+
+        self.intervals_icu_auto_sync_checkbox = ToggleSwitch(
+            "Automatically sync rides with intervals.icu", intervals_icu_group
+        )
+        self.intervals_icu_auto_sync_checkbox.setChecked(
+            self._settings.intervals_icu_auto_sync_enabled
+        )
+        intervals_icu_layout.addRow(self.intervals_icu_auto_sync_checkbox)
+
+        self.intervals_icu_sync_now_button = QPushButton("Sync now", intervals_icu_group)
+        self.intervals_icu_sync_now_button.clicked.connect(self._on_intervals_icu_sync_now)
+        intervals_icu_layout.addRow(self.intervals_icu_sync_now_button)
+
+        root_layout.addWidget(intervals_icu_group)
+        self._apply_intervals_icu_connected_state(
+            self._intervals_icu_connected,
+            self._settings.intervals_icu_athlete_name,
+        )
+
         self.status_label = QLabel("Ready.", self)
         self.status_label.setObjectName("settingsStatusLabel")
         root_layout.addWidget(self.status_label)
         root_layout.addStretch(1)
+
+        self.version_label = QLabel(f"Version {__version__}", self)
+        self.version_label.setObjectName("settingsVersionLabel")
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        version_font = self.version_label.font()
+        version_font.setPointSize(max(version_font.pointSize() - 1, 1))
+        self.version_label.setFont(version_font)
+        root_layout.addWidget(self.version_label)
 
         self._apply_opentrueup_state(opentrueup_devices_available)
         self._connect_autosave_signals()
@@ -290,7 +378,9 @@ class SettingsScreen(QWidget):
             windowed_power_window_seconds=self.windowed_power_window_spinbox.value(),
             workout_data_dir=Path(workout_data_dir_text) if workout_data_dir_text else None,
             strava_auto_sync_enabled=self.strava_auto_sync_checkbox.isChecked(),
+            intervals_icu_auto_sync_enabled=self.intervals_icu_auto_sync_checkbox.isChecked(),
             show_interval_plot=self.show_interval_plot_checkbox.isChecked(),
+            erg_jog_persistent=self.erg_jog_persistent_checkbox.isChecked(),
         )
 
     def set_tile_selected(self, tile_key: str, selected: bool) -> None:
@@ -323,10 +413,12 @@ class SettingsScreen(QWidget):
         self.lead_time_spinbox.valueChanged.connect(self._autosave)
         self.lead_time_increasing_only_checkbox.toggled.connect(self._autosave)
         self.windowed_power_window_spinbox.valueChanged.connect(self._autosave)
+        self.erg_jog_persistent_checkbox.toggled.connect(self._autosave)
         self.theme_mode_combo.currentIndexChanged.connect(self._autosave)
         self.workout_data_dir_edit.editingFinished.connect(self._autosave)
         self.opentrueup_checkbox.toggled.connect(self._autosave)
         self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
+        self.intervals_icu_auto_sync_checkbox.toggled.connect(self._autosave)
         self.show_interval_plot_checkbox.toggled.connect(self._autosave)
 
     def _browse_workout_data_dir(self) -> None:
@@ -467,6 +559,114 @@ class SettingsScreen(QWidget):
         else:
             msg = result[len("error:"):] if result.startswith("error:") else result
             self.status_label.setText(f"Strava sync failed: {msg}")
+
+    def _apply_intervals_icu_connected_state(self, connected: bool, athlete_name: str) -> None:
+        self._intervals_icu_connected = connected
+        if connected:
+            label = f"Connected as {athlete_name}" if athlete_name else "Connected"
+        else:
+            label = "Not connected"
+        self.intervals_icu_status_label.setText(label)
+        self.intervals_icu_connect_button.setEnabled(True)
+        self.intervals_icu_disconnect_button.setVisible(connected)
+        self.intervals_icu_auto_sync_checkbox.setEnabled(connected)
+        self.intervals_icu_sync_now_button.setEnabled(connected)
+
+    def _on_intervals_icu_connect(self) -> None:
+        """Validate the entered API key off-thread and store it on success."""
+        api_key = self.intervals_icu_api_key_edit.text().strip()
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "intervals.icu — API Key Required",
+                "Enter your intervals.icu API key first.\n\n"
+                "Find it at intervals.icu → Settings → Developer Settings.",
+            )
+            return
+        self.intervals_icu_connect_button.setEnabled(False)
+        self.status_label.setText("Connecting to intervals.icu…")
+
+        signal = self._intervals_icu_connect_signal
+
+        def _run() -> None:
+            try:
+                name = validate_api_key(api_key)
+                signal.emit(f"ok:{name}")
+            except Exception as exc:  # noqa: BLE001
+                signal.emit(f"error:{exc}")
+
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intervals_icu_connect")
+        executor.submit(_run)
+        executor.shutdown(wait=False)
+
+    def _on_intervals_icu_connect_result(self, result: str) -> None:
+        if result.startswith("ok:"):
+            athlete_name = result[len("ok:"):]
+            save_api_key(self.intervals_icu_api_key_edit.text().strip())
+            self._settings = replace(self._settings, intervals_icu_athlete_name=athlete_name)
+            save_settings(self._settings, self._settings_path)
+            self._apply_intervals_icu_connected_state(True, athlete_name)
+            self.status_label.setText("intervals.icu connected.")
+        else:
+            self.intervals_icu_connect_button.setEnabled(True)
+            msg = result[len("error:"):] if result.startswith("error:") else result
+            self.status_label.setText("intervals.icu connection failed.")
+            QMessageBox.warning(self, "intervals.icu — Connection Failed", msg)
+
+    def disconnect_intervals_icu(self) -> None:
+        """Clear the stored API key and update the UI to the disconnected state."""
+        clear_api_key()
+        self.intervals_icu_api_key_edit.clear()
+        self._settings = replace(
+            self._settings,
+            intervals_icu_athlete_name="",
+            intervals_icu_auto_sync_enabled=False,
+        )
+        save_settings(self._settings, self._settings_path)
+        self._apply_intervals_icu_connected_state(False, "")
+
+    def _on_intervals_icu_sync_now(self) -> None:
+        """Open a FIT file picker and enqueue the selected file for intervals.icu upload."""
+        default_dir = str(get_workout_fit_dir(self.current_settings().workout_data_dir))
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select FIT File to Sync",
+            default_dir,
+            "FIT Files (*.fit)",
+        )
+        if not path or self._intervals_icu_sync_fn is None:
+            return
+        self.intervals_icu_sync_now_button.setEnabled(False)
+        self.status_label.setText("Syncing to intervals.icu…")
+
+        fit_path = Path(path)
+        sync_fn = self._intervals_icu_sync_fn
+        signal = self._intervals_icu_sync_now_signal
+
+        def _run() -> None:
+            try:
+                sync_fn(fit_path)  # type: ignore[operator]
+                signal.emit("success")
+            except IntervalsIcuDuplicateUploadError:
+                signal.emit("duplicate")
+            except Exception as exc:  # noqa: BLE001
+                signal.emit(f"error:{exc}")
+
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intervals_icu_sync_now")
+        executor.submit(_run)
+        executor.shutdown(wait=False)
+
+    def _on_intervals_icu_sync_now_result(self, result: str) -> None:
+        self.intervals_icu_sync_now_button.setEnabled(True)
+        if result == "success":
+            self.status_label.setText("Ride synced to intervals.icu.")
+        elif result == "duplicate":
+            self.status_label.setText("Ride already synced to intervals.icu.")
+        else:
+            msg = result[len("error:"):] if result.startswith("error:") else result
+            self.status_label.setText(f"intervals.icu sync failed: {msg}")
 
     def _on_tile_toggled(self, tile_key: str, checked: bool) -> None:
         if checked:

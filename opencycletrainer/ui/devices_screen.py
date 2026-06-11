@@ -17,8 +17,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer.core.control.ftms_control import FTMSControl
 from opencycletrainer.core.sensors import SensorSample
-from opencycletrainer.devices.ble_backend import BleakDeviceBackend
+from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
+from opencycletrainer.devices.mock_backend import MockDeviceBackend, MockFTMSControlTransport
 from opencycletrainer.storage.paired_devices import PairedDeviceStore
 from opencycletrainer.devices.decoders import (
     CyclingPowerDecoder,
@@ -77,7 +79,10 @@ class DevicesScreen(QWidget):
     trainer_device_changed = Signal(object, object)  # (backend, trainer_device_id | None)
     power_source_pair_changed = Signal(object, object)  # (trainer_device_id | None, power_meter_device_id | None)
     opentrueup_availability_changed = Signal(bool)  # True when PM + trainer both connected
+    device_connected = Signal(str)  # device name, emitted on successful autoconnect
     _reading_received = Signal(str, str)  # (device_id, reading_text)
+    _spin_down_ready = Signal(str, str, object, object)  # (device_id, name, control, transport)
+    _spin_down_error = Signal(str)  # error message from spin-down preparation
     _capabilities_ready = Signal(str, object)  # (device_name, FTMSCapabilities)
     _hrs_capabilities_ready = Signal(str, object)  # (device_name, HRSCapabilities)
     _cps_capabilities_ready = Signal(str, object)  # (device_name, CPSCapabilities)
@@ -101,10 +106,15 @@ class DevicesScreen(QWidget):
         self._last_power_source_pair: tuple[str | None, str | None] | None = None
         self._last_opentrueup_available: bool | None = None
         self._paired_device_ids: list[str] = []
+        self._spin_down_dialog: Any = None
+        self._spin_down_device_id: str | None = None
 
         self.action_succeeded.connect(self._handle_action_succeeded)
         self.action_failed.connect(self._handle_action_failed)
         self._reading_received.connect(self._on_reading_received)
+        self._spin_down_ready.connect(self._show_spin_down_dialog)
+        self._spin_down_error.connect(self._on_spin_down_error)
+        self.sensor_sample_received.connect(self._forward_speed_to_spin_down)
         self._capabilities_ready.connect(self._show_ftms_capabilities_dialog)
         self._hrs_capabilities_ready.connect(self._show_hrs_capabilities_dialog)
         self._cps_capabilities_ready.connect(self._show_cps_capabilities_dialog)
@@ -189,6 +199,34 @@ class DevicesScreen(QWidget):
         header.setStretchLastSection(True)
         return table
 
+    def start_autoconnect(self) -> None:
+        """Begin connecting to previously paired devices without user intervention.
+
+        Runs in the background; on completion the paired table refreshes and a
+        device_connected signal fires for each device that came online."""
+        self.status_label.setText("Connecting to paired devices...")
+        self._submit_future(
+            self._backend.autoconnect_paired_devices(),
+            on_success=self._on_autoconnect_complete,
+            error_prefix="Autoconnect failed",
+        )
+
+    def _on_autoconnect_complete(self, connected_ids: object) -> None:
+        self.refresh()
+        if not isinstance(connected_ids, list):
+            return
+        paired = {device.device_id: device for device in self._backend.get_paired_devices()}
+        connected_count = 0
+        for device_id in connected_ids:
+            device = paired.get(device_id)
+            if device is not None and device.connected:
+                self.device_connected.emit(device.name)
+                connected_count += 1
+        if connected_count:
+            self.status_label.setText(f"Connected to {connected_count} paired device(s).")
+        else:
+            self.status_label.setText("No paired devices connected.")
+
     def _scan_devices(self) -> None:
         self.status_label.setText("Scanning for BLE devices...")
         self._submit_future(
@@ -232,6 +270,13 @@ class DevicesScreen(QWidget):
                 calibrate_button.setEnabled(not is_calibrating)
                 calibrate_button.clicked.connect(partial(self._calibrate_device, device.device_id))
                 action_layout.addWidget(calibrate_button)
+
+            if device.device_type is DeviceType.TRAINER and device.connected:
+                spin_down_button = QPushButton("Spin-Down", action_widget)
+                spin_down_button.clicked.connect(
+                    partial(self._open_spin_down_dialog, device.device_id)
+                )
+                action_layout.addWidget(spin_down_button)
 
             action_layout.addStretch(1)
             self.paired_table.setCellWidget(row, _COL_ACTIONS, action_widget)
@@ -456,6 +501,84 @@ class DevicesScreen(QWidget):
         self._calibrating.discard(device_id)
         self.refresh()
         self.status_label.setText(f"Calibration failed for {device_id}: {message}")
+
+    def _open_spin_down_dialog(self, device_id: str) -> None:
+        """Prepare an FTMS control session off-thread, then show the spin-down dialog."""
+        device = next(
+            (d for d in self._backend.get_paired_devices() if d.device_id == device_id),
+            None,
+        )
+        device_name = device.name if device is not None else device_id
+        self.status_label.setText(f"Preparing spin-down for {device_name}...")
+        threading.Thread(
+            target=self._prepare_spin_down,
+            args=(device_id, device_name),
+            daemon=True,
+        ).start()
+
+    def _prepare_spin_down(self, device_id: str, device_name: str) -> None:
+        transport = self._create_spin_down_transport(device_id)
+        if transport is None:
+            self._spin_down_error.emit("Spin-down is not available for this trainer.")
+            return
+        try:
+            control = FTMSControl(transport)
+        except Exception:
+            self._spin_down_error.emit(f"Could not connect to {device_name} for spin-down.")
+            return
+        self._spin_down_ready.emit(device_id, device_name, control, transport)
+
+    def _create_spin_down_transport(self, device_id: str) -> object | None:
+        if isinstance(self._backend, BleakDeviceBackend):
+            return BleakFTMSControlTransport(self._backend, device_id)
+        if isinstance(self._backend, MockDeviceBackend):
+            return MockFTMSControlTransport()
+        return None
+
+    @Slot(str)
+    def _on_spin_down_error(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    @Slot(str, str, object, object)
+    def _show_spin_down_dialog(
+        self,
+        device_id: str,
+        device_name: str,
+        control: object,
+        transport: object,
+    ) -> None:
+        from opencycletrainer.core.control.spin_down import SpinDownController
+        from opencycletrainer.ui.spin_down_dialog import SpinDownDialog
+
+        def factory(status_callback):
+            return SpinDownController(
+                control,
+                subscribe_status=transport.subscribe_status,
+                status_callback=status_callback,
+            )
+
+        dialog = SpinDownDialog(device_name, factory, parent=self)
+        self._spin_down_dialog = dialog
+        self._spin_down_device_id = device_id
+        self.status_label.setText(f"Spin-down ready for {device_name}.")
+        try:
+            dialog.exec()
+        finally:
+            self._spin_down_dialog = None
+            self._spin_down_device_id = None
+        self.status_label.setText(f"Spin-down closed for {device_name}.")
+
+    @Slot(object)
+    def _forward_speed_to_spin_down(self, sample: object) -> None:
+        dialog = self._spin_down_dialog
+        if dialog is None:
+            return
+        if getattr(sample, "device_id", None) != self._spin_down_device_id:
+            return
+        speed_mps = getattr(sample, "speed_mps", None)
+        if speed_mps is None:
+            return
+        dialog.update_current_speed(speed_mps * 3.6)
 
     def _post_action_refresh(self, message: str) -> None:
         self.refresh()

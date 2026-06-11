@@ -52,7 +52,10 @@ class AppSettings:
     workout_data_dir: Path | None = None
     strava_auto_sync_enabled: bool = False
     strava_athlete_name: str = ""
+    intervals_icu_auto_sync_enabled: bool = False
+    intervals_icu_athlete_name: str = ""
     show_interval_plot: bool = True
+    erg_jog_persistent: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,7 +72,10 @@ class AppSettings:
             "workout_data_dir": str(self.workout_data_dir) if self.workout_data_dir else None,
             "strava_auto_sync_enabled": self.strava_auto_sync_enabled,
             "strava_athlete_name": self.strava_athlete_name,
+            "intervals_icu_auto_sync_enabled": self.intervals_icu_auto_sync_enabled,
+            "intervals_icu_athlete_name": self.intervals_icu_athlete_name,
             "show_interval_plot": self.show_interval_plot,
+            "erg_jog_persistent": self.erg_jog_persistent,
         }
 
     @classmethod
@@ -102,7 +108,10 @@ class AppSettings:
             workout_data_dir=_restore_dir(data.get("workout_data_dir")),
             strava_auto_sync_enabled=bool(data.get("strava_auto_sync_enabled", False)),
             strava_athlete_name=str(data.get("strava_athlete_name", "")),
+            intervals_icu_auto_sync_enabled=bool(data.get("intervals_icu_auto_sync_enabled", False)),
+            intervals_icu_athlete_name=str(data.get("intervals_icu_athlete_name", "")),
             show_interval_plot=bool(data.get("show_interval_plot", True)),
+            erg_jog_persistent=bool(data.get("erg_jog_persistent", False)),
         )
 
 

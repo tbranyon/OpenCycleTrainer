@@ -399,6 +399,14 @@ class WorkoutScreen(QWidget):
         self.resistance_level_label.setText(text)
         self.resistance_level_label.setVisible(True)
 
+    def set_jog_offset(self, watts: int | None) -> None:
+        """Show the ERG jog offset label, or hide it if None."""
+        if watts is None:
+            self.jog_offset_label.setVisible(False)
+            return
+        self.jog_offset_label.setText(f"Jog: {int(watts):+d} W")
+        self.jog_offset_label.setVisible(True)
+
     def set_opentrueup_offset_watts(self, offset_watts: int | None) -> None:
         if offset_watts is None:
             self.opentrueup_offset_value.setText("-- W")
@@ -604,6 +612,7 @@ class WorkoutScreen(QWidget):
         self.opentrueup_offset_value.setVisible(visible)
         if not visible:
             self.resistance_level_label.setVisible(False)
+            self.jog_offset_label.setVisible(False)
 
     def _build_mode_footer(self, root_layout: QVBoxLayout) -> None:
         mode_row = QHBoxLayout()
@@ -621,6 +630,11 @@ class WorkoutScreen(QWidget):
         self.resistance_level_label.setObjectName("resistanceLevelLabel")
         self.resistance_level_label.setVisible(False)
         mode_row.addWidget(self.resistance_level_label)
+
+        self.jog_offset_label = QLabel("Jog: +0 W", self)
+        self.jog_offset_label.setObjectName("jogOffsetLabel")
+        self.jog_offset_label.setVisible(False)
+        mode_row.addWidget(self.jog_offset_label)
 
         mode_row.addSpacing(16)
         self.opentrueup_label = QLabel("OpenTrueUp Offset:", self)

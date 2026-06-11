@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import replace
+import struct
 import threading
 
+from .decoders.ftms import ResistanceLevelRange
 from .device_manager import DeviceManager, NotificationCallback, completed_future
 from .types import DeviceInfo, DeviceType
+
+_SPIN_DOWN_CONTROL_OPCODE = 0x13
+_SPIN_DOWN_START = 0x01
+_RESPONSE_CODE_OPCODE = 0x80
+_RESULT_SUCCESS = 0x01
+_SPIN_DOWN_STATUS_OPCODE = 0x14
+_SPIN_DOWN_STATUS_STOP_PEDALING = 0x04
+_SPIN_DOWN_STATUS_SUCCESS = 0x02
 
 RELEVANT_DEVICE_TYPES = {
     DeviceType.TRAINER,
@@ -15,6 +26,73 @@ RELEVANT_DEVICE_TYPES = {
 }
 
 MockDevice = DeviceInfo
+
+
+class MockFTMSControlTransport:
+    """In-memory FTMS control transport for spin-down without hardware.
+
+    Auto-acks every control-point write. On a Spin Down Control (0x13) Start it returns a
+    sample target speed band and, when ``auto_sequence`` is set, schedules Stop Pedaling
+    then Success status notifications to walk a real trainer's flow. Tests can disable the
+    timers and drive the sequence manually via :meth:`emit_spin_down_status`.
+    """
+
+    def __init__(
+        self,
+        *,
+        target_low_raw: int = 3000,
+        target_high_raw: int = 3500,
+        auto_sequence: bool = True,
+        step_delay_seconds: float = 0.8,
+    ) -> None:
+        self._target_low_raw = target_low_raw
+        self._target_high_raw = target_high_raw
+        self._auto_sequence = auto_sequence
+        self._step_delay_seconds = step_delay_seconds
+        self._indication_handler: Callable[[bytes], None] = lambda _: None
+        self._status_handler: Callable[[bytes], None] = lambda _: None
+        self._timers: list[threading.Timer] = []
+
+    def write_control_point(self, payload: bytes) -> Future[None]:
+        future: Future[None] = Future()
+        future.set_result(None)
+        opcode = payload[0]
+        parameters = b""
+        if (
+            opcode == _SPIN_DOWN_CONTROL_OPCODE
+            and len(payload) > 1
+            and payload[1] == _SPIN_DOWN_START
+        ):
+            parameters = struct.pack("<HH", self._target_low_raw, self._target_high_raw)
+            if self._auto_sequence:
+                self._schedule_spin_down_sequence()
+        self._indication_handler(
+            bytes([_RESPONSE_CODE_OPCODE, opcode, _RESULT_SUCCESS]) + parameters
+        )
+        return future
+
+    def set_indication_handler(self, handler: Callable[[bytes], None]) -> None:
+        self._indication_handler = handler
+
+    def subscribe_status(self, handler: Callable[[bytes], None]) -> None:
+        self._status_handler = handler
+
+    def read_resistance_level_range(self) -> ResistanceLevelRange | None:
+        return None
+
+    def emit_spin_down_status(self, status_value: int) -> None:
+        self._status_handler(bytes([_SPIN_DOWN_STATUS_OPCODE, status_value]))
+
+    def _schedule_spin_down_sequence(self) -> None:
+        delay = self._step_delay_seconds
+        for offset, status in (
+            (delay, _SPIN_DOWN_STATUS_STOP_PEDALING),
+            (delay * 2, _SPIN_DOWN_STATUS_SUCCESS),
+        ):
+            timer = threading.Timer(offset, self.emit_spin_down_status, args=(status,))
+            timer.daemon = True
+            timer.start()
+            self._timers.append(timer)
 
 
 class MockDeviceBackend(DeviceManager):
@@ -70,6 +148,19 @@ class MockDeviceBackend(DeviceManager):
             device = self._get_device(device_id)
             self._devices[device_id] = replace(device, connected=True)
         return completed_future(None)
+
+    def autoconnect_paired_devices(self) -> Future[list[str]]:
+        with self._lock:
+            to_connect = [
+                device.device_id
+                for device in self._devices.values()
+                if device.paired
+                and not device.connected
+                and device.device_type in RELEVANT_DEVICE_TYPES
+            ]
+            for device_id in to_connect:
+                self._devices[device_id] = replace(self._devices[device_id], connected=True)
+        return completed_future(to_connect)
 
     def disconnect_device(self, device_id: str) -> Future[None]:
         with self._lock:

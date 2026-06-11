@@ -530,3 +530,18 @@ def test_sync_now_defaults_to_fit_subfolder_under_workout_data_dir(tmp_path: Pat
 
     assert picker.call_count == 1
     assert picker.call_args[0][2] == str(tmp_path / "FIT")
+
+
+# ── Version information ───────────────────────────────────────────────────────
+
+
+def test_settings_screen_shows_version_label():
+    from opencycletrainer import __version__
+
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert __version__ in screen.version_label.text()

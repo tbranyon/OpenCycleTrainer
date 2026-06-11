@@ -23,11 +23,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from opencycletrainer.core.builder_parser import parse_builder_text
+from opencycletrainer.core.builder_parser import parse_builder_text, workout_to_builder_text
 from opencycletrainer.core.mrc_exporter import workout_to_mrc_text
+from opencycletrainer.core.mrc_parser import parse_mrc_file, parse_mrc_header
 from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.core.zwo_exporter import workout_to_zwo_text
+from opencycletrainer.core.zwo_parser import parse_zwo_file, parse_zwo_header
+from opencycletrainer.storage.blocks import load_blocks
+from opencycletrainer.ui.block_manager_dialog import BlockManagerDialog
 from opencycletrainer.ui.workout_chart import (
+    ChartHoverReadout,
     _TimeAxisItem,
     _configure_y_axis,
     _make_target_item,
@@ -39,6 +44,8 @@ _INSTRUCTIONS = """\
   - 10m 50%              steady state (% FTP)          - 5m free          free ride
   - 5m ramp 60-90%       ramp between two % values     - 3x(4m 110%, 2m 55%)  repeat
   - 2m 300W              absolute watts                 # this line is a comment
+  - 3x(4m 110%, 2m 55%)! repeat, omit final interval (e.g. skip last recovery)
+  - @warmup              insert a saved block (manage with the button below)
   Duration: Nm = minutes, Ns = seconds\
 """
 
@@ -72,6 +79,8 @@ class WorkoutBuilderScreen(QWidget):
         self._library = library
         self._ftp_getter = ftp_getter
         self._export_auto_checked = False
+        self._editing_path: Path | None = None
+        self._blocks = load_blocks()
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -103,6 +112,16 @@ class WorkoutBuilderScreen(QWidget):
         self._category_edit.setPlaceholderText("Optional…")
         row.addWidget(self._category_edit, stretch=1)
         layout.addLayout(row)
+
+        edit_row = QHBoxLayout()
+        self._editing_label = QLabel(self)
+        self._editing_label.hide()
+        edit_row.addWidget(self._editing_label, stretch=1)
+        self._discard_edit_btn = QPushButton("New Workout", self)
+        self._discard_edit_btn.hide()
+        self._discard_edit_btn.clicked.connect(self._on_discard_edit)
+        edit_row.addWidget(self._discard_edit_btn)
+        layout.addLayout(edit_row)
 
     def _build_instructions(self, layout: QVBoxLayout) -> None:
         label = QLabel(_INSTRUCTIONS, self)
@@ -145,18 +164,26 @@ class WorkoutBuilderScreen(QWidget):
         self._plot.showGrid(x=False, y=True, alpha=0.2)
         self._target_item = _make_target_item()
         self._plot.addItem(self._target_item)
+        self._hover = ChartHoverReadout(self._plot)
         layout.addWidget(self._plot, stretch=3)
 
     def _build_action_row(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
 
+        self._manage_blocks_btn = QPushButton("Manage Blocks…", self)
+        self._manage_blocks_btn.clicked.connect(self._on_manage_blocks)
+        row.addWidget(self._manage_blocks_btn)
+        row.addSpacing(16)
+
         self._cb_export = QCheckBox("Export to File", self)
         self._cb_library = QCheckBox("Add to Library", self)
         self._cb_load = QCheckBox("Load Workout", self)
+        self._cb_overwrite = QCheckBox("Overwrite Original", self)
+        self._cb_overwrite.hide()
         self._finish_btn = QPushButton("Finish", self)
         self._finish_btn.setEnabled(False)
 
-        for cb in (self._cb_export, self._cb_library, self._cb_load):
+        for cb in (self._cb_export, self._cb_library, self._cb_load, self._cb_overwrite):
             cb.toggled.connect(self._on_any_checkbox_toggled)
             row.addWidget(cb)
 
@@ -173,9 +200,18 @@ class WorkoutBuilderScreen(QWidget):
     def _on_text_changed(self) -> None:
         self._debounce.start()
 
+    def _on_manage_blocks(self) -> None:
+        dialog = BlockManagerDialog(self._blocks, self._ftp_getter, self)
+        dialog.exec()
+        self._blocks = dialog.get_blocks()
+        self._update_preview()
+
     def _on_any_checkbox_toggled(self, _checked: bool) -> None:
         self._finish_btn.setEnabled(
-            any(cb.isChecked() for cb in (self._cb_export, self._cb_library, self._cb_load))
+            any(
+                cb.isChecked()
+                for cb in (self._cb_export, self._cb_library, self._cb_load, self._cb_overwrite)
+            )
         )
 
     def _on_library_toggled(self, checked: bool) -> None:
@@ -192,7 +228,9 @@ class WorkoutBuilderScreen(QWidget):
     def _update_preview(self) -> None:
         name = self._name_edit.text().strip() or "Untitled"
         ftp = self._ftp_getter()
-        workout, errors = parse_builder_text(self._text_edit.toPlainText(), ftp, name)
+        workout, errors = parse_builder_text(
+            self._text_edit.toPlainText(), ftp, name, self._blocks
+        )
 
         if errors:
             shown = errors[:5]
@@ -205,6 +243,7 @@ class WorkoutBuilderScreen(QWidget):
 
         if not workout.intervals:
             self._target_item.setData([], [])
+            self._hover.clear()
             return
 
         t, w = build_target_series(workout)
@@ -212,6 +251,39 @@ class WorkoutBuilderScreen(QWidget):
         y_max = compute_y_max(workout, ftp)
         _configure_y_axis(self._plot, y_max)
         self._plot.setXRange(0.0, float(workout.total_duration_seconds), padding=0)
+        self._hover.set_workout(workout)
+
+    def load_for_edit(self, path: Path) -> None:
+        """Load a workout file from the library into the builder for editing."""
+        ftp = self._ftp_getter()
+        try:
+            if path.suffix.lower() == ".zwo":
+                workout = parse_zwo_file(path, ftp_watts=ftp)
+                header = parse_zwo_header(path)
+            else:
+                workout = parse_mrc_file(path, ftp_watts=ftp)
+                header = parse_mrc_header(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Error", f"Could not load workout for editing:\n{exc}")
+            return
+
+        self._editing_path = path
+        self._name_edit.setText(workout.name)
+        self._category_edit.setText(header.get("category", ""))
+        self._text_edit.setPlainText(workout_to_builder_text(workout))
+
+        self._editing_label.setText(f"Editing: {path.name}")
+        self._editing_label.show()
+        self._discard_edit_btn.show()
+        self._cb_overwrite.show()
+        self._cb_overwrite.setChecked(True)
+
+    def _on_discard_edit(self) -> None:
+        self._editing_path = None
+        self._editing_label.hide()
+        self._discard_edit_btn.hide()
+        self._cb_overwrite.hide()
+        self._cb_overwrite.setChecked(False)
 
     def _on_finish(self) -> None:
         name = self._name_edit.text().strip()
@@ -220,7 +292,9 @@ class WorkoutBuilderScreen(QWidget):
             return
 
         ftp = self._ftp_getter()
-        workout, _ = parse_builder_text(self._text_edit.toPlainText(), ftp, name)
+        workout, _ = parse_builder_text(
+            self._text_edit.toPlainText(), ftp, name, self._blocks
+        )
 
         if not workout.intervals:
             QMessageBox.warning(self, "No Steps", "Enter at least one valid step before saving.")
@@ -239,7 +313,21 @@ class WorkoutBuilderScreen(QWidget):
 
         saved_path: Path | None = None
 
-        if self._cb_library.isChecked():
+        if self._cb_overwrite.isChecked() and self._editing_path is not None:
+            target_path = self._editing_path.with_suffix(ext)
+            try:
+                if target_path != self._editing_path and self._editing_path.exists():
+                    self._editing_path.unlink()
+                target_path.write_text(file_text, encoding="utf-8")
+                saved_path = target_path
+                self._editing_path = target_path
+                self._editing_label.setText(f"Editing: {target_path.name}")
+                self.workout_saved.emit()
+            except OSError as exc:
+                QMessageBox.critical(self, "Save Error", f"Could not overwrite workout:\n{exc}")
+                return
+
+        elif self._cb_library.isChecked():
             try:
                 entry = self._library.add_workout_from_text(file_text, filename)
                 saved_path = entry.path

@@ -19,10 +19,13 @@ from opencycletrainer.core.workout_model import Workout, WorkoutInterval
 from opencycletrainer.devices.decoders.ftms import (
     FTMSFeatures,
     FTMSCapabilities,
+    FitnessMachineStatus,
     ResistanceLevelRange,
+    SpinDownStatus,
     SupportedPowerRange,
     decode_ftms_fitness_machine_features,
     decode_ftms_supported_power_range,
+    decode_fitness_machine_status,
     decode_resistance_level_range,
 )
 
@@ -34,10 +37,12 @@ class _FakeFTMSTransport:
         auto_ack: bool = True,
         ack_result_code: int = 0x01,
         resistance_range: ResistanceLevelRange | None = None,
+        ack_parameters: dict[int, bytes] | None = None,
     ) -> None:
         self.auto_ack = auto_ack
         self.ack_result_code = ack_result_code
         self.resistance_range = resistance_range
+        self.ack_parameters = ack_parameters or {}
         self.writes: list[bytes] = []
         self._handler = lambda _: None
         self.range_read_count: int = 0
@@ -47,7 +52,8 @@ class _FakeFTMSTransport:
         future: Future[None] = Future()
         future.set_result(None)
         if self.auto_ack:
-            self._handler(bytes([0x80, payload[0], self.ack_result_code]))
+            parameters = self.ack_parameters.get(payload[0], b"")
+            self._handler(bytes([0x80, payload[0], self.ack_result_code]) + parameters)
         return future
 
     def set_indication_handler(self, handler):
@@ -134,6 +140,48 @@ def test_ftms_control_raises_ack_error_for_non_success_result():
 
     with pytest.raises(FTMSControlAckError):
         control.set_erg_target_watts(200)
+
+
+def test_ftms_control_start_spin_down_requests_control_and_parses_target_speeds():
+    # target low 3000 (=30.00 km/h), high 3500 (=35.00 km/h), UINT16 LE each
+    params = struct.pack("<HH", 3000, 3500)
+    transport = _FakeFTMSTransport(ack_parameters={0x13: params})
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    speeds = control.start_spin_down()
+
+    assert transport.writes[0] == b"\x00"               # request control first
+    assert transport.writes[1] == bytes([0x13, 0x01])   # spin down start
+    assert speeds.low_kmh == pytest.approx(30.0)
+    assert speeds.high_kmh == pytest.approx(35.0)
+
+
+def test_ftms_control_start_spin_down_normalizes_swapped_speed_order():
+    params = struct.pack("<HH", 3500, 3000)  # high reported first
+    transport = _FakeFTMSTransport(ack_parameters={0x13: params})
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    speeds = control.start_spin_down()
+
+    assert speeds.low_kmh == pytest.approx(30.0)
+    assert speeds.high_kmh == pytest.approx(35.0)
+
+
+def test_ftms_control_start_spin_down_raises_without_target_speeds():
+    transport = _FakeFTMSTransport()  # acks 0x13 success but with no parameters
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    with pytest.raises(FTMSControlError):
+        control.start_spin_down()
+
+
+def test_ftms_control_ignore_spin_down_writes_ignore_parameter():
+    transport = _FakeFTMSTransport()
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    control.ignore_spin_down()
+
+    assert bytes([0x13, 0x02]) in transport.writes
 
 
 def test_bridge_interval_changes_trigger_control_commands_via_engine_snapshot_updates():
@@ -524,6 +572,45 @@ def test_ftms_features_all_feature_labels_contains_all_bits():
     assert "Cadence" in supported
     unsupported = [name for name, supported in labels if not supported]
     assert "Resistance Level" in unsupported
+
+
+# --- Fitness Machine Status (0x2ADA) decoder tests ---
+
+def test_decode_fitness_machine_status_decodes_spin_down_values():
+    cases = {
+        0x01: SpinDownStatus.REQUESTED,
+        0x02: SpinDownStatus.SUCCESS,
+        0x03: SpinDownStatus.ERROR,
+        0x04: SpinDownStatus.STOP_PEDALING,
+    }
+    for value, expected in cases.items():
+        result = decode_fitness_machine_status(bytes([0x14, value]))
+        assert isinstance(result, FitnessMachineStatus)
+        assert result.opcode == 0x14
+        assert result.spin_down_status is expected
+
+
+def test_decode_fitness_machine_status_ignores_non_spin_down_opcode():
+    # 0x02 is some other Fitness Machine Status op code, not Spin Down Status.
+    result = decode_fitness_machine_status(bytes([0x02, 0x01]))
+    assert result.opcode == 0x02
+    assert result.spin_down_status is None
+
+
+def test_decode_fitness_machine_status_unknown_spin_down_value_is_none():
+    result = decode_fitness_machine_status(bytes([0x14, 0x09]))
+    assert result.opcode == 0x14
+    assert result.spin_down_status is None
+
+
+def test_decode_fitness_machine_status_raises_on_empty_payload():
+    with pytest.raises(ValueError):
+        decode_fitness_machine_status(b"")
+
+
+def test_decode_fitness_machine_status_raises_on_missing_spin_down_value():
+    with pytest.raises(ValueError):
+        decode_fitness_machine_status(bytes([0x14]))
 
 
 # --- SupportedPowerRange decoder tests ---

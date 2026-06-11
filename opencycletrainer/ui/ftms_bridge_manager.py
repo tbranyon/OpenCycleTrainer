@@ -36,6 +36,7 @@ class FTMSBridgeManager:
         self._mode_state = mode_state
         self._settings = settings
         self._engine = engine
+        self._erg_jog_persistent = bool(getattr(settings, "erg_jog_persistent", False))
 
         self._ftms_bridge: WorkoutEngineFTMSBridge | None = None
         self._ftms_bridge_executor: ThreadPoolExecutor | None = None
@@ -94,6 +95,7 @@ class FTMSBridgeManager:
             lead_time_seconds=max(0, int(self._settings.lead_time)),
             lead_time_increasing_only=self._settings.lead_time_increasing_only,
             kj_mode=self._engine.kj_mode,
+            erg_jog_persistent=self._erg_jog_persistent,
         )
         self._ftms_bridge_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -110,6 +112,13 @@ class FTMSBridgeManager:
         self._mode_state.set_trainer_resistance_step_count(None)
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def set_erg_jog_persistent(self, persistent: bool) -> None:
+        """Update jog-persistence mode for the current and any future bridge."""
+        self._erg_jog_persistent = bool(persistent)
+        self.submit_action(
+            lambda bridge: bridge.set_erg_jog_persistent(self._erg_jog_persistent)
+        )
 
     def submit_snapshot(
         self,

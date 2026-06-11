@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from opencycletrainer.core.builder_parser import parse_builder_text
+from opencycletrainer.core.builder_parser import is_valid_block_name, parse_builder_text
 
 
 _FTP = 250
 
 
-def _parse(text: str, ftp: int = _FTP, name: str = "Test") -> tuple:
-    return parse_builder_text(text, ftp, name)
+def _parse(text: str, ftp: int = _FTP, name: str = "Test", blocks=None) -> tuple:
+    return parse_builder_text(text, ftp, name, blocks)
 
 
 # ── Basic step types ──────────────────────────────────────────────────────────
@@ -162,6 +162,74 @@ def test_repeat_omit_trailing_mixed_with_regular_steps():
     workout, errors = _parse("- 5m 50%\n- 3x(1m 120%, 1m 50%)!\n- 5m 50%")
     assert not errors
     assert len(workout.intervals) == 7  # 1 + 5 + 1
+
+
+# ── Reusable blocks ───────────────────────────────────────────────────────────
+
+def test_block_reference_expands_to_block_steps():
+    blocks = {"warmup": "- 5m 50%\n- 1m ramp 50-70%"}
+    workout, errors = _parse("- @warmup", blocks=blocks)
+    assert not errors
+    assert len(workout.intervals) == 2
+    assert workout.intervals[0].duration_seconds == 300
+    assert workout.intervals[0].start_percent_ftp == pytest.approx(50.0)
+    assert workout.intervals[1].is_ramp
+
+
+def test_block_reference_offsets_accumulate_with_surrounding_steps():
+    blocks = {"warmup": "- 5m 50%\n- 5m 60%"}
+    workout, _ = _parse("- @warmup\n- 10m 90%", blocks=blocks)
+    offsets = [iv.start_offset_seconds for iv in workout.intervals]
+    assert offsets == [0, 300, 600]
+    assert workout.total_duration_seconds == 20 * 60
+
+
+def test_block_can_contain_repeat():
+    blocks = {"set": "- 3x(4m 110%, 2m 55%)"}
+    workout, errors = _parse("- @set", blocks=blocks)
+    assert not errors
+    assert len(workout.intervals) == 6
+
+
+def test_block_mixed_with_regular_and_repeat_steps():
+    blocks = {"warmup": "- 5m 50%", "cooldown": "- 5m 50%"}
+    workout, errors = _parse(
+        "- @warmup\n- 2x(3m 110%, 2m 55%)\n- @cooldown", blocks=blocks
+    )
+    assert not errors
+    assert len(workout.intervals) == 6  # 1 + 4 + 1
+
+
+def test_unknown_block_reference_is_non_fatal():
+    blocks = {"warmup": "- 5m 50%"}
+    workout, errors = _parse("- @missing\n- 10m 90%", blocks=blocks)
+    assert errors
+    assert "missing" in errors[0]
+    assert len(workout.intervals) == 1  # the valid step still parses
+
+
+def test_block_reference_without_blocks_provided_is_error():
+    workout, errors = _parse("- @warmup")
+    assert errors
+    assert len(workout.intervals) == 0
+
+
+def test_nested_block_reference_is_an_error():
+    blocks = {"warmup": "- 5m 50%", "combo": "- @warmup\n- 5m 90%"}
+    workout, errors = _parse("- @combo", blocks=blocks)
+    assert errors
+    # The valid step inside the block still expands; only the nested @ref fails.
+    assert len(workout.intervals) == 1
+    assert workout.intervals[0].start_percent_ftp == pytest.approx(90.0)
+
+
+def test_is_valid_block_name():
+    assert is_valid_block_name("warmup")
+    assert is_valid_block_name("Warm Up 1")
+    assert is_valid_block_name("cool-down_2")
+    assert not is_valid_block_name("")
+    assert not is_valid_block_name(" leading")
+    assert not is_valid_block_name("bad@name")
 
 
 # ── Comments and blank lines ──────────────────────────────────────────────────

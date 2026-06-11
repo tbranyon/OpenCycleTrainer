@@ -1264,6 +1264,223 @@ def test_chart_cursor_frozen_during_ramp_in():
     controller.shutdown()
 
 
+def test_power_not_recorded_while_paused():
+    """Power samples received during pause must not pollute the plot history."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_power_watts(200, now_monotonic=1.0)
+    controller.receive_power_watts(210, now_monotonic=2.0)
+    assert len(controller._power_history.as_series()) == 2
+
+    # Pause at t=3
+    monotonic_now = 3.0
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    # Power arriving during the pause must not be recorded onto the plot.
+    controller.receive_power_watts(150, now_monotonic=4.0)
+    controller.receive_power_watts(160, now_monotonic=5.0)
+    assert len(controller._power_history.as_series()) == 2
+
+    controller.shutdown()
+
+
+def test_bike_power_not_recorded_while_paused():
+    """Bike power-meter samples received during pause must not pollute the plot history."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_bike_power_watts(200, now_monotonic=1.0)
+    controller.receive_bike_power_watts(210, now_monotonic=2.0)
+    assert len(controller._power_history.as_series()) == 2
+
+    monotonic_now = 3.0
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.receive_bike_power_watts(150, now_monotonic=4.0)
+    controller.receive_bike_power_watts(160, now_monotonic=5.0)
+    assert len(controller._power_history.as_series()) == 2
+
+    controller.shutdown()
+
+
+def test_hr_not_recorded_while_paused():
+    """Heart-rate samples received during pause must not pollute the plot history."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.receive_hr_bpm(140)
+    assert len(controller._chart_history.hr_history) == 1
+
+    monotonic_now = 2.0
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    # HR arriving during the pause must not be recorded onto the plot.
+    monotonic_now = 3.0
+    controller.receive_hr_bpm(150)
+    assert len(controller._chart_history.hr_history) == 1
+
+    controller.shutdown()
+
+
+def test_current_power_tile_stays_live_while_paused():
+    """The live current-power display keeps updating during pause (display only),
+    without recording onto the plot or polluting the workout average."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _current_power(screen) -> str:
+        # The "Current / Target Power" tile shows "<current> / <target> W".
+        return screen.target_power_tile.value_label.text().split("/")[0].strip()
+
+    settings = AppSettings(windowed_power_window_seconds=3)
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 2.0
+    controller.receive_power_watts(200, now_monotonic=1.0)
+    controller.receive_power_watts(200, now_monotonic=2.0)
+    controller.process_tick(2.0)
+    assert _current_power(screen) == "200"
+
+    samples_before = len(controller._power_history.as_series())
+    avg_before = controller._power_history.workout_avg_watts()
+
+    # Pause at t=3
+    monotonic_now = 3.0
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    # Live power continues to arrive during the pause.
+    monotonic_now = 10.0
+    controller.receive_power_watts(100, now_monotonic=8.0)
+    controller.receive_power_watts(100, now_monotonic=9.0)
+    controller.receive_power_watts(100, now_monotonic=10.0)
+    controller.process_tick(10.0)
+
+    # The live current-power display reflects the new readings...
+    assert _current_power(screen) == "100"
+    # ...but the plot history and workout average are unchanged (no pause data recorded).
+    assert len(controller._power_history.as_series()) == samples_before
+    assert controller._power_history.workout_avg_watts() == avg_before
+
+    controller.shutdown()
+
+
+def test_hr_tile_stays_live_while_paused():
+    """The heart-rate tile keeps reflecting the latest reading during pause,
+    even though it is not recorded onto the plot or into workout stats."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    settings = AppSettings(tile_selections=["heart_rate"])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    monotonic_now = 1.0
+    controller.receive_hr_bpm(140)
+    controller.process_tick(1.0)
+    assert screen._tile_by_key["heart_rate"].value_label.text() == "140 bpm"
+
+    # Pause at t=2
+    monotonic_now = 2.0
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    # A fresh HR reading during pause updates the live tile...
+    monotonic_now = 3.0
+    controller.receive_hr_bpm(120)
+    controller.process_tick(3.0)
+    assert screen._tile_by_key["heart_rate"].value_label.text() == "120 bpm"
+    # ...but is not recorded onto the plot.
+    assert len(controller._chart_history.hr_history) == 1
+
+    controller.shutdown()
+
+
 def test_cadence_dedicated_sensor_overrides_power_meter():
     """CSC (dedicated) cadence should take priority over CPS (power meter) cadence."""
     _get_or_create_qapp()
@@ -1715,6 +1932,102 @@ def _make_free_ride_workout() -> Workout:
             ),
         ),
     )
+
+
+def _make_two_interval_erg_workout() -> Workout:
+    """Two back-to-back normal ERG intervals."""
+    return Workout(
+        name="Two Interval ERG",
+        ftp_watts=200,
+        intervals=(
+            WorkoutInterval(
+                start_offset_seconds=0,
+                duration_seconds=300,
+                start_percent_ftp=50.0,
+                end_percent_ftp=50.0,
+                start_target_watts=100,
+                end_target_watts=100,
+            ),
+            WorkoutInterval(
+                start_offset_seconds=300,
+                duration_seconds=300,
+                start_percent_ftp=50.0,
+                end_percent_ftp=50.0,
+                start_target_watts=100,
+                end_target_watts=100,
+            ),
+        ),
+    )
+
+
+def test_interval_boundary_resets_erg_jog_when_not_persistent():
+    """With the default setting, the ERG jog clears when crossing an interval boundary."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(erg_jog_persistent=False),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller._workout = _make_two_interval_erg_workout()
+    controller._mode_state.select_mode("ERG")
+    controller._active_interval_index = 0
+    controller._mode_state.jog(10, ftp=200.0, snapshot=_make_snapshot(0), workout=controller._workout)
+    assert controller._mode_state.erg_jog_watts != 0.0
+
+    controller._handle_snapshot(_make_snapshot(interval_index=1), now_monotonic=None)
+
+    assert controller._mode_state.erg_jog_watts == 0.0
+    controller.shutdown()
+
+
+def test_interval_boundary_keeps_erg_jog_when_persistent():
+    """With persistence enabled, the ERG jog survives crossing an interval boundary."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(erg_jog_persistent=True),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller._workout = _make_two_interval_erg_workout()
+    controller._mode_state.select_mode("ERG")
+    controller._active_interval_index = 0
+    controller._mode_state.jog(10, ftp=200.0, snapshot=_make_snapshot(0), workout=controller._workout)
+    jog_before = controller._mode_state.erg_jog_watts
+    assert jog_before != 0.0
+
+    controller._handle_snapshot(_make_snapshot(interval_index=1), now_monotonic=None)
+
+    assert controller._mode_state.erg_jog_watts == jog_before
+    controller.shutdown()
+
+
+def test_jog_offset_displayed_on_screen_in_erg_mode():
+    """The current ERG jog offset is shown on the footer label while in ERG mode."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller._workout = _make_two_interval_erg_workout()
+    controller._mode_state.select_mode("ERG")
+    controller._active_interval_index = 0
+    controller._mode_state.jog(10, ftp=200.0, snapshot=_make_snapshot(0), workout=controller._workout)
+
+    controller._handle_snapshot(_make_snapshot(interval_index=0), now_monotonic=None)
+
+    assert not screen.jog_offset_label.isHidden()
+    assert "20" in screen.jog_offset_label.text()
+    controller.shutdown()
 
 
 def test_active_control_mode_returns_resistance_for_free_ride_interval_regardless_of_selected_mode():
@@ -2261,6 +2574,22 @@ def test_summary_interval_result_avg_watts_reflects_received_power():
 
     assert captured, "Expected summary to be shown after stop"
     assert captured[0].interval_results[0].avg_watts == 200
+
+    controller.shutdown()
+
+
+def test_summary_includes_recorded_power_samples():
+    app = _get_or_create_qapp()
+    controller, screen, captured = _make_controller_for_interval_tests(app)
+
+    controller.process_tick(1.0)
+    controller.receive_power_watts(200, now_monotonic=1.0)
+    controller.receive_power_watts(210, now_monotonic=2.0)
+    screen.end_button.click()
+    app.processEvents()
+
+    assert captured, "Expected summary to be shown after stop"
+    assert captured[0].power_samples == ((1.0, 200), (2.0, 210))
 
     controller.shutdown()
 

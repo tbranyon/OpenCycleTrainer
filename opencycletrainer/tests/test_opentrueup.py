@@ -210,6 +210,44 @@ def test_opentrueup_reapply_after_pm_dropout_preserves_active_jog_offset():
     assert control.erg_targets[-1] == 210
 
 
+def test_bridge_clears_jog_offset_at_interval_boundary_by_default():
+    """By default the ERG jog offset resets when a new interval begins."""
+    workout = _build_workout((30, 70.0, 200), (30, 70.0, 250))
+    control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(control)
+    engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0.0)
+    assert control.erg_targets[-1] == 200
+
+    bridge.set_erg_jog_offset_watts(20.0)
+    assert control.erg_targets[-1] == 220
+
+    engine.tick(31.0)  # cross into the second interval
+    assert control.erg_targets[-1] == 250  # base only, jog cleared
+
+
+def test_bridge_preserves_jog_offset_across_interval_boundary_when_persistent():
+    """With persistence enabled the jog offset carries into the next interval."""
+    workout = _build_workout((30, 70.0, 200), (30, 70.0, 250))
+    control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(control, erg_jog_persistent=True)
+    engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0.0)
+    assert control.erg_targets[-1] == 200
+
+    bridge.set_erg_jog_offset_watts(20.0)
+    assert control.erg_targets[-1] == 220
+
+    engine.tick(31.0)  # cross into the second interval
+    assert control.erg_targets[-1] == 270  # 250 base + 20 jog preserved
+
+
 def test_bridge_computes_offset_in_background_when_control_mode_is_resistance():
     workout = _build_workout((15, 70.0, 200))
     control = _StubControl(mode=ControlMode.RESISTANCE)

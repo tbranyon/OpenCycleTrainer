@@ -88,6 +88,11 @@ class DeviceManager(ABC):
         """Connect to a device."""
 
     @abstractmethod
+    def autoconnect_paired_devices(self) -> Future[list[str]]:
+        """Connect to every paired device that is not already connected; return the ids
+        that successfully connected. Intended for unattended startup reconnection."""
+
+    @abstractmethod
     def disconnect_device(self, device_id: str) -> Future[None]:
         """Disconnect from a device."""
 

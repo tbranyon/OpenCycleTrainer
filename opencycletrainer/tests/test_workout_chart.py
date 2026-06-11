@@ -545,3 +545,53 @@ def test_plot_autorange_button_hidden():
     widget = WorkoutChartWidget()
     assert widget._interval_plot.getPlotItem().buttonsHidden
     assert widget._workout_plot.getPlotItem().buttonsHidden
+
+
+# ── PowerDurationChartWidget ───────────────────────────────────────────────────
+
+def test_power_duration_chart_widget_constructs():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import PowerDurationChartWidget
+
+    widget = PowerDurationChartWidget()
+    assert widget is not None
+
+
+def test_power_duration_chart_widget_set_curve_updates_plot_data():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import PowerDurationChartWidget
+
+    widget = PowerDurationChartWidget()
+    curve = [(1, 300), (10, 250), (60, 200)]
+    widget.set_curve(curve)
+
+    x, y = widget._curve_item.getData()
+    assert len(x) == 3
+    assert len(y) == 3
+    np.testing.assert_allclose(x, np.log10([1, 10, 60]))
+    np.testing.assert_allclose(y, [300, 250, 200])
+
+
+def test_power_duration_chart_widget_empty_curve_clears_data():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import PowerDurationChartWidget
+
+    widget = PowerDurationChartWidget()
+    widget.set_curve([(1, 300)])
+    widget.set_curve([])
+
+    x, y = widget._curve_item.getData()
+    assert x is None or len(x) == 0
+    assert y is None or len(y) == 0
+
+
+def test_power_duration_chart_widget_hover_data_matches_curve():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import PowerDurationChartWidget
+
+    widget = PowerDurationChartWidget()
+    curve = [(1, 300), (10, 250), (60, 200)]
+    widget.set_curve(curve)
+
+    assert widget._hover._durations == [1, 10, 60]
+    assert widget._hover._watts == [300, 250, 200]

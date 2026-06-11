@@ -34,6 +34,7 @@ from opencycletrainer.core.zwo_parser import inject_category_into_zwo_text, pars
 from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.ui.workout_chart import (
+    ChartHoverReadout,
     _TimeAxisItem,
     _configure_y_axis,
     build_target_series,
@@ -106,6 +107,7 @@ class WorkoutPreviewPane(QWidget):
         self._plot.getViewBox().disableAutoRange()
         self._target_item = _make_target_item()
         self._plot.addItem(self._target_item)
+        self._hover = ChartHoverReadout(self._plot)
         layout.addWidget(self._plot)
 
         stats_layout = QGridLayout()
@@ -132,6 +134,7 @@ class WorkoutPreviewPane(QWidget):
         """Reset to placeholder state."""
         self._name_label.setText("Select a workout to preview")
         self._target_item.setData([], [])
+        self._hover.clear()
         self._duration_label.setText("—")
         self._np_label.setText("—")
         self._kj_label.setText("—")
@@ -160,6 +163,7 @@ class WorkoutPreviewPane(QWidget):
         y_max = compute_y_max(workout, ftp)
         _configure_y_axis(self._plot, y_max)
         self._plot.setXRange(0.0, float(workout.total_duration_seconds), padding=0)
+        self._hover.set_workout(workout)
 
         self._duration_label.setText(_format_duration(workout.total_duration_seconds))
 
@@ -229,6 +233,7 @@ class WorkoutLibraryScreen(QWidget):
     """Tab displaying the workout library with search, sort, category filter, and preview pane."""
 
     workout_selected = Signal(Path)
+    workout_edit_requested = Signal(Path)
 
     def __init__(
         self,
@@ -241,6 +246,7 @@ class WorkoutLibraryScreen(QWidget):
         self._ftp_getter = ftp_getter
         self._sort_column = 1  # default: sort by name (col 1)
         self._sort_order = Qt.AscendingOrder
+        self._selected_path: Path | None = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
@@ -263,6 +269,11 @@ class WorkoutLibraryScreen(QWidget):
         self.category_combo = QComboBox(self)
         self.category_combo.currentIndexChanged.connect(self._on_category_filter_changed)
         toolbar.addWidget(self.category_combo)
+
+        self.edit_button = QPushButton("Edit in Builder", self)
+        self.edit_button.setEnabled(False)
+        self.edit_button.clicked.connect(self._on_edit_clicked)
+        toolbar.addWidget(self.edit_button)
 
         self.add_button = QPushButton("Add to Library", self)
         self.add_button.clicked.connect(self._on_add_clicked)
@@ -414,7 +425,13 @@ class WorkoutLibraryScreen(QWidget):
             return
         path = item.data(Qt.UserRole)
         if isinstance(path, Path):
+            self._selected_path = path
+            self.edit_button.setEnabled(True)
             self._preview_pane.load(path)
+
+    def _on_edit_clicked(self) -> None:
+        if self._selected_path is not None:
+            self.workout_edit_requested.emit(self._selected_path)
 
     def _on_row_double_clicked(self, row: int, column: int) -> None:  # noqa: ARG002
         item = self.table.item(row, 1)

@@ -42,12 +42,14 @@ class RecorderIntegration:
         strava_upload_fn: Callable[[Path, str | None], None] | None,
         alert_signal: Callable[[str, str], None],
         mode_state: object,
+        intervals_icu_upload_fn: Callable[[Path, str | None], None] | None = None,
     ) -> None:
         self._recorder = recorder
         self._screen = screen
         self._settings = settings
         self._utc_now = utc_now
         self._strava_upload_fn = strava_upload_fn
+        self._intervals_icu_upload_fn = intervals_icu_upload_fn
         self._alert_signal = alert_signal
         self._mode_state = mode_state
 
@@ -140,6 +142,11 @@ class RecorderIntegration:
             )
             self._screen.export_chart_image(chart_image_path)
             self._enqueue_strava_upload(summary.fit_file_path, activity_name)
+        if (
+            self._settings.intervals_icu_auto_sync_enabled
+            and self._intervals_icu_upload_fn is not None
+        ):
+            self._enqueue_intervals_icu_upload(summary.fit_file_path, activity_name)
         self._workout = None
 
     def discard(self) -> None:
@@ -264,29 +271,69 @@ class RecorderIntegration:
             # Recorder is active; new setting takes effect next session.
             return
 
-    def _enqueue_strava_upload(self, fit_path: Path, activity_name: str | None = None) -> None:
+    def _ensure_upload_executor(self) -> ThreadPoolExecutor:
         if self._upload_executor is None:
             self._upload_executor = ThreadPoolExecutor(
                 max_workers=1,
-                thread_name_prefix="strava_upload",
+                thread_name_prefix="ride_upload",
             )
-        fut: Future[None] = self._upload_executor.submit(
-            self._strava_upload_fn, fit_path, activity_name
-        )
-        fut.add_done_callback(self._on_upload_done)
+        return self._upload_executor
 
-    def _on_upload_done(self, future: object) -> None:
-        """Called in the upload thread when a Strava upload completes."""
-        from concurrent.futures import Future as _Future  # noqa: PLC0415
+    def _enqueue_upload(
+        self,
+        upload_fn: Callable[[Path, str | None], None],
+        fit_path: Path,
+        activity_name: str | None,
+        *,
+        success_msg: str,
+        duplicate_msg: str,
+        failure_msg: str,
+        duplicate_exc_type: type[Exception],
+        service_label: str,
+    ) -> None:
+        executor = self._ensure_upload_executor()
+        fut: Future[None] = executor.submit(upload_fn, fit_path, activity_name)
+
+        def _done(future: object) -> None:
+            from concurrent.futures import Future as _Future  # noqa: PLC0415
+
+            if not isinstance(future, _Future):
+                return
+            exc = future.exception()
+            if exc is None:
+                self._alert_signal(success_msg, "success")
+            elif isinstance(exc, duplicate_exc_type):
+                self._alert_signal(duplicate_msg, "info")
+            else:
+                _logger.warning("%s upload failed: %s", service_label, exc)
+                self._alert_signal(failure_msg, "error")
+
+        fut.add_done_callback(_done)
+
+    def _enqueue_strava_upload(self, fit_path: Path, activity_name: str | None = None) -> None:
         from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError  # noqa: PLC0415
 
-        if not isinstance(future, _Future):
-            return
-        exc = future.exception()
-        if exc is None:
-            self._alert_signal("Ride synced to Strava", "success")
-        elif isinstance(exc, DuplicateUploadError):
-            self._alert_signal("Ride already synced to Strava", "info")
-        else:
-            _logger.warning("Strava upload failed: %s", exc)
-            self._alert_signal("Strava sync failed (ride kept locally)", "error")
+        self._enqueue_upload(
+            self._strava_upload_fn,
+            fit_path,
+            activity_name,
+            success_msg="Ride synced to Strava",
+            duplicate_msg="Ride already synced to Strava",
+            failure_msg="Strava sync failed (ride kept locally)",
+            duplicate_exc_type=DuplicateUploadError,
+            service_label="Strava",
+        )
+
+    def _enqueue_intervals_icu_upload(self, fit_path: Path, activity_name: str | None = None) -> None:
+        from opencycletrainer.integrations.intervalsicu.sync_service import DuplicateUploadError  # noqa: PLC0415
+
+        self._enqueue_upload(
+            self._intervals_icu_upload_fn,
+            fit_path,
+            activity_name,
+            success_msg="Ride synced to intervals.icu",
+            duplicate_msg="Ride already synced to intervals.icu",
+            failure_msg="intervals.icu sync failed (ride kept locally)",
+            duplicate_exc_type=DuplicateUploadError,
+            service_label="intervals.icu",
+        )

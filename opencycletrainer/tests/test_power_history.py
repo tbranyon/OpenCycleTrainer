@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from opencycletrainer.core.power_history import PowerHistory
+from opencycletrainer.core.power_history import PowerHistory, compute_power_duration_curve
 
 
 class TestPowerHistoryDefaults:
@@ -111,6 +111,47 @@ class TestWindowedAvg:
         ph = PowerHistory()
         ph.record(200, now=90.0, recording_active=False)  # exactly at cutoff
         assert ph.windowed_avg(now=100.0, window_seconds=10) == 200
+
+
+class TestRecordLive:
+    """record_live feeds only the live trailing-window display, never the plot/stats."""
+
+    def test_live_sample_appears_in_windowed_avg(self):
+        ph = PowerHistory()
+        ph.record_live(200, now=1.0)
+        ph.record_live(220, now=2.0)
+        assert ph.windowed_avg(now=2.0, window_seconds=5) == 210
+
+    def test_live_sample_not_in_plot_series(self):
+        ph = PowerHistory()
+        ph.record_live(200, now=1.0)
+        assert ph.as_series() == []
+        assert ph.smoothed_series() == []
+
+    def test_live_sample_excluded_from_workout_avg(self):
+        ph = PowerHistory()
+        ph.record_live(200, now=1.0)
+        assert ph.workout_avg_watts() is None
+
+    def test_live_sample_does_not_accumulate_kj(self):
+        ph = PowerHistory()
+        ph.record_live(1000, now=0.0)
+        ph.record_live(1000, now=1.0)
+        assert ph.workout_actual_kj() == 0.0
+
+    def test_recorded_then_live_windowed_avg_includes_both(self):
+        ph = PowerHistory()
+        ph.record(200, now=1.0, recording_active=True)
+        ph.record_live(100, now=2.0)
+        assert ph.windowed_avg(now=2.0, window_seconds=5) == 150
+        # Only the recorded sample is on the plot.
+        assert ph.as_series() == [(1.0, 200)]
+
+    def test_reset_clears_live_samples(self):
+        ph = PowerHistory()
+        ph.record_live(200, now=1.0)
+        ph.reset()
+        assert ph.windowed_avg(now=1.0, window_seconds=5) is None
 
 
 class TestWorkoutAvgWatts:
@@ -266,3 +307,39 @@ class TestSmoothedSeries:
         # anchored=[(1.0, 100), (1.5, 200), (2.0, 300)]
         # 100 W for 0.5 s, 200 W for 0.5 s; 300 W at 2.0 (0 duration) → avg = 150
         assert result[2][1] == 150
+
+
+class TestComputePowerDurationCurve:
+    def test_empty_returns_empty(self):
+        assert compute_power_duration_curve([]) == []
+
+    def test_single_sample_returns_empty(self):
+        assert compute_power_duration_curve([(0.0, 200)]) == []
+
+    def test_constant_power_every_duration_equals_power(self):
+        samples = [(float(i), 200) for i in range(20)]
+        curve = compute_power_duration_curve(samples)
+        assert curve
+        for _duration, watts in curve:
+            assert watts == 200
+
+    def test_durations_are_sorted_and_include_total(self):
+        samples = [(float(i), 200) for i in range(20)]
+        curve = compute_power_duration_curve(samples)
+        durations = [d for d, _ in curve]
+        assert durations == sorted(durations)
+        # total span is 19 s -> 20 one-second bins
+        assert durations[-1] == 20
+
+    def test_best_window_found_for_short_duration(self):
+        """10 s at 100 W followed by 10 s at 300 W."""
+        samples = [(float(i), 100) for i in range(10)] + [(float(i), 300) for i in range(10, 20)]
+        curve = dict(compute_power_duration_curve(samples))
+        assert curve[1] == 300
+        assert curve[10] == 300
+
+    def test_full_duration_is_overall_average(self):
+        """10 s at 100 W followed by 10 s at 300 W -> overall average is 200 W."""
+        samples = [(float(i), 100) for i in range(10)] + [(float(i), 300) for i in range(10, 20)]
+        curve = dict(compute_power_duration_curve(samples))
+        assert curve[20] == 200

@@ -34,4 +34,5 @@ def main() -> int:
     app.setWindowIcon(QIcon(str(get_app_icon_path())))
     window = MainWindow(settings=settings, settings_path=get_settings_file_path())
     window.show()
+    window.start_autoconnect()
     return app.exec()

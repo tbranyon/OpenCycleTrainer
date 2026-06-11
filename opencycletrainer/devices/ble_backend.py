@@ -18,6 +18,7 @@ from .types import (
     DeviceInfo,
     DeviceType,
     FTMS_CONTROL_POINT_CHARACTERISTIC_UUID,
+    FTMS_FITNESS_MACHINE_STATUS_CHARACTERISTIC_UUID,
     FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID,
     NOTIFICATION_CHARACTERISTIC_UUIDS,
     infer_device_type,
@@ -83,6 +84,9 @@ class BleakDeviceBackend(DeviceManager):
 
     def connect_device(self, device_id: str) -> Future[None]:
         return self._runner.submit(self._connect_async(device_id))
+
+    def autoconnect_paired_devices(self) -> Future[list[str]]:
+        return self._runner.submit(self._autoconnect_paired_async())
 
     def disconnect_device(self, device_id: str) -> Future[None]:
         return self._runner.submit(self._disconnect_async(device_id))
@@ -152,6 +156,17 @@ class BleakDeviceBackend(DeviceManager):
             callback,
         )
 
+    def subscribe_fitness_machine_status(
+        self,
+        device_id: str,
+        callback: PayloadNotificationCallback,
+    ) -> Future[None]:
+        return self.subscribe_characteristic(
+            device_id,
+            FTMS_FITNESS_MACHINE_STATUS_CHARACTERISTIC_UUID,
+            callback,
+        )
+
     def shutdown(self) -> None:
         try:
             self._runner.submit(self._disconnect_all_async()).result(timeout=5.0)
@@ -215,6 +230,44 @@ class BleakDeviceBackend(DeviceManager):
                     _logger.warning("Failed to reconnect paired device '%s': %s", device_id, exc)
 
         return sorted(scanned_devices, key=lambda device: device.name.lower())
+
+    async def _autoconnect_paired_async(self) -> list[str]:
+        """Connect to every paired device not already connected, returning the ids that
+        connected.
+
+        Fast path: connect directly by address, skipping the scan delay (works on Windows
+        and whenever the device is already known to the OS BLE stack). On Linux/macOS a
+        device can be unreachable by address until it has been discovered, so when any
+        paired device remains missing we fall back to a single scan — which itself retries
+        the paired connections — and re-check before giving up."""
+        with self._lock:
+            paired_ids = [device_id for device_id in self._paired_ids if device_id not in self._clients]
+        connected = await self._connect_paired_ids(paired_ids)
+
+        remaining = [device_id for device_id in paired_ids if device_id not in connected]
+        if remaining:
+            try:
+                await self._scan_async()
+            except Exception as exc:
+                _logger.warning("Autoconnect scan fallback failed: %s", exc)
+            with self._lock:
+                for device_id in remaining:
+                    if device_id in self._clients and device_id not in connected:
+                        connected.append(device_id)
+        return connected
+
+    async def _connect_paired_ids(self, device_ids: list[str]) -> list[str]:
+        """Attempt a direct connect to each id, returning those that succeed. Failures are
+        logged and skipped so one unreachable device does not block the others."""
+        connected: list[str] = []
+        for device_id in device_ids:
+            try:
+                await self._connect_async(device_id)
+            except Exception as exc:
+                _logger.warning("Autoconnect failed for paired device '%s': %s", device_id, exc)
+                continue
+            connected.append(device_id)
+        return connected
 
     async def _unpair_async(self, device_id: str) -> None:
         if device_id in self._clients:
@@ -572,6 +625,8 @@ class BleakFTMSControlTransport:
         self._lock = threading.Lock()
         self._resistance_range_cache: ResistanceLevelRange | None = None
         self._resistance_range_cache_loaded: bool = False
+        self._status_handler: Callable[[bytes], None] = lambda _: None
+        self._status_subscribe_future: Future[None] | None = None
 
     def write_control_point(self, payload: bytes) -> Future[None]:
         try:
@@ -607,6 +662,10 @@ class BleakFTMSControlTransport:
         self._indication_handler = handler
         self._ensure_subscription_ready()
 
+    def subscribe_status(self, handler: Callable[[bytes], None]) -> None:
+        self._status_handler = handler
+        self._ensure_status_subscription_started().result(timeout=self._subscribe_timeout_seconds)
+
     def _ensure_subscription_ready(self) -> None:
         subscription = self._ensure_subscription_started()
         subscription.result(timeout=self._subscribe_timeout_seconds)
@@ -620,8 +679,23 @@ class BleakFTMSControlTransport:
                 )
             return self._subscribe_future
 
+    def _ensure_status_subscription_started(self) -> Future[None]:
+        with self._lock:
+            if self._status_subscribe_future is None:
+                self._status_subscribe_future = self._backend.subscribe_fitness_machine_status(
+                    self._device_id,
+                    self._handle_status,
+                )
+            return self._status_subscribe_future
+
     def _handle_indication(self, payload: bytes) -> None:
         try:
             self._indication_handler(payload)
+        except Exception:
+            return
+
+    def _handle_status(self, payload: bytes) -> None:
+        try:
+            self._status_handler(payload)
         except Exception:
             return

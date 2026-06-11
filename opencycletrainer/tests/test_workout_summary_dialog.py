@@ -5,10 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QTableWidget
 
 from opencycletrainer.core.recorder import RecorderSample
 from opencycletrainer.core.workout_metrics import compute_workout_metrics
+from opencycletrainer.ui.workout_chart import PowerDurationChartWidget
 from opencycletrainer.ui.workout_summary_dialog import (
     INTERVAL_PERCENT_COLOR_GREEN,
     INTERVAL_PERCENT_COLOR_RED,
@@ -35,6 +36,7 @@ def _make_summary(
     tss: float | None = 64.0,
     avg_hr: int | None = 145,
     interval_results: tuple[IntervalResult, ...] = (),
+    power_samples: tuple[tuple[float, int], ...] = (),
 ) -> WorkoutSummary:
     return WorkoutSummary(
         elapsed_seconds=elapsed_seconds,
@@ -43,6 +45,7 @@ def _make_summary(
         tss=tss,
         avg_hr=avg_hr,
         interval_results=interval_results,
+        power_samples=power_samples,
     )
 
 
@@ -580,3 +583,71 @@ def test_dialog_interval_table_marks_skipped_interval():
     dialog = WorkoutSummaryDialog(summary)
     table = dialog.findChildren(QTableWidget)[0]
     assert "Skipped" in table.item(0, 0).text()
+
+
+# ---------------------------------------------------------------------------
+# WorkoutSummaryDialog – power-duration curve chart
+# ---------------------------------------------------------------------------
+
+
+def _power_samples(seconds: int = 60, watts: int = 200) -> tuple[tuple[float, int], ...]:
+    return tuple((float(i), watts) for i in range(seconds))
+
+
+def test_dialog_shows_power_duration_chart_when_power_samples_present():
+    _get_or_create_qapp()
+    summary = _make_summary(power_samples=_power_samples())
+    dialog = WorkoutSummaryDialog(summary)
+    charts = dialog.findChildren(PowerDurationChartWidget)
+    assert charts, "Expected a PowerDurationChartWidget when power samples are present"
+
+
+def test_dialog_has_no_power_duration_chart_when_power_samples_empty():
+    _get_or_create_qapp()
+    summary = _make_summary(power_samples=())
+    dialog = WorkoutSummaryDialog(summary)
+    charts = dialog.findChildren(PowerDurationChartWidget)
+    assert not charts
+
+
+def test_power_duration_chart_placed_below_interval_table():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(),), power_samples=_power_samples())
+    dialog = WorkoutSummaryDialog(summary)
+    root = dialog.layout()
+
+    table = dialog.findChildren(QTableWidget)[0]
+    chart = dialog.findChildren(PowerDurationChartWidget)[0]
+
+    scroll = table.parent()
+    while scroll is not None and not isinstance(scroll, QScrollArea):
+        scroll = scroll.parent()
+    assert isinstance(scroll, QScrollArea)
+
+    scroll_index = root.indexOf(scroll)
+    chart_index = root.indexOf(chart)
+    assert scroll_index != -1 and chart_index != -1
+    assert chart_index > scroll_index
+
+
+def test_power_duration_chart_not_inside_interval_table_scroll_area():
+    _get_or_create_qapp()
+    summary = _make_summary(interval_results=(_make_interval_result(),), power_samples=_power_samples())
+    dialog = WorkoutSummaryDialog(summary)
+
+    table = dialog.findChildren(QTableWidget)[0]
+    chart = dialog.findChildren(PowerDurationChartWidget)[0]
+
+    scroll = table.parent()
+    while scroll is not None and not isinstance(scroll, QScrollArea):
+        scroll = scroll.parent()
+    assert isinstance(scroll, QScrollArea)
+    assert chart not in scroll.findChildren(PowerDurationChartWidget)
+
+
+def test_dialog_minimum_size_larger_than_default():
+    _get_or_create_qapp()
+    summary = _make_summary()
+    dialog = WorkoutSummaryDialog(summary)
+    assert dialog.minimumWidth() >= 700
+    assert dialog.minimumHeight() >= 700

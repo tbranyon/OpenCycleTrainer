@@ -36,10 +36,20 @@ _COLOR_THEME_DARK = "dark"
 _Y_STEP = 50.0          # watts between horizontal grid lines
 _CONTEXT_SECONDS = 30   # padding on each side of interval chart
 
+# Hover readout (builder / library preview charts)
+_HOVER_LINE_PEN = (100, 116, 139, 200)    # slate, semi-opaque vertical bar
+_HOVER_FILL     = (255, 255, 255, 220)    # near-white, slightly transparent box
+_HOVER_BORDER   = (148, 163, 184, 220)    # light slate border
+_HOVER_TEXT_COL = (51, 65, 85)            # dark slate text
+
 # Chart export dimensions — 16:9 is widely used by Strava and social platforms.
 _EXPORT_WIDTH  = 1920
 _EXPORT_HEIGHT = 1080
 _5_MIN_SECONDS = 300.0  # five minutes in seconds
+
+# Power-duration curve chart
+_PD_CURVE_PEN = (34, 197, 94)  # same green as the actual-power trace
+_PD_NEAREST_DURATION_RATIO = 1.5  # max ratio between cursor x and nearest point before hiding readout
 
 
 # ── Time axis ─────────────────────────────────────────────────────────────────
@@ -594,3 +604,257 @@ def compute_y_max(workout: Workout, ftp_watts: int) -> float:
 def _configure_y_axis(plot: pg.PlotWidget, y_max: float) -> None:
     plot.setYRange(0.0, y_max, padding=0)
     plot.getAxis("left").setTickSpacing(levels=[(_Y_STEP, 0.0)])
+
+
+def _format_mmss(seconds: float) -> str:
+    s = max(0, int(round(seconds)))
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def _lerp(a: float, b: float, frac: float) -> float:
+    return a + (b - a) * frac
+
+
+# ── Hover readout ──────────────────────────────────────────────────────────────
+
+class ChartHoverReadout:
+    """Mouse-hover crosshair + readout box for a static workout target chart.
+
+    Attaches to a ``PlotWidget`` displaying a workout target profile. A vertical
+    bar tracks the cursor's time position; a small translucent box reports the
+    time, target power (% FTP and watts, interpolated along ramps) and which
+    interval the cursor is over. Used by the builder and library preview charts.
+    """
+
+    def __init__(self, plot: pg.PlotWidget) -> None:
+        self._plot = plot
+        self._workout: Workout | None = None
+        self._durations: list[int] = []
+        self._total: float = 0.0
+
+        self._vline = pg.InfiniteLine(
+            pos=0, angle=90, movable=False,
+            pen=pg.mkPen(color=_HOVER_LINE_PEN, width=1),
+        )
+        self._vline.setZValue(20)
+        self._vline.setVisible(False)
+
+        self._label = pg.TextItem(
+            text="", anchor=(0.0, 0.0), color=_HOVER_TEXT_COL,
+            fill=pg.mkBrush(_HOVER_FILL), border=pg.mkPen(_HOVER_BORDER),
+        )
+        self._label.setZValue(21)
+        self._label.setVisible(False)
+
+        plot.addItem(self._vline, ignoreBounds=True)
+        plot.addItem(self._label, ignoreBounds=True)
+        plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
+    def set_workout(self, workout: Workout | None) -> None:
+        """Provide the workout the readout should report on (or clear).
+
+        Interval watts already reflect the FTP they were parsed with, and the
+        intervals carry their own % FTP, so no separate FTP value is needed.
+        """
+        if workout is None or not workout.intervals:
+            self.clear()
+            return
+        self._workout = workout
+        self._durations = [iv.duration_seconds for iv in workout.intervals]
+        self._total = float(sum(self._durations))
+
+    def clear(self) -> None:
+        self._workout = None
+        self._durations = []
+        self._total = 0.0
+        self._hide()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _hide(self) -> None:
+        self._vline.setVisible(False)
+        self._label.setVisible(False)
+
+    def _on_mouse_moved(self, scene_pos) -> None:
+        if self._workout is None:
+            return
+        vb = self._plot.getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self._hide()
+            return
+        t = float(vb.mapSceneToView(scene_pos).x())
+        if t < 0.0 or t > self._total:
+            self._hide()
+            return
+
+        iv, idx, frac = self._locate(t)
+        interval_line = (
+            f"Interval {idx + 1}/{len(self._durations)} · {_format_mmss(self._durations[idx])}"
+        )
+        if iv.free_ride:
+            power_line = "Free ride"
+        else:
+            pct = _lerp(iv.start_percent_ftp, iv.end_percent_ftp, frac)
+            watts = _lerp(float(iv.start_target_watts), float(iv.end_target_watts), frac)
+            power_line = f"{int(round(watts))} W · {int(round(pct))}% FTP"
+        self._label.setText(f"{_format_mmss(t)}\n{power_line}\n{interval_line}")
+        self._vline.setValue(t)
+        self._position_label(t, vb)
+        self._vline.setVisible(True)
+        self._label.setVisible(True)
+
+    def _locate(self, t: float):
+        """Return (interval, index, fraction-through-interval) at time ``t``."""
+        assert self._workout is not None
+        offset = 0.0
+        last = len(self._durations) - 1
+        for idx, dur in enumerate(self._durations):
+            end = offset + dur
+            if t <= end or idx == last:
+                frac = max(0.0, min(1.0, (t - offset) / dur)) if dur > 0 else 0.0
+                return self._workout.intervals[idx], idx, frac
+            offset = end
+        return self._workout.intervals[last], last, 1.0
+
+    def _position_label(self, t: float, vb) -> None:
+        (x_min, x_max), (_y_min, y_max) = vb.viewRange()
+        x_span = x_max - x_min
+        # Flip the box to the left of the cursor near the right edge so it stays
+        # inside the plot; pin it to the top of the visible y range.
+        anchor_x = 1.0 if x_span > 0 and (t - x_min) / x_span > 0.6 else 0.0
+        self._label.setAnchor((anchor_x, 0.0))
+        self._label.setPos(t, y_max)
+
+
+# ── Power-duration curve ────────────────────────────────────────────────────────
+
+class _DurationAxisItem(pg.AxisItem):
+    """Bottom axis for the power-duration curve: formats log10(seconds) ticks as MM:SS."""
+
+    def tickStrings(self, values: list, scale: float, spacing: float) -> list[str]:
+        return [_format_mmss(10 ** v) for v in values]
+
+
+class _PowerCurveHoverReadout:
+    """Mouse-hover crosshair + readout box for the power-duration curve.
+
+    Tracks the cursor's x position (log10 seconds), snaps to the nearest
+    computed duration, and reports that duration's power.
+    """
+
+    def __init__(self, plot: pg.PlotWidget) -> None:
+        self._plot = plot
+        self._durations: list[int] = []
+        self._watts: list[int] = []
+
+        self._vline = pg.InfiniteLine(
+            pos=0, angle=90, movable=False,
+            pen=pg.mkPen(color=_HOVER_LINE_PEN, width=1),
+        )
+        self._vline.setZValue(20)
+        self._vline.setVisible(False)
+
+        self._label = pg.TextItem(
+            text="", anchor=(0.0, 0.0), color=_HOVER_TEXT_COL,
+            fill=pg.mkBrush(_HOVER_FILL), border=pg.mkPen(_HOVER_BORDER),
+        )
+        self._label.setZValue(21)
+        self._label.setVisible(False)
+
+        plot.addItem(self._vline, ignoreBounds=True)
+        plot.addItem(self._label, ignoreBounds=True)
+        plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
+    def set_data(self, durations: list[int], watts: list[int]) -> None:
+        self._durations = durations
+        self._watts = watts
+        if not durations:
+            self._hide()
+
+    def _hide(self) -> None:
+        self._vline.setVisible(False)
+        self._label.setVisible(False)
+
+    def _on_mouse_moved(self, scene_pos) -> None:
+        if not self._durations:
+            return
+        vb = self._plot.getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self._hide()
+            return
+
+        x_seconds = float(10 ** vb.mapSceneToView(scene_pos).x())
+        idx = min(range(len(self._durations)), key=lambda i: abs(self._durations[i] - x_seconds))
+        duration = self._durations[idx]
+        if duration == 0:
+            self._hide()
+            return
+        ratio = max(x_seconds / duration, duration / x_seconds) if x_seconds > 0 else float("inf")
+        if ratio > _PD_NEAREST_DURATION_RATIO:
+            self._hide()
+            return
+
+        watts = self._watts[idx]
+        x = np.log10(float(duration))
+        self._label.setText(f"{_format_mmss(duration)}\n{watts} W")
+        self._vline.setValue(x)
+        self._position_label(x, vb)
+        self._vline.setVisible(True)
+        self._label.setVisible(True)
+
+    def _position_label(self, x: float, vb) -> None:
+        (x_min, x_max), (_y_min, y_max) = vb.viewRange()
+        x_span = x_max - x_min
+        anchor_x = 1.0 if x_span > 0 and (x - x_min) / x_span > 0.6 else 0.0
+        self._label.setAnchor((anchor_x, 0.0))
+        self._label.setPos(x, y_max)
+
+
+class PowerDurationChartWidget(QWidget):
+    """Small chart showing the mean-max power-duration curve with cursor tracking.
+
+    The x-axis is log-scaled (duration, formatted as MM:SS) and the y-axis is
+    watts with sparse grid lines, matching the styling of the live workout chart.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._plot = pg.PlotWidget(axisItems={"bottom": _DurationAxisItem("bottom")})
+        self._plot.setBackground(_PLOT_BACKGROUND_LIGHT)
+        self._plot.showGrid(x=False, y=True, alpha=_GRID_ALPHA_LIGHT)
+        self._plot.getAxis("left").setLabel("W")
+        self._plot.getAxis("bottom").setLabel("Duration")
+        self._plot.setMouseEnabled(x=False, y=False)
+        self._plot.setMenuEnabled(False)
+        self._plot.getPlotItem().hideButtons()
+        layout.addWidget(self._plot)
+
+        self._curve_item = pg.PlotDataItem([], [], pen=pg.mkPen(color=_PD_CURVE_PEN, width=2))
+        self._plot.addItem(self._curve_item)
+
+        self._hover = _PowerCurveHoverReadout(self._plot)
+
+    def set_curve(self, curve: list[tuple[int, int]]) -> None:
+        """Plot the mean-max power-duration curve from (duration_seconds, watts) pairs."""
+        if not curve:
+            self._curve_item.setData([], [])
+            self._hover.set_data([], [])
+            return
+
+        durations = [d for d, _ in curve]
+        watts = [w for _, w in curve]
+
+        x = np.log10(np.array(durations, dtype=float))
+        y = np.array(watts, dtype=float)
+        self._curve_item.setData(x, y)
+
+        y_max = (int(max(watts) * 1.10 / _Y_STEP) + 1) * _Y_STEP
+        self._plot.setYRange(0.0, float(y_max), padding=0)
+        self._plot.getAxis("left").setTickSpacing(levels=[(_Y_STEP, 0.0)])
+        self._plot.setXRange(float(x[0]), float(x[-1]), padding=0.02)
+
+        self._hover.set_data(durations, watts)

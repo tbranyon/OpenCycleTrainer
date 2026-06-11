@@ -114,6 +114,7 @@ def _make(
     settings=None,
     utc_now=None,
     strava_upload_fn=None,
+    intervals_icu_upload_fn=None,
     alert_fn=None,
     mode_state=None,
 ) -> tuple[RecorderIntegration, _FakeRecorder, _FakeScreen]:
@@ -125,6 +126,7 @@ def _make(
         settings=settings or AppSettings(),
         utc_now=utc_now or (lambda: _UTC_NOW),
         strava_upload_fn=strava_upload_fn,
+        intervals_icu_upload_fn=intervals_icu_upload_fn,
         alert_signal=alert_fn or (lambda msg, typ: None),
         mode_state=mode_state or _FakeModeState(),
     )
@@ -289,6 +291,42 @@ class TestCommit:
         ri.prepare_summary()
         ri.commit()
         assert uploaded == []
+
+    def test_no_intervals_icu_upload_when_disabled(self) -> None:
+        uploaded: list = []
+        ri, *_ = _make(
+            settings=AppSettings(intervals_icu_auto_sync_enabled=False),
+            intervals_icu_upload_fn=lambda *a: uploaded.append(a),
+        )
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit()
+        assert uploaded == []
+
+    def test_no_intervals_icu_upload_when_upload_fn_is_none(self) -> None:
+        ri, rec, _ = _make(
+            settings=AppSettings(intervals_icu_auto_sync_enabled=True),
+            intervals_icu_upload_fn=None,
+        )
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit()  # should not raise
+        assert rec.stop_calls == 1
+
+    def test_intervals_icu_upload_enqueued_when_enabled(self) -> None:
+        uploaded: list = []
+        ri, *_ = _make(
+            settings=AppSettings(intervals_icu_auto_sync_enabled=True),
+            intervals_icu_upload_fn=lambda *a: uploaded.append(a),
+        )
+        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.prepare_summary()
+        ri.commit(activity_name="Tuesday Threshold")
+        # The upload runs on a background single-worker pool; join it deterministically.
+        ri._upload_executor.shutdown(wait=True)
+        assert len(uploaded) == 1
+        fit_path, activity_name = uploaded[0]
+        assert activity_name == "Tuesday Threshold"
 
 
 # ── discard() ────────────────────────────────────────────────────────────────
