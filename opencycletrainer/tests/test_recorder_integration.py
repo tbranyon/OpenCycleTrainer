@@ -41,7 +41,7 @@ class _FakeRecorder:
     def get_recorded_samples(self) -> list[object]:
         return list(self.samples)
 
-    def stop(self, finished_at_utc: object) -> object:  # noqa: ARG002
+    def stop(self, finished_at_utc: object, activity_name: str | None = None) -> object:  # noqa: ARG002
         if not self.started:
             raise RuntimeError("Recorder is not active.")
         self.started = False
@@ -385,7 +385,7 @@ class TestFinalize:
 
     def test_recorder_stop_failure_does_not_raise(self) -> None:
         class _FailStop(_FakeRecorder):
-            def stop(self, finished_at_utc: object) -> object:
+            def stop(self, finished_at_utc: object, activity_name: str | None = None) -> object:  # noqa: ARG002
                 raise RuntimeError("disk full")
 
         ri, _, _ = _make(recorder=_FailStop())

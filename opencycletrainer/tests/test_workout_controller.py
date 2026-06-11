@@ -47,7 +47,7 @@ class _FakeRecorder:
     def get_recorded_samples(self) -> list[object]:
         return list(self.samples)
 
-    def stop(self, finished_at_utc: object) -> object:  # noqa: ARG002
+    def stop(self, finished_at_utc: object, activity_name: str | None = None) -> object:  # noqa: ARG002
         if not self.started:
             raise RuntimeError("Recorder is not active.")
         self.started = False
@@ -990,7 +990,7 @@ def test_finalize_recorder_enqueues_strava_upload_when_enabled():
     app = _get_or_create_qapp()
     uploaded: list[Path] = []
 
-    def fake_upload(path: Path) -> None:
+    def fake_upload(path: Path, activity_name: str | None = None) -> None:  # noqa: ARG001
         uploaded.append(path)
 
     controller, screen = _make_controller_with_upload(app, fake_upload, strava_auto_sync_enabled=True)
@@ -1010,7 +1010,7 @@ def test_finalize_recorder_skips_strava_upload_when_disabled():
 
     controller, screen = _make_controller_with_upload(
         app,
-        lambda p: uploaded.append(p),
+        lambda p, _n=None: uploaded.append(p),
         strava_auto_sync_enabled=False,
     )
 
@@ -1050,7 +1050,7 @@ def test_finalize_recorder_no_error_when_upload_fn_is_none():
 def test_strava_upload_success_shows_success_alert():
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path) -> None:
+    def fake_upload(_path: Path, _name: str | None = None) -> None:
         pass  # success
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -1066,7 +1066,7 @@ def test_strava_upload_success_shows_success_alert():
 def test_strava_upload_failure_shows_error_alert():
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path) -> None:
+    def fake_upload(_path: Path, _name: str | None = None) -> None:
         raise RuntimeError("Strava upload failed after 3 attempts")
 
     controller, screen = _make_controller_with_upload(app, fake_upload)
@@ -1083,7 +1083,7 @@ def test_strava_duplicate_upload_shows_already_synced_alert():
     from opencycletrainer.integrations.strava.sync_service import DuplicateUploadError
     app = _get_or_create_qapp()
 
-    def fake_upload(_path: Path) -> None:
+    def fake_upload(_path: Path, _name: str | None = None) -> None:
         raise DuplicateUploadError("already uploaded")
 
     controller, screen = _make_controller_with_upload(app, fake_upload)

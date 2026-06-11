@@ -21,10 +21,11 @@ class DuplicateUploadError(Exception):
 
 def upload_fit_to_strava(
     fit_path: Path,
+    activity_name: str | None = None,
     *,
     _token_getter: Callable[[], StravaTokenBundle | None] | None = None,
     _token_saver: Callable[[StravaTokenBundle], None] | None = None,
-    _upload_impl: Callable[[Path, str], str | None] | None = None,
+    _upload_impl: Callable[[Path, str, str | None], str | None] | None = None,
     _refresh_impl: Callable[[StravaTokenBundle], StravaTokenBundle] | None = None,
     _history_checker: Callable[[Path], bool] | None = None,
     _history_recorder: Callable[[Path], None] | None = None,
@@ -61,7 +62,7 @@ def upload_fit_to_strava(
     last_exc: Exception | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            upload_fn(fit_path, tokens.access_token)
+            upload_fn(fit_path, tokens.access_token, activity_name)
             history_recorder(fit_path)
             _logger.info("Strava upload succeeded for %s", fit_path.name)
             break
@@ -99,7 +100,7 @@ def _refresh_tokens(tokens: StravaTokenBundle) -> StravaTokenBundle:
     )
 
 
-def _do_upload(fit_path: Path, access_token: str) -> str | None:
+def _do_upload(fit_path: Path, access_token: str, activity_name: str | None = None) -> str | None:
     """Upload a FIT file to Strava using stravalib. Returns the activity ID or None."""
     from stravalib import Client  # noqa: PLC0415
 
@@ -114,7 +115,7 @@ def _do_upload(fit_path: Path, access_token: str) -> str | None:
         uploader = client.upload_activity(
             activity_file=f,
             data_type="fit",
-            name=fit_path.stem,
+            name=activity_name or fit_path.stem,
             external_id=external_id,
         )
     try:

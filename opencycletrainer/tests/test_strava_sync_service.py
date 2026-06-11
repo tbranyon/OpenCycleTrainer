@@ -38,7 +38,7 @@ def test_upload_happy_path_calls_upload_impl(tmp_path: Path) -> None:
     tokens = _make_tokens()
     calls: list[tuple[Path, str]] = []
 
-    def fake_upload(path: Path, access_token: str) -> None:
+    def fake_upload(path: Path, access_token: str, activity_name: str | None = None) -> None:  # noqa: ARG001
         calls.append((path, access_token))
 
     upload_fit_to_strava(
@@ -51,6 +51,43 @@ def test_upload_happy_path_calls_upload_impl(tmp_path: Path) -> None:
     )
 
     assert calls == [(fit_file, "acc_tok")]
+
+
+def test_upload_forwards_activity_name_to_upload_impl(tmp_path: Path) -> None:
+    fit_file = tmp_path / "Threshold_20260309_1842.fit"
+    fit_file.write_bytes(b"FIT")
+    tokens = _make_tokens()
+    names: list[str | None] = []
+
+    upload_fit_to_strava(
+        fit_file,
+        "Tuesday Threshold",
+        _token_getter=lambda: tokens,
+        _token_saver=lambda _: None,
+        _upload_impl=lambda _p, _t, n=None: names.append(n),
+        _history_checker=_NO_HISTORY,
+        _history_recorder=_NO_RECORD,
+    )
+
+    assert names == ["Tuesday Threshold"]
+
+
+def test_upload_passes_none_activity_name_when_not_provided(tmp_path: Path) -> None:
+    fit_file = tmp_path / "Threshold_20260309_1842.fit"
+    fit_file.write_bytes(b"FIT")
+    tokens = _make_tokens()
+    names: list[str | None] = []
+
+    upload_fit_to_strava(
+        fit_file,
+        _token_getter=lambda: tokens,
+        _token_saver=lambda _: None,
+        _upload_impl=lambda _p, _t, n=None: names.append(n),
+        _history_checker=_NO_HISTORY,
+        _history_recorder=_NO_RECORD,
+    )
+
+    assert names == [None]
 
 
 # ── no tokens ─────────────────────────────────────────────────────────────────
@@ -84,7 +121,7 @@ def test_upload_refreshes_expired_tokens(tmp_path: Path) -> None:
         fit_file,
         _token_getter=lambda: expired,
         _token_saver=lambda _: None,
-        _upload_impl=lambda _p, _t: None,
+        _upload_impl=lambda _p, _t, _n=None: None,
         _refresh_impl=fake_refresh,
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
@@ -105,7 +142,7 @@ def test_upload_saves_refreshed_tokens(tmp_path: Path) -> None:
         fit_file,
         _token_getter=lambda: expired,
         _token_saver=saved.append,
-        _upload_impl=lambda _p, _t: None,
+        _upload_impl=lambda _p, _t, _n=None: None,
         _refresh_impl=lambda _t: refreshed,
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
@@ -125,7 +162,7 @@ def test_upload_uses_refreshed_access_token(tmp_path: Path) -> None:
         fit_file,
         _token_getter=lambda: expired,
         _token_saver=lambda _: None,
-        _upload_impl=lambda _p, t: used_tokens.append(t),
+        _upload_impl=lambda _p, t, _n=None: used_tokens.append(t),
         _refresh_impl=lambda _t: refreshed,
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
@@ -142,7 +179,7 @@ def test_upload_retries_on_transient_failure(tmp_path: Path) -> None:
     tokens = _make_tokens()
     attempt = [0]
 
-    def flaky_upload(path: Path, access_token: str) -> None:  # noqa: ARG001
+    def flaky_upload(path: Path, access_token: str, activity_name: str | None = None) -> None:  # noqa: ARG001
         attempt[0] += 1
         if attempt[0] < 2:
             raise OSError("network blip")
@@ -164,7 +201,7 @@ def test_upload_raises_after_max_retries(tmp_path: Path) -> None:
     fit_file.write_bytes(b"FIT")
     tokens = _make_tokens()
 
-    def always_fails(_path: Path, _token: str) -> None:
+    def always_fails(_path: Path, _token: str, _name: str | None = None) -> None:
         raise OSError("server down")
 
     with pytest.raises(RuntimeError, match="failed after"):
@@ -188,7 +225,7 @@ def test_upload_no_refresh_when_token_valid(tmp_path: Path) -> None:
         fit_file,
         _token_getter=lambda: tokens,
         _token_saver=lambda _: None,
-        _upload_impl=lambda _p, _t: None,
+        _upload_impl=lambda _p, _t, _n=None: None,
         _refresh_impl=lambda t: (refresh_calls.append(t), t)[1],
         _history_checker=_NO_HISTORY,
         _history_recorder=_NO_RECORD,
@@ -222,7 +259,7 @@ def test_upload_records_success_in_history(tmp_path: Path) -> None:
         fit_file,
         _token_getter=lambda: tokens,
         _token_saver=lambda _: None,
-        _upload_impl=lambda _p, _t: None,
+        _upload_impl=lambda _p, _t, _n=None: None,
         _history_checker=_NO_HISTORY,
         _history_recorder=recorded.append,
     )
@@ -241,7 +278,7 @@ def test_upload_does_not_record_history_on_failure(tmp_path: Path) -> None:
             fit_file,
             _token_getter=lambda: tokens,
             _token_saver=lambda _: None,
-            _upload_impl=lambda _p, _t: (_ for _ in ()).throw(OSError("fail")),
+            _upload_impl=lambda _p, _t, _n=None: (_ for _ in ()).throw(OSError("fail")),
             _history_checker=_NO_HISTORY,
             _history_recorder=recorded.append,
         )
