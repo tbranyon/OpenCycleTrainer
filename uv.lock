@@ -889,7 +889,7 @@ wheels = [
 
 [[package]]
 name = "opencycletrainer"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "bleak" },
@@ -898,6 +898,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "pyqtgraph" },
     { name = "pyside6" },
+    { name = "requests" },
     { name = "stravalib" },
 ]
 
@@ -915,6 +916,7 @@ requires-dist = [
     { name = "pyqtgraph", specifier = ">=0.13" },
     { name = "pyside6", specifier = ">=6.8" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "requests", specifier = ">=2.31" },
     { name = "stravalib", specifier = ">=2.0" },
 ]
 provides-extras = ["dev"]

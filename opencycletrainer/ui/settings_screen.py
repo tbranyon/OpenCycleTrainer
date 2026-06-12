@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -172,7 +174,15 @@ class SettingsScreen(QWidget):
         self._intervals_icu_sync_now_signal.connect(self._on_intervals_icu_sync_now_result)
         self._intervals_icu_connect_signal.connect(self._on_intervals_icu_connect_result)
 
-        root_layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        _scroll = QScrollArea(self)
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(_scroll)
+        _content = QWidget()
+        root_layout = QVBoxLayout(_content)
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(10)
 
@@ -362,6 +372,7 @@ class SettingsScreen(QWidget):
         self.version_label.setFont(version_font)
         root_layout.addWidget(self.version_label)
 
+        _scroll.setWidget(_content)
         self._apply_opentrueup_state(opentrueup_devices_available)
         self._connect_autosave_signals()
 
