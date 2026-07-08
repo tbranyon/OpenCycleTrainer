@@ -17,12 +17,15 @@ from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSCo
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.cadence_history import CadenceHistory
 from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
+from opencycletrainer.core.fit_exporter import FitExporter, FitExportSample
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.power_history import PowerHistory
 from opencycletrainer.core.recorder import WorkoutRecorder
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+from opencycletrainer.storage.filenames import build_activity_filename
+from opencycletrainer.storage.paths import get_workout_data_root, get_workout_fit_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
 from .chart_history import ChartHistory
@@ -64,6 +67,7 @@ class WorkoutSessionController(QObject):
         utc_now: Callable[[], datetime] | None = None,
         strava_upload_fn: Callable[[Path, Path | None], None] | None = None,
         intervals_icu_upload_fn: Callable[[Path, Path | None], None] | None = None,
+        fit_exporter: FitExporter | None = None,
         tick_interval_ms: int = 250,
         parent: QObject | None = None,
     ) -> None:
@@ -74,6 +78,9 @@ class WorkoutSessionController(QObject):
         self._monotonic_clock = monotonic_clock
         self._utc_now = utc_now if utc_now is not None else lambda: datetime.now(timezone.utc)
         self._recorder = recorder if recorder is not None else WorkoutRecorder()
+        self._manual_save_fit_exporter = fit_exporter if fit_exporter is not None else FitExporter()
+        self._completed_recording: dict | None = None
+        self._workout_started_at_utc: datetime | None = None
         self._ftms_transport_factory = (
             ftms_transport_factory
             if ftms_transport_factory is not None
@@ -250,6 +257,7 @@ class WorkoutSessionController(QObject):
         self._screen.pause_button.clicked.connect(self._pause_workout)
         self._screen.resume_button.clicked.connect(self._resume_workout)
         self._screen.end_button.clicked.connect(self._stop_workout)
+        self._screen.save_button.clicked.connect(self._manual_save_completed_workout)
         self._screen.extend_interval_requested.connect(self._extend_interval)
         self._screen.skip_interval_requested.connect(self._skip_interval)
         self._screen.jog_requested.connect(self._jog_target)
@@ -304,6 +312,7 @@ class WorkoutSessionController(QObject):
             self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
             return
 
+        self._clear_completed_recording()
         self._workout = workout
         self._interval_extra_seconds = {}
         self._mode_state._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
@@ -340,7 +349,10 @@ class WorkoutSessionController(QObject):
         self._last_power_received_at = None
         self._chart_history.reset()
         self._pause_state.reset()
-        self._recorder_integration.start(self._workout, self._utc_now())
+        self._clear_completed_recording()
+        started_at_utc = self._utc_now()
+        self._workout_started_at_utc = started_at_utc
+        self._recorder_integration.start(self._workout, started_at_utc)
 
         self._engine.start()
         now = float(self._monotonic_clock())
@@ -389,7 +401,10 @@ class WorkoutSessionController(QObject):
         self._screen.load_free_ride_chart()
         self._screen.set_workout_name("Free Ride")
 
-        self._recorder_integration.start(self._workout, self._utc_now())
+        self._clear_completed_recording()
+        started_at_utc = self._utc_now()
+        self._workout_started_at_utc = started_at_utc
+        self._recorder_integration.start(self._workout, started_at_utc)
         self._engine.start()
         now = float(self._monotonic_clock())
         self._chart_history.start(now)
@@ -626,16 +641,84 @@ class WorkoutSessionController(QObject):
             dialog.rejected.connect(self._on_summary_discard)
             dialog.open()
         else:
-            self._recorder_integration.commit()
-            self._set_no_workout_state()
+            self._on_summary_finish(None)
 
     def _on_summary_finish(self, activity_name: str | None = None) -> None:
+        completed = self._capture_completed_recording(activity_name)
         self._recorder_integration.commit(activity_name=activity_name or None)
         self._set_no_workout_state()
+        if completed is not None:
+            self._completed_recording = completed
+            self._screen.set_save_available(True)
 
     def _on_summary_discard(self) -> None:
         self._recorder_integration.discard()
         self._set_no_workout_state()
+
+    def _capture_completed_recording(self, activity_name: str | None) -> dict | None:
+        """Snapshot the just-finished recording for manual FIT save. Called before commit()."""
+        if self._workout is None or self._workout_started_at_utc is None:
+            return None
+        get_samples = getattr(self._recorder, "get_recorded_samples", None)
+        samples = list(get_samples()) if callable(get_samples) else []
+        name = activity_name.strip() if isinstance(activity_name, str) and activity_name.strip() else self._workout.name
+        return {
+            "samples": samples,
+            "workout_name": name,
+            "started_at_utc": self._workout_started_at_utc,
+            "finished_at_utc": self._utc_now(),
+        }
+
+    def _clear_completed_recording(self) -> None:
+        self._completed_recording = None
+        self._screen.set_save_available(False)
+
+    def _manual_save_completed_workout(self) -> None:
+        """Prompt for a directory and write a FIT file from the last completed recording."""
+        snapshot = self._completed_recording
+        if snapshot is None:
+            return
+        default_dir = str(get_workout_fit_dir(get_workout_data_root(self._settings.workout_data_dir)))
+        directory = QFileDialog.getExistingDirectory(
+            self._screen,
+            "Save Workout FIT to Directory",
+            default_dir,
+        )
+        if not directory:
+            return
+        filename = build_activity_filename(
+            snapshot["workout_name"],
+            snapshot["started_at_utc"],
+            "fit",
+        )
+        dest_path = Path(directory) / filename
+        fit_samples = [
+            FitExportSample(
+                timestamp_utc=sample.timestamp_utc,
+                power_watts=(
+                    sample.bike_power_watts
+                    if sample.bike_power_watts is not None
+                    else sample.trainer_power_watts
+                ),
+                heart_rate_bpm=sample.heart_rate_bpm,
+                cadence_rpm=sample.cadence_rpm,
+                speed_mps=sample.speed_mps,
+            )
+            for sample in snapshot["samples"]
+        ]
+        try:
+            self._manual_save_fit_exporter.export_activity(
+                workout_name=snapshot["workout_name"],
+                started_at_utc=snapshot["started_at_utc"],
+                finished_at_utc=snapshot["finished_at_utc"],
+                fit_file_path=dest_path,
+                samples=fit_samples,
+            )
+        except Exception as exc:
+            _logger.warning("Manual FIT save failed: %s", exc)
+            self._screen.show_alert("Failed to save FIT file", "error")
+            return
+        self._screen.show_alert(f"Saved: {dest_path.name}", "success")
 
     @staticmethod
     def _resolve_effective_power(

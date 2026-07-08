@@ -2628,3 +2628,170 @@ def test_summary_interval_result_captured_for_stopped_workout():
     assert results[0].avg_watts == 180
 
     controller.shutdown()
+
+
+# ── Manual FIT save (post-workout) ────────────────────────────────────────────
+
+
+def _reject_summary_dialog_factory(summary, parent):  # noqa: ARG001
+    """Dialog factory that immediately rejects (simulates the user discarding the workout)."""
+    from opencycletrainer.ui.workout_summary_dialog import WorkoutSummaryDialog  # noqa: PLC0415
+    dialog = WorkoutSummaryDialog(summary, parent)
+    QTimer.singleShot(0, dialog.reject)
+    return dialog
+
+
+def _make_controller_ready_to_end(app, *, recorder=None, fit_exporter=None, summary_dialog_factory=None):
+    from datetime import datetime, timezone  # noqa: PLC0415
+    screen = WorkoutScreen(settings=AppSettings())
+    kwargs = dict(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=recorder if recorder is not None else _FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+        utc_now=lambda: datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc),
+        summary_dialog_factory=(
+            summary_dialog_factory
+            if summary_dialog_factory is not None
+            else _auto_accept_summary_dialog_factory
+        ),
+    )
+    if fit_exporter is not None:
+        kwargs["fit_exporter"] = fit_exporter
+    controller = WorkoutSessionController(**kwargs)
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    return controller, screen
+
+
+def test_save_button_hidden_before_workout_ends():
+    app = _get_or_create_qapp()
+    controller, screen = _make_controller_ready_to_end(app)
+
+    assert screen.save_button.isHidden()
+
+    controller.shutdown()
+
+
+def test_save_button_visible_after_workout_finished_and_accepted():
+    app = _get_or_create_qapp()
+    controller, screen = _make_controller_ready_to_end(app)
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert not screen.save_button.isHidden()
+
+    controller.shutdown()
+
+
+def test_save_button_hidden_after_workout_discarded():
+    app = _get_or_create_qapp()
+    controller, screen = _make_controller_ready_to_end(
+        app,
+        summary_dialog_factory=_reject_summary_dialog_factory,
+    )
+
+    screen.end_button.click()
+    app.processEvents()
+
+    assert screen.save_button.isHidden()
+
+    controller.shutdown()
+
+
+def test_save_button_hidden_after_starting_new_workout():
+    app = _get_or_create_qapp()
+    controller, screen = _make_controller_ready_to_end(app)
+
+    screen.end_button.click()
+    app.processEvents()
+    assert not screen.save_button.isHidden()
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    assert screen.save_button.isHidden()
+
+    controller.shutdown()
+
+
+def test_manual_save_writes_fit_file_to_selected_directory(tmp_path, monkeypatch):
+    from datetime import datetime, timezone  # noqa: PLC0415
+    from opencycletrainer.core.fit_exporter import FitExporter, JsonFitWriterBackend  # noqa: PLC0415
+    from opencycletrainer.core.recorder import RecorderSample  # noqa: PLC0415
+
+    app = _get_or_create_qapp()
+    recorder = _FakeRecorder()
+    fit_exporter = FitExporter(writer_backend=JsonFitWriterBackend())
+    controller, screen = _make_controller_ready_to_end(
+        app, recorder=recorder, fit_exporter=fit_exporter,
+    )
+    recorder.samples.append(RecorderSample(
+        timestamp_utc=datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc),
+        target_power_watts=200,
+        trainer_power_watts=195,
+        bike_power_watts=None,
+        heart_rate_bpm=130,
+        cadence_rpm=90.0,
+        speed_mps=8.0,
+    ))
+
+    screen.end_button.click()
+    app.processEvents()
+    assert not screen.save_button.isHidden()
+
+    monkeypatch.setattr(
+        "opencycletrainer.ui.workout_controller.QFileDialog.getExistingDirectory",
+        staticmethod(lambda *args, **kwargs: str(tmp_path)),
+    )
+    screen.save_button.click()
+    app.processEvents()
+
+    written = list(tmp_path.glob("*.fit"))
+    assert len(written) == 1
+    assert written[0].name.endswith(".fit")
+
+    controller.shutdown()
+
+
+def test_manual_save_no_op_when_dialog_cancelled(tmp_path, monkeypatch):
+    from datetime import datetime, timezone  # noqa: PLC0415
+    from opencycletrainer.core.fit_exporter import FitExporter, JsonFitWriterBackend  # noqa: PLC0415
+    from opencycletrainer.core.recorder import RecorderSample  # noqa: PLC0415
+
+    app = _get_or_create_qapp()
+    recorder = _FakeRecorder()
+    controller, screen = _make_controller_ready_to_end(
+        app, recorder=recorder,
+        fit_exporter=FitExporter(writer_backend=JsonFitWriterBackend()),
+    )
+    recorder.samples.append(RecorderSample(
+        timestamp_utc=datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc),
+        target_power_watts=200,
+        trainer_power_watts=195,
+        bike_power_watts=None,
+        heart_rate_bpm=None,
+        cadence_rpm=None,
+        speed_mps=None,
+    ))
+
+    screen.end_button.click()
+    app.processEvents()
+
+    monkeypatch.setattr(
+        "opencycletrainer.ui.workout_controller.QFileDialog.getExistingDirectory",
+        staticmethod(lambda *args, **kwargs: ""),
+    )
+    screen.save_button.click()
+    app.processEvents()
+
+    assert list(tmp_path.glob("*.fit")) == []
+    # Button should stay visible after cancel
+    assert not screen.save_button.isHidden()
+
+    controller.shutdown()
