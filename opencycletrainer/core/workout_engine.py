@@ -120,7 +120,8 @@ class WorkoutEngine:
         self._last_tick_time = None
         return self._emit_snapshot()
 
-    def tick(self, now: float) -> WorkoutEngineSnapshot:
+    def tick(self, now: float, *, pedaling: bool = True) -> WorkoutEngineSnapshot:
+        """Advance the engine to *now*; *pedaling* gates the ramp-in countdown."""
         now_float = float(now)
 
         if self._last_tick_time is None:
@@ -138,7 +139,7 @@ class WorkoutEngine:
         if self._state == EngineState.RUNNING:
             self._advance_elapsed(delta)
         elif self._state == EngineState.RAMP_IN:
-            self._advance_ramp(delta)
+            self._advance_ramp(delta, pedaling=pedaling)
 
         return self._emit_snapshot()
 
@@ -206,7 +207,13 @@ class WorkoutEngine:
         if self._workout is None:
             raise RuntimeError("No workout loaded.")
 
-    def _advance_ramp(self, delta: float) -> None:
+    def _advance_ramp(self, delta: float, *, pedaling: bool = True) -> None:
+        # Ramp-in exists to let the rider settle against the restored trainer
+        # target, so it only counts down while they are actually pedaling.
+        if not pedaling:
+            self._ramp_in_remaining_seconds = float(self.ramp_in_duration_seconds)
+            return
+
         if delta < self._ramp_in_remaining_seconds:
             self._ramp_in_remaining_seconds -= delta
             return

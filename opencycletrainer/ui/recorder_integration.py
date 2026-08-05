@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 
 from opencycletrainer.core.one_second_aggregator import OneSecondAggregator
@@ -28,6 +29,8 @@ class SensorSnapshot:
     last_hr_bpm: int | None
     last_cadence_rpm: float | None
     last_speed_mps: float | None
+    dfa_alpha1: float | None = None
+    dfa_quality: str | None = None
 
 
 class RecorderIntegration:
@@ -43,11 +46,13 @@ class RecorderIntegration:
         alert_signal: Callable[[str, str], None],
         mode_state: object,
         intervals_icu_upload_fn: Callable[[Path, str | None], None] | None = None,
+        monotonic_now: Callable[[], float] | None = None,
     ) -> None:
         self._recorder = recorder
         self._screen = screen
         self._settings = settings
         self._utc_now = utc_now
+        self._monotonic_now = monotonic_now if monotonic_now is not None else monotonic
         self._strava_upload_fn = strava_upload_fn
         self._intervals_icu_upload_fn = intervals_icu_upload_fn
         self._alert_signal = alert_signal
@@ -61,6 +66,11 @@ class RecorderIntegration:
         self._upload_executor: ThreadPoolExecutor | None = None
         self._workout: Workout | None = None
         self._aggregator = OneSecondAggregator()
+        # Session anchor: every sample timestamp is derived from these two
+        # values plus elapsed monotonic time, making the recorded stream
+        # immune to wall-clock steps (NTP corrections, sleep/resume) mid-session.
+        self._session_start_utc: datetime | None = None
+        self._session_start_monotonic: float | None = None
 
         self._configure_recorder_data_dir()
 
@@ -74,8 +84,15 @@ class RecorderIntegration:
         """Accumulated target-based kilojoules for the current session."""
         return self._total_kj
 
-    def start(self, workout: Workout, utc_now: datetime) -> None:
-        """Start a new recording session for *workout*."""
+    def start(self, workout: Workout, utc_now: datetime, now_monotonic: float | None = None) -> None:
+        """Start a new recording session for *workout*.
+
+        When *now_monotonic* is supplied it anchors the session: subsequent
+        sample timestamps are derived from elapsed monotonic time rather than
+        the live wall clock, so an NTP correction or sleep/resume clock step
+        mid-session cannot corrupt recorded timing. Omitting it preserves the
+        prior behaviour of stamping samples straight from the wall clock.
+        """
         if workout is None or self._recorder_started:
             return
         self._recorder.start(
@@ -87,6 +104,8 @@ class RecorderIntegration:
         self._recorder_started = True
         self._total_kj = 0.0
         self._last_energy_tick_monotonic = None
+        self._session_start_utc = utc_now
+        self._session_start_monotonic = now_monotonic
         self._aggregator.reset()
         self._aggregator.set_recording_active(True)
 
@@ -125,8 +144,9 @@ class RecorderIntegration:
         if not self._pending_finalize:
             return
         self._pending_finalize = False
+        finished_at_utc = self._anchored_timestamp(self._monotonic_now())
         try:
-            summary = self._recorder.stop(finished_at_utc=self._utc_now(), activity_name=activity_name)
+            summary = self._recorder.stop(finished_at_utc=finished_at_utc, activity_name=activity_name)
         except RuntimeError as exc:
             _logger.warning("Recorder stop failed: %s", exc)
             self._workout = None
@@ -207,23 +227,51 @@ class RecorderIntegration:
         erg_setpoint = target_watts if active_mode == "ERG" else None
 
         raw_sample = RecorderSample(
-            timestamp_utc=self._utc_now(),
+            timestamp_utc=self._anchored_timestamp(now_monotonic),
             target_power_watts=target_watts,
-            trainer_power_watts=sensor_snapshot.last_power_watts,
-            bike_power_watts=sensor_snapshot.last_bike_power_watts,
+            # Power is fed exclusively through ingest_power() at notification
+            # time; carrying it here too would double-count it (see Task A).
+            trainer_power_watts=None,
+            bike_power_watts=None,
             heart_rate_bpm=sensor_snapshot.last_hr_bpm,
             cadence_rpm=sensor_snapshot.last_cadence_rpm,
             speed_mps=sensor_snapshot.last_speed_mps,
             mode=active_mode,
             erg_setpoint_watts=erg_setpoint,
             total_kj=round(self._total_kj, 3),
+            dfa_alpha1=sensor_snapshot.dfa_alpha1,
+            dfa_quality=sensor_snapshot.dfa_quality,
         )
 
         completed = self._aggregator.feed(raw_sample)
         for s in completed:
             try:
                 self._recorder.record_sample(s)
-            except RuntimeError as exc:
+            except (RuntimeError, ValueError) as exc:
+                _logger.warning("Recorder record_sample failed, halting recording: %s", exc)
+                self._recorder_active = False
+                return
+
+    def ingest_power(
+        self,
+        now_monotonic: float,
+        trainer_watts: int | None = None,
+        bike_watts: int | None = None,
+    ) -> None:
+        """Feed one power reading into the aggregator at BLE-notification time.
+
+        Unlike sync(), which samples held power on the poll tick, this enters
+        power the moment it was actually measured so time-weighted averaging
+        reflects real reading lifetimes rather than poll timing. Any samples
+        completed by crossing a UTC second are forwarded to the recorder
+        immediately, using the same error handling as sync().
+        """
+        ts = self._anchored_timestamp(now_monotonic)
+        completed = self._aggregator.add_power(ts, trainer_watts, bike_watts)
+        for s in completed:
+            try:
+                self._recorder.record_sample(s)
+            except (RuntimeError, ValueError) as exc:
                 _logger.warning("Recorder record_sample failed, halting recording: %s", exc)
                 self._recorder_active = False
                 return
@@ -259,6 +307,19 @@ class RecorderIntegration:
             self._upload_executor.shutdown(wait=False)
 
     # ── Private ───────────────────────────────────────────────────────────────
+
+    def _anchored_timestamp(self, now_monotonic: float | None) -> datetime:
+        """Return the current sample timestamp, anchored to elapsed monotonic time.
+
+        Falls back to the injected wall clock when no session anchor was
+        established (start() called without a monotonic anchor) or when
+        *now_monotonic* itself is unavailable, matching the pre-anchoring
+        behaviour rather than guessing.
+        """
+        if now_monotonic is None or self._session_start_monotonic is None:
+            return self._utc_now()
+        elapsed_seconds = now_monotonic - self._session_start_monotonic
+        return self._session_start_utc + timedelta(seconds=elapsed_seconds)
 
     def _configure_recorder_data_dir(self) -> None:
         set_data_dir = getattr(self._recorder, "set_data_dir", None)

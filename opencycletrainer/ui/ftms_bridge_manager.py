@@ -12,6 +12,7 @@ from opencycletrainer.core.control.ftms_control import (
 )
 from opencycletrainer.core.workout_engine import WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
+from opencycletrainer.storage.settings import DEFAULT_JOG_PERSISTENCE_MODE, JogPersistenceMode
 
 _logger = logging.getLogger(__name__)
 
@@ -36,7 +37,9 @@ class FTMSBridgeManager:
         self._mode_state = mode_state
         self._settings = settings
         self._engine = engine
-        self._erg_jog_persistent = bool(getattr(settings, "erg_jog_persistent", False))
+        self._erg_jog_persistence_mode = getattr(
+            settings, "erg_jog_persistence_mode", DEFAULT_JOG_PERSISTENCE_MODE
+        )
 
         self._ftms_bridge: WorkoutEngineFTMSBridge | None = None
         self._ftms_bridge_executor: ThreadPoolExecutor | None = None
@@ -95,7 +98,7 @@ class FTMSBridgeManager:
             lead_time_seconds=max(0, int(self._settings.lead_time)),
             lead_time_increasing_only=self._settings.lead_time_increasing_only,
             kj_mode=self._engine.kj_mode,
-            erg_jog_persistent=self._erg_jog_persistent,
+            erg_jog_persistence_mode=self._erg_jog_persistence_mode,
         )
         self._ftms_bridge_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -113,11 +116,11 @@ class FTMSBridgeManager:
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def set_erg_jog_persistent(self, persistent: bool) -> None:
+    def set_erg_jog_persistence_mode(self, mode: JogPersistenceMode) -> None:
         """Update jog-persistence mode for the current and any future bridge."""
-        self._erg_jog_persistent = bool(persistent)
+        self._erg_jog_persistence_mode = mode
         self.submit_action(
-            lambda bridge: bridge.set_erg_jog_persistent(self._erg_jog_persistent)
+            lambda bridge: bridge.set_erg_jog_persistence_mode(self._erg_jog_persistence_mode)
         )
 
     def submit_snapshot(

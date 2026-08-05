@@ -41,8 +41,14 @@ class PauseState:
     # ── Interface ─────────────────────────────────────────────────────────────
 
     def pause(self, now: float) -> None:
-        """Record pause start time, create and show the pause dialog."""
-        self._pause_start_monotonic = now
+        """Record pause start time, create and show the pause dialog.
+
+        A pause that interrupts an unfinished ramp-in keeps the original pause
+        start, so the whole unrecorded stretch still counts as paused time.
+        """
+        if self._pause_start_monotonic is None:
+            self._pause_start_monotonic = now
+        self.close_dialog()
         factory = self._dialog_factory
         if factory is None:
             from .workout_screen import PauseDialog

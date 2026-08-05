@@ -11,6 +11,16 @@ _logger = logging.getLogger(__name__)
 
 from opencycletrainer.storage.paths import ensure_dir
 
+# DFA alpha1 developer data field (spec [9]): there is no native FIT field for
+# it, so it is embedded as a best-effort developer data field. These identify
+# it consistently across the DeveloperDataIdMessage, FieldDescriptionMessage,
+# and each RecordMessage's DeveloperField.
+_DFA_DEVELOPER_DATA_INDEX = 0
+_DFA_ALPHA1_FIELD_DEFINITION_NUMBER = 0
+_DFA_ALPHA1_FIELD_NAME = "dfa_alpha1"
+_DFA_ALPHA1_FIELD_UNITS = ""
+_DFA_DEVELOPER_APP_ID = bytes(16)  # placeholder 16-byte OCT developer/application id
+
 
 @dataclass(frozen=True)
 class FitExportSample:
@@ -19,6 +29,7 @@ class FitExportSample:
     heart_rate_bpm: int | None = None
     cadence_rpm: float | None = None
     speed_mps: float | None = None
+    dfa_alpha1: float | None = None
 
 
 class FitWriterBackend(Protocol):
@@ -58,6 +69,7 @@ class FitExporter:
                 heart_rate_bpm=sample.heart_rate_bpm,
                 cadence_rpm=sample.cadence_rpm,
                 speed_mps=sample.speed_mps,
+                dfa_alpha1=sample.dfa_alpha1,
             )
             for sample in samples
         ]
@@ -112,6 +124,16 @@ class _FitToolWriterBackend:
         _set_field(file_id, ("time_created", "timeCreated"), _to_fit_timestamp_ms(started_at_utc))
         builder.add(file_id)
 
+        include_dfa_alpha1 = False
+        try:
+            include_dfa_alpha1 = _add_dfa_developer_field_definitions(builder, samples)
+        except Exception:
+            _logger.debug(
+                "Could not add DFA alpha1 developer-field definitions; "
+                "continuing without it.",
+                exc_info=True,
+            )
+
         for sample in samples:
             record = RecordMessage()
             _set_field(record, ("timestamp",), _to_fit_timestamp_ms(sample.timestamp_utc))
@@ -123,6 +145,8 @@ class _FitToolWriterBackend:
                 _set_field(record, ("cadence",), int(round(sample.cadence_rpm)))
             if sample.speed_mps is not None:
                 _set_field(record, ("speed",), float(sample.speed_mps))
+            if include_dfa_alpha1 and sample.dfa_alpha1 is not None:
+                _attach_dfa_developer_field(record, sample.dfa_alpha1)
             builder.add(record)
 
         elapsed_seconds = (finished_at_utc - started_at_utc).total_seconds()
@@ -164,6 +188,71 @@ class _FitToolWriterBackend:
         fit_file.to_file(str(fit_file_path))
 
 
+def _add_dfa_developer_field_definitions(
+    builder: object,
+    samples: list[FitExportSample],
+) -> bool:
+    """Best-effort: emit the DeveloperDataIdMessage + FieldDescriptionMessage
+    describing the dfa_alpha1 developer field, when any sample carries a value.
+
+    Returns True when per-record developer field values should be attached.
+    Never raises; the caller treats any failure the same as "not present"
+    (spec [9] — no native FIT field for α1, best-effort developer field).
+    """
+    if not any(sample.dfa_alpha1 is not None for sample in samples):
+        return False
+
+    from fit_tool.base_type import BaseType
+    from fit_tool.profile.messages.developer_data_id_message import DeveloperDataIdMessage
+    from fit_tool.profile.messages.field_description_message import FieldDescriptionMessage
+
+    dev_id = DeveloperDataIdMessage()
+    _set_field(dev_id, ("developer_id", "developerId"), _DFA_DEVELOPER_APP_ID)
+    _set_field(dev_id, ("application_id", "applicationId"), _DFA_DEVELOPER_APP_ID)
+    _set_field(dev_id, ("manufacturer_id", "manufacturerId"), 0)
+    _set_field(dev_id, ("developer_data_index", "developerDataIndex"), _DFA_DEVELOPER_DATA_INDEX)
+    builder.add(dev_id)
+
+    field_description = FieldDescriptionMessage()
+    _set_field(
+        field_description, ("developer_data_index", "developerDataIndex"), _DFA_DEVELOPER_DATA_INDEX
+    )
+    _set_field(
+        field_description,
+        ("field_definition_number", "fieldDefinitionNumber"),
+        _DFA_ALPHA1_FIELD_DEFINITION_NUMBER,
+    )
+    _set_field(field_description, ("fit_base_type_id", "fitBaseTypeId"), BaseType.FLOAT32.value)
+    _set_field(field_description, ("field_name", "fieldName"), _DFA_ALPHA1_FIELD_NAME)
+    _set_field(field_description, ("units",), _DFA_ALPHA1_FIELD_UNITS)
+    builder.add(field_description)
+    return True
+
+
+def _attach_dfa_developer_field(record: object, alpha1: float) -> None:
+    """Best-effort: attach the dfa_alpha1 developer field value to *record*.
+
+    Swallows any failure so a single sample's developer field never aborts
+    the export (spec [9]); the JSONL store still has the value regardless.
+    """
+    try:
+        from fit_tool.base_type import BaseType
+        from fit_tool.developer_field import DeveloperField
+
+        field = DeveloperField(
+            field_id=_DFA_ALPHA1_FIELD_DEFINITION_NUMBER,
+            name=_DFA_ALPHA1_FIELD_NAME,
+            base_type=BaseType.FLOAT32,
+            units=_DFA_ALPHA1_FIELD_UNITS,
+            developer_data_index=_DFA_DEVELOPER_DATA_INDEX,
+            growable=True,
+        )
+        field.set_encoded_value(0, float(alpha1))
+        record.developer_fields = [field]
+    except Exception:
+        _logger.debug("Could not attach dfa_alpha1 developer field to record.", exc_info=True)
+
+
 class JsonFitWriterBackend:
     """
     Test backend that writes a JSON payload at a .fit path.
@@ -191,6 +280,7 @@ class JsonFitWriterBackend:
                     "heart_rate_bpm": sample.heart_rate_bpm,
                     "cadence_rpm": sample.cadence_rpm,
                     "speed_mps": sample.speed_mps,
+                    "dfa_alpha1": sample.dfa_alpha1,
                 }
                 for sample in samples
             ],

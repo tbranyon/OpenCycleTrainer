@@ -20,10 +20,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaRecord, SignalQuality
 from opencycletrainer.core.workout_model import Workout
-from opencycletrainer.storage.settings import AppSettings, load_settings
+from opencycletrainer.storage.settings import AppSettings, THEME_MODE_LIGHT, load_settings
 from .hotkeys import WorkoutHotkeys
-from .tile_config import TILE_LABEL_BY_KEY, normalize_tile_selections
+from .theme import resolve_status_color
+from .tile_config import DFA_TILE_KEY, TILE_LABEL_BY_KEY, normalize_tile_selections
 from .workout_chart import WorkoutChartWidget
 
 MODE_OPTIONS = ("ERG", "Resistance", "Hybrid")
@@ -69,6 +71,12 @@ class PauseDialog(QDialog):
         self._countdown_timer = QTimer(self)
         self._countdown_timer.setInterval(1000)
         self._countdown_timer.timeout.connect(self._tick_countdown)
+
+    def begin_resume(self) -> None:
+        """Start the resume flow without a button press (used by pedaling-driven resume)."""
+        if not self.resume_button.isEnabled():
+            return
+        self._on_resume_clicked()
 
     def _on_resume_clicked(self) -> None:
         """Disable the resume button, signal resume start, and begin the 3-2-1 countdown."""
@@ -243,6 +251,177 @@ class KJMetricTile(MetricTile):
             self.kj_source_changed.emit(key)
 
 
+# Quality -> semantic colour role (spec [7]): resolved against the active theme
+# via ui.theme.resolve_status_color, never a literal hex.
+_QUALITY_ROLE_BY_SIGNAL: dict[SignalQuality, str] = {
+    SignalQuality.GOOD: "success",
+    SignalQuality.DEGRADED: "warning",
+    SignalQuality.POOR: "danger",
+    SignalQuality.INSUFFICIENT: "muted",
+}
+
+
+class DfaDetailPopup(QFrame):
+    """Frameless popup showing DFA α1 quality detail, floated over its tile.
+
+    Uses the Qt.Popup window flag, which auto-closes on an outside click.
+    """
+
+    _OVERHANG_PX = 12  # horizontal overhang beyond the originating tile's width
+    _HEIGHT_PADDING_PX = 16  # extra height above the tile's own height
+
+    def __init__(self, owner: QWidget) -> None:
+        super().__init__(owner, Qt.Popup)
+        self._owner = owner
+        self.setObjectName("dfaDetailPopup")
+        self.setFrameShape(QFrame.StyledPanel)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+
+        self.power_row = QLabel(self)
+        self.r2_row = QLabel(self)
+        self.rmssd_row = QLabel(self)
+        self.artifact_row = QLabel(self)
+        self.reason_row = QLabel(self)
+        self.reason_row.setWordWrap(True)
+        for row in (self.power_row, self.r2_row, self.rmssd_row, self.artifact_row, self.reason_row):
+            layout.addWidget(row)
+
+    def show_for(self, tile: QWidget, record: DfaRecord) -> None:
+        """Populate rows for *record* and position/show the popup over *tile*."""
+        self._populate(record)
+        self.adjustSize()
+        self.setFixedWidth(tile.width() + 2 * self._OVERHANG_PX)
+        self.setMinimumHeight(tile.height() + self._HEIGHT_PADDING_PX)
+        self.move(tile.mapToGlobal(QPoint(-self._OVERHANG_PX, 0)))
+        self.show()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        if hasattr(self._owner, "_on_popup_hidden"):
+            self._owner._on_popup_hidden()
+
+    def _populate(self, record: DfaRecord) -> None:
+        power = f"{record.mean_power_w:.0f} W" if record.mean_power_w is not None else "-- W"
+        self.power_row.setText(f"Window power   {power}  ({DFA_WINDOW_SECONDS} s)")
+        self.r2_row.setText(f"Scaling fit (R²)   {record.r2_loglog:.2f}")
+        rmssd = f"{record.rmssd_ms:.0f} ms" if record.rmssd_ms is not None else "-- ms"
+        self.rmssd_row.setText(f"RMSSD   {rmssd}")
+        detail = ", ".join(
+            f"{count} {name}" for name, count in record.artifact_breakdown.items() if count > 0
+        ) or "none"
+        self.artifact_row.setText(f"Artifacts   {record.artifact_fraction:.1%}  ({detail})")
+        self.reason_row.setText(record.quality_reason)
+        self.reason_row.setVisible(bool(record.quality_reason))
+
+
+class DfaMetricTile(MetricTile):
+    """DFA α1 tile: adds a quality dot and a click-to-open detail popup.
+
+    Inherits title/value labels and drag-to-reorder from MetricTile. A press
+    that never crosses the drag threshold is treated as a click and toggles
+    the popup; a press that crosses it still emits drag_requested as normal.
+    """
+
+    _DOT_DIAMETER = 10
+    _DOT_MARGIN = 6
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        key: str,
+        prominent: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(title=title, key=key, prominent=prominent, parent=parent)
+
+        self.power_label = QLabel("-- W", self)
+        self.power_label.setAlignment(Qt.AlignCenter)
+        power_font = self.power_label.font()
+        power_font.setPointSize(max(7, power_font.pointSize() - 2))
+        self.power_label.setFont(power_font)
+        self.layout().addWidget(self.power_label)
+
+        self.quality_dot = QLabel(self)
+        self.quality_dot.setFixedSize(self._DOT_DIAMETER, self._DOT_DIAMETER)
+
+        self._record: DfaRecord | None = None
+        self._popup: DfaDetailPopup | None = None
+        self._is_open = False
+        self._theme_mode = THEME_MODE_LIGHT
+        self._apply_quality_color(SignalQuality.INSUFFICIENT)
+        self._reposition_dot()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._reposition_dot()
+
+    def apply_color_theme(self, theme_mode: str) -> None:
+        """Re-resolve the quality dot colour against *theme_mode* ("light"/"dark")."""
+        self._theme_mode = theme_mode
+        quality = self._record.quality if self._record is not None else SignalQuality.INSUFFICIENT
+        self._apply_quality_color(quality)
+
+    def set_dfa_record(self, record: DfaRecord | None) -> None:
+        """Update the quality dot, power sub-line, and any open popup for *record*."""
+        self._record = record
+        quality = record.quality if record is not None else SignalQuality.INSUFFICIENT
+        self._apply_quality_color(quality)
+        power_text = (
+            f"{record.mean_power_w:.0f} W" if record is not None and record.mean_power_w is not None else "-- W"
+        )
+        self.power_label.setText(power_text)
+        if self._is_open and self._popup is not None and record is not None:
+            self._popup.show_for(self, record)
+
+    def mouseReleaseEvent(self, event) -> None:
+        # _drag_start_pos is still set here only if the press never crossed the
+        # drag threshold (MetricTile.mouseMoveEvent clears it once it does) —
+        # that's exactly the "click" case.
+        was_pending_click = self._drag_start_pos is not None and event.button() == Qt.LeftButton
+        super().mouseReleaseEvent(event)
+        if was_pending_click:
+            self._toggle_popup()
+
+    def _on_popup_hidden(self) -> None:
+        """Keep _is_open in sync when the popup dismisses itself (outside click)."""
+        self._is_open = False
+
+    def _toggle_popup(self) -> None:
+        if self._is_open:
+            self._close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self) -> None:
+        if self._record is None:
+            return
+        if self._popup is None:
+            self._popup = DfaDetailPopup(self)
+        self._popup.show_for(self, self._record)
+        self._is_open = True
+
+    def _close_popup(self) -> None:
+        if self._popup is not None:
+            self._popup.hide()
+        self._is_open = False
+
+    def _apply_quality_color(self, quality: SignalQuality) -> None:
+        role = _QUALITY_ROLE_BY_SIGNAL[quality]
+        color = resolve_status_color(role, self._theme_mode)
+        self.quality_dot.setStyleSheet(
+            f"background-color: {color}; border-radius: {self._DOT_DIAMETER // 2}px;"
+        )
+
+    def _reposition_dot(self) -> None:
+        x = max(0, self.width() - self._DOT_DIAMETER - self._DOT_MARGIN)
+        self.quality_dot.move(x, self._DOT_MARGIN)
+        self.quality_dot.raise_()
+
+
 class WorkoutScreen(QWidget):
     toggle_mode_requested = Signal(str)
     extend_interval_requested = Signal(int, bool)
@@ -271,6 +450,7 @@ class WorkoutScreen(QWidget):
         self._drag_source_key: str | None = None
         self._drag_ghost: QLabel | None = None
         self._drag_target_key: str | None = None
+        self._theme_mode: str = THEME_MODE_LIGHT
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
@@ -318,6 +498,7 @@ class WorkoutScreen(QWidget):
         self._build_metrics_section(root_layout)
         self._build_chart_scaffolding(root_layout)
         self.chart_widget.set_interval_plot_visible(self._settings.show_interval_plot)
+        self.chart_widget.set_dfa_alpha1_enabled(DFA_TILE_KEY in self._selected_tiles)
         self._build_mode_footer(root_layout)
         self._render_selected_tiles()
         self._wire_button_state_tracking()
@@ -343,9 +524,20 @@ class WorkoutScreen(QWidget):
         self._kj_mode_active = settings.default_workout_behavior == "kj_mode"
         self._render_selected_tiles()
         self.chart_widget.set_interval_plot_visible(settings.show_interval_plot)
+        self.chart_widget.set_dfa_alpha1_enabled(DFA_TILE_KEY in self._selected_tiles)
 
     def apply_color_theme(self, color_theme: str) -> None:
+        self._theme_mode = color_theme
         self.chart_widget.apply_color_theme(color_theme)
+        dfa_tile = self._tile_by_key.get(DFA_TILE_KEY)
+        if isinstance(dfa_tile, DfaMetricTile):
+            dfa_tile.apply_color_theme(color_theme)
+
+    def set_dfa_record(self, record: DfaRecord | None) -> None:
+        """Push the latest DFA α1 record to the dfa_a1 tile, if it's selected."""
+        tile = self._tile_by_key.get(DFA_TILE_KEY)
+        if isinstance(tile, DfaMetricTile):
+            tile.set_dfa_record(record)
 
     def set_workout_name(self, workout_name: str | None) -> None:
         name = str(workout_name or "").strip()
@@ -548,8 +740,11 @@ class WorkoutScreen(QWidget):
         current_interval_index: int | None,
         power_series: list[tuple[float, int]],
         hr_series: list[tuple[float, int]],
+        alpha1_series: list[tuple[float, float]] | None = None,
     ) -> None:
-        self.chart_widget.update_charts(elapsed_seconds, current_interval_index, power_series, hr_series)
+        self.chart_widget.update_charts(
+            elapsed_seconds, current_interval_index, power_series, hr_series, alpha1_series
+        )
 
     def add_skip_marker(self, elapsed_before: float, elapsed_after: float) -> None:
         self.chart_widget.add_skip_marker(elapsed_before, elapsed_after)
@@ -579,8 +774,11 @@ class WorkoutScreen(QWidget):
         power_series: list,
         hr_series: list,
         erg_target_watts: int | None = None,
+        alpha1_series: list[tuple[float, float]] | None = None,
     ) -> None:
-        self.chart_widget.update_free_ride_charts(elapsed_seconds, power_series, hr_series, erg_target_watts)
+        self.chart_widget.update_free_ride_charts(
+            elapsed_seconds, power_series, hr_series, erg_target_watts, alpha1_series
+        )
 
     def set_free_ride_mode(self, active: bool) -> None:
         """Enable or disable inline ERG target editing on the target power tile."""
@@ -681,6 +879,9 @@ class WorkoutScreen(QWidget):
             if key == "kj_work_completed":
                 tile: MetricTile = KJMetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
                 tile.kj_source_changed.connect(self.kj_source_selected)
+            elif key == DFA_TILE_KEY:
+                tile = DfaMetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
+                tile.apply_color_theme(self._theme_mode)
             else:
                 tile = MetricTile(title=TILE_LABEL_BY_KEY[key], key=key, parent=self.tile_display_widget)
             tile.drag_requested.connect(self._on_drag_started)

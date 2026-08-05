@@ -1,0 +1,465 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\thomas.branyon\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\thomas.branyon\Documents\Personal\OpenCycleTrainer
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 136 items
+
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_single_tick_produces_no_sample_until_second_boundary PASSED [  0%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_second_tick_in_same_second_produces_no_sample PASSED [  1%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_tick_in_new_second_closes_previous_bin PASSED [  2%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_emitted_sample_timestamp_is_floor_second PASSED [  2%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_two_completed_seconds_emit_two_samples PASSED [  3%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_three_seconds_total_three_samples PASSED [  4%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_flush_returns_partial_bin PASSED [  5%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_flush_returns_none_when_no_data PASSED [  5%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBasicEmission::test_flush_after_flush_returns_none PASSED [  6%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPowerAveraging::test_single_reading_gives_that_power PASSED [  7%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPowerAveraging::test_equal_duration_readings_average_equally PASSED [  8%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPowerAveraging::test_unequal_duration_readings_are_time_weighted PASSED [  8%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPowerAveraging::test_carry_forward_fills_gap_at_start_of_new_bin PASSED [  9%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPowerAveraging::test_no_power_reading_emits_none PASSED [ 10%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPowerAveraging::test_bike_power_averaged_independently PASSED [ 11%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_hr_bpm_is_last_value_in_bin PASSED [ 11%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_hr_bpm_none_when_no_reading_in_bin PASSED [ 12%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_cadence_is_last_value_in_bin PASSED [ 13%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_speed_is_last_value_in_bin PASSED [ 13%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_total_kj_is_last_value_in_bin PASSED [ 14%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_mode_is_last_value_in_bin PASSED [ 15%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_hr_does_not_carry_forward_across_bins PASSED [ 16%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_dfa_alpha1_and_quality_are_last_value_in_bin PASSED [ 16%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestLastValueFields::test_dfa_alpha1_none_when_no_reading_in_bin PASSED [ 17%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_inactive_feed_produces_no_samples PASSED [ 18%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_pause_discards_in_progress_bin PASSED [ 19%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_resumed_aggregator_starts_fresh_bin PASSED [ 19%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_set_recording_active_idempotent PASSED [ 20%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_power_carry_forward_does_not_leak_across_pause_resume FAILED [ 21%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_power_carry_forward_still_applies_across_normal_bin_boundary FAILED [ 22%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_feed_while_paused_produces_nothing PASSED [ 22%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_two_readings_at_known_offsets_are_time_weighted FAILED [ 23%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_reading_between_polls_is_not_lost FAILED [ 24%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_power_faster_than_tick_rate_contributes_every_reading FAILED [ 25%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_add_power_inactive_returns_empty FAILED [ 25%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_add_power_bike_channel_independent FAILED [ 26%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_add_power_only_touches_the_channel_it_is_given FAILED [ 27%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_feed_no_longer_adds_power_segments FAILED [ 27%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_power_not_double_counted_when_fed_and_added FAILED [ 28%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBinsForEverySecond::test_active_second_with_no_sensor_data_still_emits_a_bin FAILED [ 29%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBinsForEverySecond::test_flush_of_empty_active_bin_emits_a_sample FAILED [ 30%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBinsForEverySecond::test_paused_second_emits_nothing PASSED [ 30%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestOutOfOrderRobustness::test_stale_sample_from_closed_bin_is_dropped_without_raising PASSED [ 31%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestOutOfOrderRobustness::test_stale_sample_does_not_corrupt_open_bin_average PASSED [ 32%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestOutOfOrderRobustness::test_compute_average_handles_unsorted_segments PASSED [ 33%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBoundaryConditions::test_exact_second_boundary_opens_new_bin PASSED [ 33%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBoundaryConditions::test_t999ms_stays_in_same_bin PASSED [ 34%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBoundaryConditions::test_reset_clears_carry_forward PASSED [ 35%]
+opencycletrainer/tests/test_one_second_aggregator.py::TestBoundaryConditions::test_flush_after_reset_returns_none PASSED [ 36%]
+opencycletrainer/tests/test_recorder_integration.py::TestDefaults::test_recorder_active_is_false PASSED [ 36%]
+opencycletrainer/tests/test_recorder_integration.py::TestDefaults::test_total_kj_is_zero PASSED [ 37%]
+opencycletrainer/tests/test_recorder_integration.py::TestSensorSnapshot::test_fields_are_accessible PASSED [ 38%]
+opencycletrainer/tests/test_recorder_integration.py::TestSensorSnapshot::test_all_none_fields_allowed PASSED [ 38%]
+opencycletrainer/tests/test_recorder_integration.py::TestStart::test_sets_recorder_active PASSED [ 39%]
+opencycletrainer/tests/test_recorder_integration.py::TestStart::test_calls_recorder_start PASSED [ 40%]
+opencycletrainer/tests/test_recorder_integration.py::TestStart::test_passes_workout_name_to_recorder PASSED [ 41%]
+opencycletrainer/tests/test_recorder_integration.py::TestStart::test_noop_when_already_started PASSED [ 41%]
+opencycletrainer/tests/test_recorder_integration.py::TestStart::test_resets_total_kj PASSED [ 42%]
+opencycletrainer/tests/test_recorder_integration.py::TestStart::test_first_update_total_kj_after_start_is_noop PASSED [ 43%]
+opencycletrainer/tests/test_recorder_integration.py::TestPrepare::test_returns_none_when_not_started PASSED [ 44%]
+opencycletrainer/tests/test_recorder_integration.py::TestPrepare::test_returns_metrics_object_when_started PASSED [ 44%]
+opencycletrainer/tests/test_recorder_integration.py::TestPrepare::test_sets_recorder_active_false PASSED [ 45%]
+opencycletrainer/tests/test_recorder_integration.py::TestPrepare::test_second_call_returns_none PASSED [ 46%]
+opencycletrainer/tests/test_recorder_integration.py::TestPrepare::test_does_not_call_recorder_stop PASSED [ 47%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_calls_recorder_stop PASSED [ 47%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_noop_when_not_pending PASSED [ 48%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_shows_saved_alert PASSED [ 49%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_second_commit_is_noop PASSED [ 50%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_no_strava_upload_when_disabled PASSED [ 50%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_no_intervals_icu_upload_when_disabled PASSED [ 51%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_no_intervals_icu_upload_when_upload_fn_is_none PASSED [ 52%]
+opencycletrainer/tests/test_recorder_integration.py::TestCommit::test_intervals_icu_upload_enqueued_when_enabled PASSED [ 52%]
+opencycletrainer/tests/test_recorder_integration.py::TestDiscard::test_calls_recorder_discard PASSED [ 53%]
+opencycletrainer/tests/test_recorder_integration.py::TestDiscard::test_noop_when_not_pending PASSED [ 54%]
+opencycletrainer/tests/test_recorder_integration.py::TestDiscard::test_does_not_call_recorder_stop PASSED [ 55%]
+opencycletrainer/tests/test_recorder_integration.py::TestDiscard::test_no_saved_alert PASSED [ 55%]
+opencycletrainer/tests/test_recorder_integration.py::TestDiscard::test_second_discard_is_noop PASSED [ 56%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_noop_when_not_started PASSED [ 57%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_calls_recorder_stop PASSED [ 58%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_sets_recorder_active_false PASSED [ 58%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_shows_saved_alert PASSED [ 59%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_no_strava_upload_when_setting_disabled PASSED [ 60%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_no_strava_upload_when_upload_fn_is_none PASSED [ 61%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_second_finalize_is_noop PASSED [ 61%]
+opencycletrainer/tests/test_recorder_integration.py::TestFinalize::test_recorder_stop_failure_does_not_raise PASSED [ 62%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_calls_record_sample PASSED [ 63%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_trainer_power_in_sample FAILED [ 63%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_hr_in_sample PASSED [ 64%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_cadence_in_sample PASSED [ 65%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_speed_in_sample PASSED [ 66%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_erg_setpoint_set_in_erg_mode PASSED [ 66%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_erg_setpoint_none_in_resistance_mode PASSED [ 67%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_total_kj_included_in_sample PASSED [ 68%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_crossing_second_boundary_emits_sample_without_finalize PASSED [ 69%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_set_recording_active_failure_halts_recording PASSED [ 69%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_record_sample_failure_halts_recording PASSED [ 70%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_sync_calls_update_total_kj_when_now_provided PASSED [ 71%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_sync_skips_update_total_kj_when_now_is_none PASSED [ 72%]
+opencycletrainer/tests/test_recorder_integration.py::TestSync::test_record_sample_valueerror_does_not_propagate PASSED [ 72%]
+opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_two_readings_are_time_weighted_by_notification_time FAILED [ 73%]
+opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_reading_between_ticks_is_not_lost FAILED [ 74%]
+opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_power_faster_than_tick_rate_contributes_every_reading FAILED [ 75%]
+opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_sync_no_longer_carries_power_into_the_sample FAILED [ 75%]
+opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_bike_power_ingested_independently FAILED [ 76%]
+opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_record_sample_failure_during_close_halts_recording FAILED [ 77%]
+opencycletrainer/tests/test_recorder_integration.py::TestMonotonicAnchoring::test_backward_wall_clock_step_does_not_move_bin_timestamp PASSED [ 77%]
+opencycletrainer/tests/test_recorder_integration.py::TestMonotonicAnchoring::test_forward_wall_clock_jump_does_not_move_bin_timestamp PASSED [ 78%]
+opencycletrainer/tests/test_recorder_integration.py::TestMonotonicAnchoring::test_normal_clock_tracks_real_elapsed_time PASSED [ 79%]
+opencycletrainer/tests/test_recorder_integration.py::TestMonotonicAnchoring::test_no_anchor_falls_back_to_utc_now PASSED [ 80%]
+opencycletrainer/tests/test_recorder_integration.py::TestMonotonicAnchoring::test_commit_duration_uses_monotonic_anchor_not_wall_clock PASSED [ 80%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_first_call_is_noop PASSED [ 81%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_accumulates_kj_over_two_ticks PASSED [ 82%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_no_accumulation_when_not_recording_active PASSED [ 83%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_no_accumulation_when_target_is_zero PASSED [ 83%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_no_accumulation_when_target_is_none PASSED [ 84%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_accumulates_across_multiple_ticks PASSED [ 85%]
+opencycletrainer/tests/test_recorder_integration.py::TestUpdateTotalKj::test_zero_or_negative_delta_is_skipped PASSED [ 86%]
+opencycletrainer/tests/test_recorder_integration.py::TestConfigureDataDir::test_calls_set_data_dir_on_recorder PASSED [ 86%]
+opencycletrainer/tests/test_recorder_integration.py::TestConfigureDataDir::test_updates_settings_reference PASSED [ 87%]
+opencycletrainer/tests/test_recorder_integration.py::TestConfigureDataDir::test_noop_when_recorder_has_no_set_data_dir PASSED [ 88%]
+opencycletrainer/tests/test_recorder_integration.py::TestShutdown::test_finalizes_active_recording PASSED [ 88%]
+opencycletrainer/tests/test_recorder_integration.py::TestShutdown::test_noop_when_not_active PASSED [ 89%]
+opencycletrainer/tests/test_recorder_integration.py::TestShutdown::test_recorder_active_false_after_shutdown PASSED [ 90%]
+opencycletrainer/tests/test_recorder_integration.py::TestShutdown::test_commits_when_pending_finalize PASSED [ 91%]
+opencycletrainer/tests/test_recorder.py::test_recorder_logs_at_1hz_and_writes_summary_with_matching_fit_stem PASSED [ 91%]
+opencycletrainer/tests/test_recorder.py::test_recorder_uses_bike_power_when_available_for_avg_power PASSED [ 92%]
+opencycletrainer/tests/test_recorder.py::test_recorder_can_pause_and_resume_sampling_via_recording_active_flag PASSED [ 93%]
+opencycletrainer/tests/test_recorder.py::test_recorder_accepts_pre_aggregated_1s_stream_without_dropping_records PASSED [ 94%]
+opencycletrainer/tests/test_recorder.py::test_recorder_fit_power_uses_bike_first_with_trainer_fallback_on_dropout PASSED [ 94%]
+opencycletrainer/tests/test_recorder.py::test_recorder_writes_dfa_alpha1_and_quality_into_jsonl_row PASSED [ 95%]
+opencycletrainer/tests/test_recorder.py::test_recorder_sample_dfa_fields_round_trip_from_row PASSED [ 96%]
+opencycletrainer/tests/test_recorder.py::test_recorder_row_missing_dfa_alpha1_key_parses_as_none PASSED [ 97%]
+opencycletrainer/tests/test_recorder.py::test_recorder_forward_fills_dfa_alpha1_from_pull_model_across_1hz_samples PASSED [ 97%]
+opencycletrainer/tests/test_recorder.py::test_recorder_resume_cannot_emit_duplicate_utc_second FAILED [ 98%]
+opencycletrainer/tests/test_recorder.py::test_recorder_resume_accepts_a_genuinely_new_second PASSED [ 99%]
+opencycletrainer/tests/test_recorder.py::test_recorder_stop_completes_gracefully_when_fit_export_fails PASSED [100%]
+
+================================== FAILURES ===================================
+_ TestPauseResume.test_power_carry_forward_does_not_leak_across_pause_resume __
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestPauseResume object at 0x0000015F1C952B10>
+
+    def test_power_carry_forward_does_not_leak_across_pause_resume(self) -> None:
+        """Carry-forward must be cleared on pause: a long pause's pre-pause power
+        must not backfill the leading gap of the first bin after resume (Task C
+        item 1). Superseded the prior "preserved across pause" expectation, which
+        was the bug this fix addresses."""
+        agg = _active_agg()
+>       agg.add_power(_ts(0), 200, None)
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:319: AttributeError
+_ TestPauseResume.test_power_carry_forward_still_applies_across_normal_bin_boundary _
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestPauseResume object at 0x0000015F1C83ECF0>
+
+    def test_power_carry_forward_still_applies_across_normal_bin_boundary(self) -> None:
+        """Without an intervening pause, carry-forward must still work exactly
+        as before (regression guard for the ordinary, non-pause case)."""
+        agg = _active_agg()
+>       agg.add_power(_ts(0), 200, None)
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:335: AttributeError
+______ TestAddPower.test_two_readings_at_known_offsets_are_time_weighted ______
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C98B9D0>
+
+    def test_two_readings_at_known_offsets_are_time_weighted(self) -> None:
+        """200 W held 0.25 s then 300 W held 0.75 s -> 275 W."""
+        agg = _active_agg()
+>       agg.add_power(_ts(0), 200, None)
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:358: AttributeError
+_____________ TestAddPower.test_reading_between_polls_is_not_lost _____________
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C98BB10>
+
+    def test_reading_between_polls_is_not_lost(self) -> None:
+        """A reading whose lifetime is shorter than a 250 ms poll gap must still
+        contribute to the weighted average (the pre-fix poll model would drop it
+        entirely since it is overwritten before the next tick samples it)."""
+        agg = _active_agg()
+>       agg.add_power(_ts(0), 200, None)
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:369: AttributeError
+___ TestAddPower.test_power_faster_than_tick_rate_contributes_every_reading ___
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C9DF950>
+
+    def test_power_faster_than_tick_rate_contributes_every_reading(self) -> None:
+        """4 Hz notifications (every 250 ms) all land in the average, none dropped."""
+        agg = _active_agg()
+        for ms, w in ((0, 100), (250, 150), (500, 200), (750, 250)):
+>           agg.add_power(_ts(ms), w, None)
+            ^^^^^^^^^^^^^
+E           AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:382: AttributeError
+_____________ TestAddPower.test_add_power_inactive_returns_empty ______________
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C9DF820>
+
+    def test_add_power_inactive_returns_empty(self) -> None:
+        agg = OneSecondAggregator()  # not activated
+>       result = agg.add_power(_ts(0), 200, None)
+                 ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:389: AttributeError
+____________ TestAddPower.test_add_power_bike_channel_independent _____________
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1CA3C4D0>
+
+    def test_add_power_bike_channel_independent(self) -> None:
+        agg = _active_agg()
+>       agg.add_power(_ts(0), 200, 220)
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:394: AttributeError
+______ TestAddPower.test_add_power_only_touches_the_channel_it_is_given _______
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C9D19D0>
+
+    def test_add_power_only_touches_the_channel_it_is_given(self) -> None:
+        """A call reporting only trainer watts must not inject a spurious
+        None segment into the bike bin (which would wrongly truncate an
+        already-held bike reading)."""
+        agg = _active_agg()
+>       agg.add_power(_ts(0), None, 220)  # bike only
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:406: AttributeError
+____________ TestAddPower.test_feed_no_longer_adds_power_segments _____________
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C9D1AE0>
+
+    def test_feed_no_longer_adds_power_segments(self) -> None:
+        """feed() must not accumulate power; only add_power does, so a value
+        carried by a raw sample fed via feed() never reaches the recorded bin."""
+        agg = _active_agg()
+        agg.feed(_sample(0, trainer=200))
+        result = agg.feed(_sample(1000, trainer=300))
+        assert len(result) == 1
+>       assert result[0].trainer_power_watts is None
+E       AssertionError: assert 200 is None
+E        +  where 200 = RecorderSample(timestamp_utc=datetime.datetime(2026, 1, 1, 0, 0, tzinfo=datetime.timezone.utc), target_power_watts=200, trainer_power_watts=200, bike_power_watts=None, heart_rate_bpm=150, cadence_rpm=90.0, speed_mps=5.0, mode='ERG', erg_setpoint_watts=200, total_kj=1.0, dfa_alpha1=None, dfa_quality=None).trainer_power_watts
+
+opencycletrainer\tests\test_one_second_aggregator.py:419: AssertionError
+________ TestAddPower.test_power_not_double_counted_when_fed_and_added ________
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestAddPower object at 0x0000015F1C9AE950>
+
+    def test_power_not_double_counted_when_fed_and_added(self) -> None:
+        """A reading entered via add_power must not also be picked up by feed(),
+        proving sync()'s no-power raw sample cannot double count power."""
+        agg = _active_agg()
+>       agg.add_power(_ts(0), 200, None)
+        ^^^^^^^^^^^^^
+E       AttributeError: 'OneSecondAggregator' object has no attribute 'add_power'
+
+opencycletrainer\tests\test_one_second_aggregator.py:425: AttributeError
+_ TestBinsForEverySecond.test_active_second_with_no_sensor_data_still_emits_a_bin _
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestBinsForEverySecond object at 0x0000015F1C98BD90>
+
+    def test_active_second_with_no_sensor_data_still_emits_a_bin(self) -> None:
+        """A second that elapses while recording is active must still produce
+        a RecorderSample (fields None), rather than vanishing from the sample
+        list because it happened to carry no sensor data at all."""
+        agg = _active_agg()
+        empty = _sample(0, trainer=None, bike=None, hr=None, cadence=None, speed=None)
+        agg.feed(empty)
+        result = agg.feed(
+            _sample(1000, trainer=None, bike=None, hr=None, cadence=None, speed=None)
+        )
+>       assert len(result) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+opencycletrainer\tests\test_one_second_aggregator.py:446: AssertionError
+____ TestBinsForEverySecond.test_flush_of_empty_active_bin_emits_a_sample _____
+
+self = <opencycletrainer.tests.test_one_second_aggregator.TestBinsForEverySecond object at 0x0000015F1C98BED0>
+
+    def test_flush_of_empty_active_bin_emits_a_sample(self) -> None:
+        agg = _active_agg()
+        agg.feed(_sample(0, trainer=None, bike=None, hr=None, cadence=None, speed=None))
+        s = agg.flush()
+>       assert s is not None
+E       assert None is not None
+
+opencycletrainer\tests\test_one_second_aggregator.py:454: AssertionError
+____________________ TestSync.test_trainer_power_in_sample ____________________
+
+self = <opencycletrainer.tests.test_recorder_integration.TestSync object at 0x0000015F1CA59A90>
+
+    def test_trainer_power_in_sample(self) -> None:
+        """Power now arrives solely via ingest_power() (Task A); sync() alone no
+        longer carries it into the recorded sample, so this must ingest
+        explicitly rather than rely on the sensor snapshot's held value."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+>       ri.ingest_power(0.0, trainer_watts=200)
+        ^^^^^^^^^^^^^^^
+E       AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:457: AttributeError
+__ TestIngestPower.test_two_readings_are_time_weighted_by_notification_time ___
+
+self = <opencycletrainer.tests.test_recorder_integration.TestIngestPower object at 0x0000015F1CA59BD0>
+
+    def test_two_readings_are_time_weighted_by_notification_time(self) -> None:
+        """200 W held 0.25 s then 300 W held 0.75 s -> 275 W, proving weighting
+        follows measurement time rather than tick/poll time."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+>       ri.ingest_power(0.0, trainer_watts=200)
+        ^^^^^^^^^^^^^^^
+E       AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:591: AttributeError
+___________ TestIngestPower.test_reading_between_ticks_is_not_lost ____________
+
+self = <opencycletrainer.tests.test_recorder_integration.TestIngestPower object at 0x0000015F1CA59D10>
+
+    def test_reading_between_ticks_is_not_lost(self) -> None:
+        """A reading overwritten within a single 250 ms tick period must still
+        contribute; the pre-fix poll model would have dropped it."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+>       ri.ingest_power(0.0, trainer_watts=200)
+        ^^^^^^^^^^^^^^^
+E       AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:601: AttributeError
+_ TestIngestPower.test_power_faster_than_tick_rate_contributes_every_reading __
+
+self = <opencycletrainer.tests.test_recorder_integration.TestIngestPower object at 0x0000015F1CA65E00>
+
+    def test_power_faster_than_tick_rate_contributes_every_reading(self) -> None:
+        """4 Hz notifications (every 250 ms) all land in the average."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        for t, w in ((0.0, 100), (0.25, 150), (0.5, 200), (0.75, 250)):
+>           ri.ingest_power(t, trainer_watts=w)
+            ^^^^^^^^^^^^^^^
+E           AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:613: AttributeError
+______ TestIngestPower.test_sync_no_longer_carries_power_into_the_sample ______
+
+self = <opencycletrainer.tests.test_recorder_integration.TestIngestPower object at 0x0000015F1CA65F30>
+
+    def test_sync_no_longer_carries_power_into_the_sample(self) -> None:
+        """sync()'s raw sample must ignore the sensor snapshot's power fields
+        even when they hold a live reading, since power now arrives solely via
+        ingest_power(); this proves power is not double-counted."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        sensor = SensorSnapshot(
+            last_power_watts=999,  # would corrupt the average if sync() used it
+            last_bike_power_watts=None,
+            last_hr_bpm=150,
+            last_cadence_rpm=90.0,
+            last_speed_mps=10.0,
+        )
+>       ri.ingest_power(0.0, trainer_watts=200)
+        ^^^^^^^^^^^^^^^
+E       AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:630: AttributeError
+___________ TestIngestPower.test_bike_power_ingested_independently ____________
+
+self = <opencycletrainer.tests.test_recorder_integration.TestIngestPower object at 0x0000015F1CA3ED50>
+
+    def test_bike_power_ingested_independently(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+>       ri.ingest_power(0.0, bike_watts=220)
+        ^^^^^^^^^^^^^^^
+E       AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:637: AttributeError
+___ TestIngestPower.test_record_sample_failure_during_close_halts_recording ___
+
+self = <opencycletrainer.tests.test_recorder_integration.TestIngestPower object at 0x0000015F1C9D3020>
+
+    def test_record_sample_failure_during_close_halts_recording(self) -> None:
+        class _FailSample(_FakeRecorder):
+            def record_sample(self, sample: object) -> bool:
+                raise RuntimeError("broken")
+    
+        ri, rec, _ = _make(recorder=_FailSample())
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+>       ri.ingest_power(0.0, trainer_watts=200)
+        ^^^^^^^^^^^^^^^
+E       AttributeError: 'RecorderIntegration' object has no attribute 'ingest_power'
+
+opencycletrainer\tests\test_recorder_integration.py:649: AttributeError
+____________ test_recorder_resume_cannot_emit_duplicate_utc_second ____________
+
+    def test_recorder_resume_cannot_emit_duplicate_utc_second():
+        """set_recording_active(True) resets the <1s timestamp gate so the recorder
+        can accept a sample immediately after resume. That reset must not let a
+        UTC second already recorded pre-pause be recorded a second time."""
+        data_dir = _test_data_dir()
+        recorder = WorkoutRecorder(
+            data_dir=data_dir,
+            flush_batch_size=5,
+            fit_exporter=FitExporter(writer_backend=JsonFitWriterBackend()),
+        )
+        start_time = datetime(2026, 6, 1, 8, 0, 0, tzinfo=timezone.utc)
+    
+        recorder.start("Resume Dedup", started_at_utc=start_time)
+        accepted_first = recorder.record_sample(_sample(start_time, trainer=200))
+        recorder.set_recording_active(False)
+        recorder.set_recording_active(True)  # resets the <1s gate
+        # Same UTC second as the sample already recorded pre-pause.
+        duplicate_accepted = recorder.record_sample(_sample(start_time, trainer=999))
+        summary = recorder.stop(finished_at_utc=start_time + timedelta(seconds=1))
+    
+        assert accepted_first is True
+>       assert duplicate_accepted is False
+E       assert True is False
+
+opencycletrainer\tests\test_recorder.py:362: AssertionError
+=========================== short test summary info ===========================
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_power_carry_forward_does_not_leak_across_pause_resume
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestPauseResume::test_power_carry_forward_still_applies_across_normal_bin_boundary
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_two_readings_at_known_offsets_are_time_weighted
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_reading_between_polls_is_not_lost
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_power_faster_than_tick_rate_contributes_every_reading
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_add_power_inactive_returns_empty
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_add_power_bike_channel_independent
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_add_power_only_touches_the_channel_it_is_given
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_feed_no_longer_adds_power_segments
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestAddPower::test_power_not_double_counted_when_fed_and_added
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestBinsForEverySecond::test_active_second_with_no_sensor_data_still_emits_a_bin
+FAILED opencycletrainer/tests/test_one_second_aggregator.py::TestBinsForEverySecond::test_flush_of_empty_active_bin_emits_a_sample
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestSync::test_trainer_power_in_sample
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_two_readings_are_time_weighted_by_notification_time
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_reading_between_ticks_is_not_lost
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_power_faster_than_tick_rate_contributes_every_reading
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_sync_no_longer_carries_power_into_the_sample
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_bike_power_ingested_independently
+FAILED opencycletrainer/tests/test_recorder_integration.py::TestIngestPower::test_record_sample_failure_during_close_halts_recording
+FAILED opencycletrainer/tests/test_recorder.py::test_recorder_resume_cannot_emit_duplicate_utc_second
+======================= 20 failed, 116 passed in 0.71s ========================

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
@@ -583,6 +584,148 @@ def test_power_duration_chart_widget_empty_curve_clears_data():
     x, y = widget._curve_item.getData()
     assert x is None or len(x) == 0
     assert y is None or len(y) == 0
+
+
+# ── DFA α1 chart overlay ───────────────────────────────────────────────────────
+
+def test_alpha1_overlay_absent_by_default():
+    """The α1 curve/right axis must not exist until the tile is enabled."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    assert widget._interval_alpha1_curve is None
+    assert widget._workout_alpha1_curve is None
+    assert not widget._interval_plot.getPlotItem().getAxis("right").isVisible()
+    assert not widget._workout_plot.getPlotItem().getAxis("right").isVisible()
+
+
+def test_alpha1_overlay_created_when_enabled():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    widget.set_dfa_alpha1_enabled(True)
+
+    assert widget._interval_alpha1_curve is not None
+    assert widget._workout_alpha1_curve is not None
+    assert widget._interval_plot.getPlotItem().getAxis("right").isVisible()
+    assert widget._workout_plot.getPlotItem().getAxis("right").isVisible()
+
+
+def test_alpha1_overlay_torn_down_when_disabled():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    widget.set_dfa_alpha1_enabled(True)
+    widget.set_dfa_alpha1_enabled(False)
+
+    assert widget._interval_alpha1_curve is None
+    assert widget._workout_alpha1_curve is None
+    assert not widget._interval_plot.getPlotItem().getAxis("right").isVisible()
+    assert not widget._workout_plot.getPlotItem().getAxis("right").isVisible()
+
+
+def test_alpha1_overlay_enable_is_idempotent():
+    """Enabling twice must not create a second curve/ViewBox."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    widget.set_dfa_alpha1_enabled(True)
+    first_curve = widget._workout_alpha1_curve
+    widget.set_dfa_alpha1_enabled(True)
+
+    assert widget._workout_alpha1_curve is first_curve
+
+
+def test_alpha1_series_plotted_with_nan_gap_for_suppressed_windows():
+    """A None-quality window (represented as NaN) must produce a gap, not a point."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    widget.set_dfa_alpha1_enabled(True)
+
+    alpha1_series = [(0.0, 0.80), (5.0, float("nan")), (10.0, 0.75)]
+    widget.update_charts(10.0, 0, [], [], alpha1_series=alpha1_series)
+
+    x, y = widget._workout_alpha1_curve.getData()
+    assert len(x) == 3
+    assert math.isnan(y[1])
+    assert y[0] == pytest.approx(0.80)
+    assert y[2] == pytest.approx(0.75)
+
+
+def test_alpha1_series_ignored_when_disabled():
+    """update_charts must not touch alpha1 state (which does not exist) when disabled."""
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    # No exception, and no overlay created, even though a series is supplied.
+    widget.update_charts(10.0, 0, [], [], alpha1_series=[(0.0, 0.80)])
+    assert widget._workout_alpha1_curve is None
+
+
+def test_alpha1_overlay_does_not_affect_existing_traces_when_enabled():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    widget.set_dfa_alpha1_enabled(True)
+
+    power = [(float(i), 180) for i in range(10)]
+    hr = [(float(i), 140) for i in range(10)]
+    widget.update_charts(10.0, 0, power, hr, alpha1_series=[(0.0, 0.8)])
+
+    x, _ = widget._workout_actual.getData()
+    assert len(x) == 10
+    hx, _ = widget._workout_hr.getData()
+    assert len(hx) == 10
+
+
+def test_alpha1_overlay_does_not_affect_existing_traces_when_disabled():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+
+    power = [(float(i), 180) for i in range(10)]
+    hr = [(float(i), 140) for i in range(10)]
+    widget.update_charts(10.0, 0, power, hr)
+
+    x, _ = widget._workout_actual.getData()
+    assert len(x) == 10
+    hx, _ = widget._workout_hr.getData()
+    assert len(hx) == 10
+
+
+def test_alpha1_right_axis_range_fixed():
+    _qapp()
+    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+
+    widget = WorkoutChartWidget()
+    widget.load_workout(_flat_workout(), ftp_watts=200)
+    widget.set_dfa_alpha1_enabled(True)
+
+    y_min, y_max = widget._workout_alpha1_vb.viewRange()[1]
+    assert y_min == pytest.approx(0.0)
+    assert y_max == pytest.approx(1.6)
 
 
 def test_power_duration_chart_widget_hover_data_matches_curve():

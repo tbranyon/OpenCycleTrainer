@@ -156,6 +156,10 @@ class MainWindow(QMainWindow):
                 self.workout_controller.receive_trainer_energy_kj(sample.accumulated_energy_kj)
         if sample.heart_rate_bpm is not None:
             self.workout_controller.receive_hr_bpm(sample.heart_rate_bpm)
+        if sample.rr_intervals_ms is not None:
+            hr_device_id = self.devices_screen.connected_heart_rate_device_id()
+            if hr_device_id is not None and sample.device_id == hr_device_id:
+                self.workout_controller.receive_rr_intervals_ms(sample.rr_intervals_ms)
         if sample.cadence_rpm is not None:
             source = _CADENCE_SOURCE_BY_UUID.get(
                 sample.source_characteristic_uuid, CadenceSource.TRAINER

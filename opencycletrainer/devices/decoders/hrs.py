@@ -6,6 +6,11 @@ from enum import Enum
 from .base import DecodedMetrics
 
 _HEART_RATE_16BIT_FLAG = 1 << 0
+_ENERGY_EXPENDED_PRESENT_FLAG = 1 << 3
+_RR_INTERVAL_PRESENT_FLAG = 1 << 4
+
+# RR-Interval values are uint16 in 1/1024 s units; convert to milliseconds.
+_RR_INTERVAL_UNITS_TO_MS = 1000.0 / 1024.0
 
 
 class HRSBodySensorLocation(Enum):
@@ -64,5 +69,18 @@ def decode_heart_rate_measurement(payload: bytes) -> DecodedMetrics:
         heart_rate_bpm = int.from_bytes(payload[index:index + 2], "little")
     else:
         heart_rate_bpm = payload[index]
+        index += 1
 
-    return DecodedMetrics(heart_rate_bpm=heart_rate_bpm)
+    if flags & _ENERGY_EXPENDED_PRESENT_FLAG:
+        index += 2
+
+    rr_intervals_ms: tuple[float, ...] | None = None
+    if flags & _RR_INTERVAL_PRESENT_FLAG:
+        rr_values = []
+        while index + 2 <= len(payload):
+            raw = int.from_bytes(payload[index:index + 2], "little")
+            rr_values.append(raw * _RR_INTERVAL_UNITS_TO_MS)
+            index += 2
+        rr_intervals_ms = tuple(rr_values)
+
+    return DecodedMetrics(heart_rate_bpm=heart_rate_bpm, rr_intervals_ms=rr_intervals_ms)

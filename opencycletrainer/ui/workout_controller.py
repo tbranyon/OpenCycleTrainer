@@ -11,13 +11,15 @@ _logger = logging.getLogger(__name__)
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QFileDialog
 
-from opencycletrainer.core.control.ftms_control import FTMSControlTransport
+from opencycletrainer.core.control.ftms_control import FTMSControlTransport, should_jog_persist_into_interval
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.cadence_history import CadenceHistory
+from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaPipeline, DfaRecord
 from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
 from opencycletrainer.core.interval_stats import IntervalStats
+from opencycletrainer.core.pedaling_detector import PedalingDetector
 from opencycletrainer.core.power_history import PowerHistory
 from opencycletrainer.core.recorder import WorkoutRecorder
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
@@ -41,7 +43,10 @@ from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
 from .workout_summary_dialog import IntervalResult, WorkoutSummary, WorkoutSummaryDialog, compute_tss
 
 
-_POWER_STALE_PAUSE_SECONDS = 3.0
+_SENSOR_STALE_SECONDS = 3.0
+_PEDALING_STOPPED_PAUSE_SECONDS = 3.0
+_AUTO_START_PEDALING_SECONDS = 3.0
+_RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
 
 
 class WorkoutSessionController(QObject):
@@ -98,9 +103,13 @@ class WorkoutSessionController(QObject):
         self._last_snapshot: WorkoutEngineSnapshot | None = None
 
         self._power_history = PowerHistory()
+        self._dfa_pipeline = DfaPipeline(
+            power_source=lambda now: self._power_history.windowed_avg(now, DFA_WINDOW_SECONDS)
+        )
         self._pm_energy_tracker = ExternalEnergyTracker()
         self._ftms_energy_tracker = ExternalEnergyTracker()
         self._cadence_hist = CadenceHistory()
+        self._pedaling = PedalingDetector()
         self._interval_stats = IntervalStats()
         self._active_interval_index: int | None = None
         self._interval_results: list[IntervalResult] = []
@@ -108,9 +117,13 @@ class WorkoutSessionController(QObject):
         self._last_power_watts: int | None = None
         self._last_bike_power_watts: int | None = None
         self._last_hr_bpm: int | None = None
+        self._last_rr_intervals_ms: tuple[float, ...] | None = None
         self._last_speed_mps: float | None = None
         self._last_pedal_balance_left_pct: float | None = None
-        self._last_power_received_at: float | None = None
+        self._last_trainer_power_received_at: float | None = None
+        self._last_bike_power_received_at: float | None = None
+        self._last_hr_received_at: float | None = None
+        self._last_speed_received_at: float | None = None
 
         self._pause_state = PauseState(self._screen, self._resume_workout)
         self._chart_history = ChartHistory(
@@ -128,6 +141,7 @@ class WorkoutSessionController(QObject):
             intervals_icu_upload_fn=intervals_icu_upload_fn,
             alert_signal=self._strava_alert_signal.emit,
             mode_state=self._mode_state,
+            monotonic_now=self._monotonic_clock,
         )
         self._ftms_bridge_manager = FTMSBridgeManager(
             transport_factory=self._ftms_transport_factory,
@@ -148,6 +162,7 @@ class WorkoutSessionController(QObject):
             self._pm_energy_tracker,
             self._ftms_energy_tracker,
             balance_source=lambda: self._last_pedal_balance_left_pct,
+            dfa_source=self.latest_dfa_record,
         )
 
         self._timer = QTimer(self)
@@ -212,7 +227,7 @@ class WorkoutSessionController(QObject):
             )
         elif was_enabled and not now_enabled:
             self._opentrueup_state.disable()
-        self._ftms_bridge_manager.set_erg_jog_persistent(settings.erg_jog_persistent)
+        self._ftms_bridge_manager.set_erg_jog_persistence_mode(settings.erg_jog_persistence_mode)
         self._ftms_bridge_manager.configure(
             self._trainer_connection.backend,
             self._trainer_connection.device_id,
@@ -230,14 +245,19 @@ class WorkoutSessionController(QObject):
         if self._engine.workout is None:
             return None
         now = float(now_monotonic if now_monotonic is not None else self._monotonic_clock())
-        if (
-            self._engine.state == EngineState.RUNNING
-            and self._last_power_received_at is not None
-            and now - self._last_power_received_at > _POWER_STALE_PAUSE_SECONDS
-        ):
-            self._pause_workout()
-            return self._last_snapshot
-        snapshot = self._engine.tick(now)
+        self._update_pedaling(now)
+        if self._engine.state in _RIDING_STATES:
+            stopped_for = self._pedaling.seconds_since_pedaling(now)
+            if stopped_for is not None and stopped_for > _PEDALING_STOPPED_PAUSE_SECONDS:
+                self._pause_workout()
+                return self._last_snapshot
+        # The pipeline enforces its own 5 s recompute cadence internally, so
+        # driving it from this 1 Hz tick (rather than a second QTimer) is
+        # equivalent and avoids an extra Qt object (see DFA spec [0d]).
+        dfa_record = self._dfa_pipeline.maybe_recompute(now)
+        if dfa_record is not None and self._recorder_integration.recorder_active:
+            self._chart_history.record_dfa_alpha1(dfa_record.alpha1, now)
+        snapshot = self._engine.tick(now, pedaling=self._pedaling.is_pedaling)
         self._handle_snapshot(snapshot, now_monotonic=now)
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
@@ -309,6 +329,8 @@ class WorkoutSessionController(QObject):
         self._mode_state._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
         self._mode_state.reset_jog()
         self._chart_history.stop()
+        # Loading arms auto-start, so any pedaling before the load does not count.
+        self._pedaling.reset()
         self._screen.load_workout_chart(workout, ftp)
         snapshot = self._engine.load_workout(self._workout)
         self._screen.set_workout_name(self._workout.name)
@@ -337,13 +359,18 @@ class WorkoutSessionController(QObject):
         self._last_bike_power_watts = None
         self._last_hr_bpm = None
         self._last_pedal_balance_left_pct = None
-        self._last_power_received_at = None
+        self._last_trainer_power_received_at = None
+        self._last_bike_power_received_at = None
+        self._last_hr_received_at = None
+        self._last_speed_received_at = None
         self._chart_history.reset()
+        self._dfa_pipeline.reset()
+        self._pedaling.reset()
         self._pause_state.reset()
-        self._recorder_integration.start(self._workout, self._utc_now())
+        now = float(self._monotonic_clock())
+        self._recorder_integration.start(self._workout, self._utc_now(), now)
 
         self._engine.start()
-        now = float(self._monotonic_clock())
         self._chart_history.start(now)
         if self._workout is not None:
             self._screen.load_workout_chart(self._workout, int(self._settings.ftp))
@@ -365,8 +392,13 @@ class WorkoutSessionController(QObject):
         self._last_bike_power_watts = None
         self._last_hr_bpm = None
         self._last_pedal_balance_left_pct = None
-        self._last_power_received_at = None
+        self._last_trainer_power_received_at = None
+        self._last_bike_power_received_at = None
+        self._last_hr_received_at = None
+        self._last_speed_received_at = None
         self._chart_history.reset()
+        self._dfa_pipeline.reset()
+        self._pedaling.reset()
         self._pause_state.reset()
 
         ftp = max(1, int(self._settings.ftp))
@@ -389,9 +421,9 @@ class WorkoutSessionController(QObject):
         self._screen.load_free_ride_chart()
         self._screen.set_workout_name("Free Ride")
 
-        self._recorder_integration.start(self._workout, self._utc_now())
-        self._engine.start()
         now = float(self._monotonic_clock())
+        self._recorder_integration.start(self._workout, self._utc_now(), now)
+        self._engine.start()
         self._chart_history.start(now)
         snapshot = self._engine.tick(now)
         self._timer.start()
@@ -408,7 +440,60 @@ class WorkoutSessionController(QObject):
         if self._last_snapshot:
             self._handle_snapshot(self._last_snapshot, now_monotonic=None)
 
+    def _effective_power_sample(self, now: float) -> tuple[int, float] | None:
+        """Return the freshest usable (watts, received_at) power pair: bike preferred, trainer fallback."""
+        for watts, received_at in (
+            (self._last_bike_power_watts, self._last_bike_power_received_at),
+            (self._last_power_watts, self._last_trainer_power_received_at),
+        ):
+            if self._fresh_value(watts, received_at, now) is not None:
+                return int(watts), float(received_at)
+        return None
+
+    def _update_pedaling(self, now: float) -> None:
+        """Record a pedaling observation and act on any auto start/resume it triggers.
+
+        Cadence is only consulted while a cadence source is reporting, so trainers
+        that publish power alone can still drive auto start, pause and resume.
+        """
+        sample = self._effective_power_sample(now)
+        cadence = self._cadence_hist.fresh_rpm(now)
+        pedaling = sample is not None and sample[0] > 0 and (cadence is None or cadence > 0)
+        # Pedaling is timestamped with the reading it came from, not with *now*:
+        # a held reading must not keep pushing the stopped-pedaling clock forward
+        # between sensor updates.
+        self._pedaling.update(sample[1] if pedaling else now, pedaling=pedaling)
+        self._maybe_auto_start_or_resume(now)
+
+    def _maybe_auto_start_or_resume(self, now: float) -> None:
+        """Start a loaded workout, or leave a pause, on the strength of the rider pedaling."""
+        state = self._engine.state
+        if state == EngineState.READY:
+            if self._pedaling.pedaling_duration(now) >= _AUTO_START_PEDALING_SECONDS:
+                self._start_workout()
+            return
+        if state != EngineState.PAUSED:
+            return
+        # Only a pedaling run that began after the pause resumes the workout, so a
+        # deliberate pause is not undone while the rider is still turning the cranks.
+        pause_start = self._pause_state.pause_start_monotonic
+        pedaling_since = self._pedaling.pedaling_since
+        if pause_start is None or pedaling_since is None or pedaling_since < pause_start:
+            return
+        self._auto_resume()
+
+    def _auto_resume(self) -> None:
+        """Resume as though the pause dialog's Resume button had been pressed."""
+        dialog = self._pause_state.pause_dialog
+        if dialog is None:
+            self._resume_workout()
+            return
+        dialog.begin_resume()
+
     def _pause_workout(self) -> None:
+        """Pause the workout; ignored unless the engine is running or ramping in."""
+        if self._engine.state not in _RIDING_STATES:
+            return
         now = self._monotonic_clock()
         snapshot = self._engine.pause()
         self._handle_snapshot(snapshot, now_monotonic=None)
@@ -497,6 +582,7 @@ class WorkoutSessionController(QObject):
             if pause_start is not None:
                 self._chart_history.record_pause(now, now - pause_start)
             self._pause_state.on_ramp_in_to_running(now)
+            self._pause_state.close_dialog()
         self._last_snapshot = snapshot
         self._screen.set_session_state(snapshot.state.value)
         self._screen.set_mode_state(self._mode_state.selected_mode)
@@ -519,7 +605,7 @@ class WorkoutSessionController(QObject):
             self._current_interval_is_skipped = False
             self._active_interval_index = current_index
             self._reset_interval_accumulators()
-            if not self._settings.erg_jog_persistent:
+            if not self._should_jog_persist_into_current_interval(current_index):
                 self._mode_state.reset_jog()
 
         elapsed_seconds = int(round(snapshot.riding_elapsed_seconds))
@@ -554,15 +640,25 @@ class WorkoutSessionController(QObject):
         self._ftms_bridge_manager.submit_snapshot(snapshot, self._workout)
 
         if self._recorder_integration.recorder_active:
+            dfa_record = self.latest_dfa_record()
+            now = float(self._monotonic_clock())
             self._recorder_integration.sync(
                 snapshot,
                 now_monotonic,
                 SensorSnapshot(
-                    last_power_watts=self._last_power_watts,
-                    last_bike_power_watts=self._last_bike_power_watts,
-                    last_hr_bpm=self._last_hr_bpm,
-                    last_cadence_rpm=self._cadence_hist.last_rpm(),
-                    last_speed_mps=self._last_speed_mps,
+                    last_power_watts=self._fresh_value(
+                        self._last_power_watts, self._last_trainer_power_received_at, now
+                    ),
+                    last_bike_power_watts=self._fresh_value(
+                        self._last_bike_power_watts, self._last_bike_power_received_at, now
+                    ),
+                    last_hr_bpm=self._fresh_value(self._last_hr_bpm, self._last_hr_received_at, now),
+                    last_cadence_rpm=self._cadence_hist.fresh_rpm(now),
+                    last_speed_mps=self._fresh_value(
+                        self._last_speed_mps, self._last_speed_received_at, now
+                    ),
+                    dfa_alpha1=dfa_record.alpha1 if dfa_record is not None else None,
+                    dfa_quality=dfa_record.quality.value if dfa_record is not None else None,
                 ),
             )
 
@@ -638,6 +734,15 @@ class WorkoutSessionController(QObject):
         self._set_no_workout_state()
 
     @staticmethod
+    def _fresh_value(value: object, received_at: float | None, now: float) -> object | None:
+        """Return *value* unless it is older than the sensor staleness window."""
+        if value is None or received_at is None:
+            return None
+        if now - received_at > _SENSOR_STALE_SECONDS:
+            return None
+        return value
+
+    @staticmethod
     def _resolve_effective_power(
         trainer_watts: int | None,
         bike_watts: int | None,
@@ -659,7 +764,7 @@ class WorkoutSessionController(QObject):
                 source=PowerSource.TRAINER,
             )
             return
-        self._last_power_received_at = now
+        self._last_trainer_power_received_at = now
         recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
         if recording_active:
             accepted = self._power_history.record(
@@ -670,6 +775,8 @@ class WorkoutSessionController(QObject):
             )
             if accepted:
                 self._interval_stats.record_power(int(watts), now, recording_active)
+            if self._recorder_integration.recorder_active:
+                self._recorder_integration.ingest_power(now, trainer_watts=int(watts))
         else:
             # While paused (or ramping back in), feed only the live trailing-window
             # display so windowed tiles stay current without recording onto the plot,
@@ -680,6 +787,7 @@ class WorkoutSessionController(QObject):
             trainer_watts=watts,
             bike_watts=None,
         )
+        self._update_pedaling(now)
 
     def receive_bike_power_watts(self, watts: int | None, now_monotonic: float | None = None) -> None:
         """Feed a live bike power meter reading (W).
@@ -697,7 +805,7 @@ class WorkoutSessionController(QObject):
                 source=PowerSource.POWER_METER,
             )
             return
-        self._last_power_received_at = now
+        self._last_bike_power_received_at = now
         recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
         if recording_active:
             accepted = self._power_history.record(
@@ -708,6 +816,8 @@ class WorkoutSessionController(QObject):
             )
             if accepted:
                 self._interval_stats.record_power(int(watts), now, recording_active)
+            if self._recorder_integration.recorder_active:
+                self._recorder_integration.ingest_power(now, bike_watts=int(watts))
         else:
             # While paused (or ramping back in), feed only the live trailing-window
             # display so windowed tiles stay current without recording onto the plot,
@@ -718,12 +828,14 @@ class WorkoutSessionController(QObject):
             trainer_watts=None,
             bike_watts=watts,
         )
+        self._update_pedaling(now)
 
     def receive_hr_bpm(self, bpm: int | None) -> None:
         """Feed a live heart rate reading (bpm) into the metric computation pipeline."""
         self._last_hr_bpm = bpm
         if bpm is None:
             return
+        self._last_hr_received_at = float(self._monotonic_clock())
         recording_active = self._last_snapshot is not None and self._last_snapshot.recording_active
         # While paused (or ramping back in), HR is not recorded into the
         # interval/plot history so the trace freezes instead of capturing pause data.
@@ -732,6 +844,15 @@ class WorkoutSessionController(QObject):
         self._interval_stats.record_hr(int(bpm))
         if self._recorder_integration.recorder_active:
             self._chart_history.record_hr(int(bpm), float(self._monotonic_clock()))
+
+    def receive_rr_intervals_ms(self, rr_intervals_ms: tuple[float, ...]) -> None:
+        """Feed RR-interval readings (ms) from a connected chest strap into the DFA pipeline."""
+        self._last_rr_intervals_ms = rr_intervals_ms
+        self._dfa_pipeline.ingest_rr(rr_intervals_ms, float(self._monotonic_clock()))
+
+    def latest_dfa_record(self) -> DfaRecord | None:
+        """Return the most recently computed DFA α1 record, if any."""
+        return self._dfa_pipeline.latest_record
 
     def receive_cadence_rpm(
         self, rpm: float | None, source: CadenceSource = CadenceSource.TRAINER
@@ -744,10 +865,14 @@ class WorkoutSessionController(QObject):
         """
         now = float(self._monotonic_clock())
         self._cadence_hist.record(rpm, source, now)
+        self._update_pedaling(now)
 
     def receive_speed_mps(self, mps: float | None) -> None:
         """Feed a live speed reading (m/s) for inclusion in recorder samples."""
         self._last_speed_mps = mps
+        if mps is None:
+            return
+        self._last_speed_received_at = float(self._monotonic_clock())
 
     def receive_pedal_balance(self, left_pct: float | None) -> None:
         """Feed a live left-pedal power balance reading (%) from a CPS power meter."""
@@ -823,6 +948,17 @@ class WorkoutSessionController(QObject):
 
     def _reset_interval_accumulators(self) -> None:
         self._interval_stats.reset_interval()
+
+    def _should_jog_persist_into_current_interval(self, interval_index: int | None) -> bool:
+        """Return whether the manual ERG jog offset should carry into *interval_index*."""
+        if self._workout is None or interval_index is None:
+            return False
+        if interval_index < 0 or interval_index >= len(self._workout.intervals):
+            return False
+        return should_jog_persist_into_interval(
+            self._settings.erg_jog_persistence_mode,
+            self._workout.intervals[interval_index],
+        )
 
     def _update_tiles(self, snapshot: WorkoutEngineSnapshot) -> None:
         self._screen.update_kj_tile_sources(self._tile_computation.available_kj_sources())

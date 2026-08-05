@@ -33,6 +33,7 @@ class ChartHistory:
 
         self._chart_start_monotonic: float | None = None
         self._hr_history: list[tuple[float, int]] = []
+        self._alpha1_history: list[tuple[float, float]] = []
         self._skip_events: list[tuple[float, float, float]] = []
         self._pause_events: list[tuple[float, float]] = []  # (end_mono, duration)
 
@@ -58,6 +59,14 @@ class ChartHistory:
         return self._hr_history
 
     @property
+    def alpha1_series(self) -> list[tuple[float, float]]:
+        """α1 samples as (elapsed_seconds, value), skip/pause-adjusted like the other traces."""
+        return [
+            (self._adjusted_time(mono), value)
+            for mono, value in self._alpha1_history
+        ]
+
+    @property
     def skip_events(self) -> list[tuple[float, float, float]]:
         return self._skip_events
 
@@ -76,6 +85,7 @@ class ChartHistory:
         """Clear all chart data (call before each workout or free-ride start)."""
         self._chart_start_monotonic = None
         self._hr_history = []
+        self._alpha1_history = []
         self._skip_events = []
         self._pause_events = []
 
@@ -85,6 +95,18 @@ class ChartHistory:
             return
         self._hr_history.append((now, int(bpm)))
 
+    def record_dfa_alpha1(self, alpha1: float | None, now: float) -> None:
+        """Append a DFA α1 sample, keyed by monotonic time like the HR history.
+
+        No-op if the chart has not been started. ``None`` (a suppressed
+        POOR/INSUFFICIENT window) is stored as NaN so the chart overlay renders
+        a gap instead of a point.
+        """
+        if self._chart_start_monotonic is None:
+            return
+        value = float("nan") if alpha1 is None else float(alpha1)
+        self._alpha1_history.append((float(now), value))
+
     def record_skip(self, now: float, elapsed_before: float, elapsed_after: float) -> None:
         """Record a skip event so the elapsed cursor can account for skipped time."""
         self._skip_events.append((now, elapsed_before, elapsed_after))
@@ -92,6 +114,27 @@ class ChartHistory:
     def record_pause(self, end_mono: float, duration: float) -> None:
         """Record a completed pause (including ramp-in) so data timestamps are adjusted."""
         self._pause_events.append((end_mono, duration))
+
+    def _adjusted_time(self, sample_mono: float) -> float:
+        """Convert a monotonic sample time to chart-elapsed time.
+
+        Samples taken after a skip are shifted forward by the cumulative skipped
+        duration, and paused time is subtracted, so every trace lands at the
+        correct position on the workout timeline.
+        """
+        if self._chart_start_monotonic is None:
+            return 0.0
+        skip_offset = sum(
+            after - before
+            for skip_mono, before, after in self._skip_events
+            if skip_mono <= sample_mono
+        )
+        pause_offset = sum(
+            dur
+            for end_mono, dur in self._pause_events
+            if end_mono <= sample_mono
+        )
+        return (sample_mono - self._chart_start_monotonic) + skip_offset - pause_offset
 
     def on_tick(self, snapshot: Any, workout: Any, is_free_ride: bool, erg_target_watts: int | None = None) -> None:
         """Recompute elapsed time and push updated series to the screen."""
@@ -103,29 +146,13 @@ class ChartHistory:
         paused = self._pause_state.total_paused_plus_current(now)
         elapsed = (now - self._chart_start_monotonic) + skip_offset - paused
 
-        # Build elapsed-keyed series, adjusting timestamps to account for skips.
-        # Samples taken after a skip are shifted forward by the cumulative skipped
-        # duration so they appear at the correct position on the workout timeline.
-        def _adjusted_time(sample_mono: float) -> float:
-            skip_offset = sum(
-                after - before
-                for skip_mono, before, after in self._skip_events
-                if skip_mono <= sample_mono
-            )
-            pause_offset = sum(
-                dur
-                for end_mono, dur in self._pause_events
-                if end_mono <= sample_mono
-            )
-            return (sample_mono - self._chart_start_monotonic) + skip_offset - pause_offset  # type: ignore[operator]
-
         power_series = [
-            (_adjusted_time(mono), watts)
+            (self._adjusted_time(mono), watts)
             for mono, watts in self._power_history.smoothed_series()
         ]
 
         hr_series = [
-            (_adjusted_time(mono), bpm)
+            (self._adjusted_time(mono), bpm)
             for mono, bpm in self._hr_history
         ]
 
@@ -133,7 +160,13 @@ class ChartHistory:
             snapshot.current_interval_index if snapshot is not None else None
         )
 
+        alpha1_series = self.alpha1_series
+
         if is_free_ride:
-            self._screen.update_free_ride_charts(elapsed, power_series, hr_series, erg_target_watts)
+            self._screen.update_free_ride_charts(
+                elapsed, power_series, hr_series, erg_target_watts, alpha1_series
+            )
         else:
-            self._screen.update_charts(elapsed, interval_index, power_series, hr_series)
+            self._screen.update_charts(
+                elapsed, interval_index, power_series, hr_series, alpha1_series
+            )

@@ -17,6 +17,16 @@ CPS_SAMPLE_1 = bytes.fromhex("2000fa00e8030008")
 CPS_SAMPLE_2 = bytes.fromhex("2000ff00ea03000c")
 HRS_SAMPLE_8BIT = bytes.fromhex("0048")
 HRS_SAMPLE_16BIT = bytes.fromhex("012c01")
+
+# HRS: flags=0x10 (RR-Interval present, 8-bit HR), hr=72, single RR=1024 (1/1024s) -> 1000 ms
+HRS_SAMPLE_SINGLE_RR = bytes.fromhex("10480004")
+
+# HRS: flags=0x10, hr=72, two RR values: 1024 (-> 1000 ms) and 512 (-> 500 ms)
+HRS_SAMPLE_MULTI_RR = bytes.fromhex("1048" "0004" "0002")
+
+# HRS: flags=0x18 (Energy Expended present | RR-Interval present), hr=72,
+# energy expended=300 (skipped), RR=1024 (-> 1000 ms)
+HRS_SAMPLE_RR_AFTER_ENERGY_EXPENDED = bytes.fromhex("1848" "2c01" "0004")
 CSC_SAMPLE_1 = bytes.fromhex("03102700000008c8000008")
 CSC_SAMPLE_2 = bytes.fromhex("031a270000000cca00000c")
 FTMS_SAMPLE_WITH_POWER_CADENCE_HR = bytes.fromhex("4402100eb400fa0096")
@@ -54,6 +64,38 @@ def test_hrs_decoding_supports_8bit_and_16bit_formats():
 
     assert sample_16bit is not None
     assert sample_16bit.heart_rate_bpm == 300
+
+
+def test_hrs_decoding_without_rr_flag_has_no_rr_intervals():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(HRS_MEASUREMENT_CHARACTERISTIC_UUID, HRS_SAMPLE_8BIT)
+    assert sample is not None
+    assert sample.rr_intervals_ms is None
+
+
+def test_hrs_decoding_single_rr_interval():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(HRS_MEASUREMENT_CHARACTERISTIC_UUID, HRS_SAMPLE_SINGLE_RR)
+    assert sample is not None
+    assert sample.heart_rate_bpm == 72
+    assert sample.rr_intervals_ms == pytest.approx((1000.0,))
+
+
+def test_hrs_decoding_multiple_rr_intervals():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(HRS_MEASUREMENT_CHARACTERISTIC_UUID, HRS_SAMPLE_MULTI_RR)
+    assert sample is not None
+    assert sample.rr_intervals_ms == pytest.approx((1000.0, 500.0))
+
+
+def test_hrs_decoding_rr_after_energy_expended_offset():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(
+        HRS_MEASUREMENT_CHARACTERISTIC_UUID, HRS_SAMPLE_RR_AFTER_ENERGY_EXPENDED
+    )
+    assert sample is not None
+    assert sample.heart_rate_bpm == 72
+    assert sample.rr_intervals_ms == pytest.approx((1000.0,))
 
 
 def test_csc_decoding_produces_speed_and_stateful_cadence():

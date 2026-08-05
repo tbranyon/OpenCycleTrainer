@@ -44,6 +44,36 @@ def apply_application_theme(theme_mode: str, app: QApplication) -> str:
     return effective_mode
 
 
+# Semantic status colours (spec [7]): a single role-keyed mapping per theme mode
+# so callers (e.g. the DFA α1 quality dot) never hardcode hex values. "success"/
+# "warning"/"danger" reuse the hues already used by the light-mode alert banner
+# (see workout_screen._ALERT_STYLES); "muted" and the dark-mode set are new.
+STATUS_COLORS: dict[str, dict[str, str]] = {
+    THEME_MODE_LIGHT: {
+        "success": "#2da44e",
+        "warning": "#e0a800",
+        "danger": "#d33",
+        "muted": "#8b949e",
+    },
+    THEME_MODE_DARK: {
+        "success": "#3fb950",
+        "warning": "#d29922",
+        "danger": "#f85149",
+        "muted": "#6e7681",
+    },
+}
+
+
+def resolve_status_color(role: str, theme_mode: str) -> str:
+    """Return the hex colour for a semantic status *role* in the given theme mode.
+
+    Falls back to the light palette for an unrecognised mode and to "muted" for
+    an unrecognised role, so callers always get a usable colour.
+    """
+    palette = STATUS_COLORS.get(theme_mode, STATUS_COLORS[THEME_MODE_LIGHT])
+    return palette.get(role, palette["muted"])
+
+
 def _system_color_scheme(app: QApplication) -> str:
     style_hints = app.styleHints()
     if style_hints.colorScheme() == Qt.ColorScheme.Dark:

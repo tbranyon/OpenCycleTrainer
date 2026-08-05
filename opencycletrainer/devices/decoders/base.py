@@ -11,3 +11,4 @@ class DecodedMetrics:
     speed_mps: float | None = None
     accumulated_energy_kj: float | None = None
     pedal_balance_left_pct: float | None = None
+    rr_intervals_ms: tuple[float, ...] | None = None

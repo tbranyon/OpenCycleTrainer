@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from opencycletrainer.ui.chart_history import ChartHistory
@@ -58,6 +60,7 @@ class _FakeScreen:
         interval_index,
         power_series: list,
         hr_series: list,
+        alpha1_series: list | None = None,
     ) -> None:
         self.chart_calls.append(
             {
@@ -65,6 +68,7 @@ class _FakeScreen:
                 "interval_index": interval_index,
                 "power_series": power_series,
                 "hr_series": hr_series,
+                "alpha1_series": alpha1_series,
             }
         )
 
@@ -74,6 +78,7 @@ class _FakeScreen:
         power_series: list,
         hr_series: list,
         erg_target_watts: int | None = None,
+        alpha1_series: list | None = None,
     ) -> None:
         self.free_ride_calls.append(
             {
@@ -81,6 +86,7 @@ class _FakeScreen:
                 "power_series": power_series,
                 "hr_series": hr_series,
                 "erg_target_watts": erg_target_watts,
+                "alpha1_series": alpha1_series,
             }
         )
 
@@ -121,6 +127,10 @@ class TestDefaults:
     def test_skip_events_is_empty(self):
         ch, *_ = _make()
         assert ch.skip_events == []
+
+    def test_alpha1_series_is_empty(self):
+        ch, *_ = _make()
+        assert ch.alpha1_series == []
 
     def test_timer_not_active(self):
         ch, timer, *_ = _make()
@@ -197,6 +207,13 @@ class TestReset:
         ch.reset()
         assert ch.skip_events == []
 
+    def test_clears_alpha1_series(self):
+        ch, *_ = _make()
+        ch.start(0.0)
+        ch.record_dfa_alpha1(0.85, 5.0)
+        ch.reset()
+        assert ch.alpha1_series == []
+
     def test_does_not_stop_timer(self):
         """reset() clears data state but does not touch the timer."""
         ch, timer, *_ = _make()
@@ -242,6 +259,61 @@ class TestRecordHr:
         ch.record_hr(130, 1.0)
         _, bpm = ch.hr_history[0]
         assert isinstance(bpm, int)
+
+
+# ── record_dfa_alpha1() ───────────────────────────────────────────────────────
+
+
+class TestRecordDfaAlpha1:
+    def test_appends_pair_with_elapsed_seconds(self):
+        ch, *_ = _make()
+        ch.start(10.0)
+        ch.record_dfa_alpha1(0.85, 15.0)
+        assert ch.alpha1_series == [(5.0, 0.85)]
+
+    def test_appends_multiple_samples(self):
+        ch, *_ = _make()
+        ch.start(0.0)
+        ch.record_dfa_alpha1(0.80, 5.0)
+        ch.record_dfa_alpha1(0.90, 10.0)
+        assert len(ch.alpha1_series) == 2
+        assert ch.alpha1_series[1] == pytest.approx((10.0, 0.90))
+
+    def test_none_alpha1_stores_nan(self):
+        ch, *_ = _make()
+        ch.start(0.0)
+        ch.record_dfa_alpha1(None, 5.0)
+        elapsed, value = ch.alpha1_series[0]
+        assert elapsed == pytest.approx(5.0)
+        assert math.isnan(value)
+
+    def test_noop_before_start(self):
+        ch, *_ = _make()
+        ch.record_dfa_alpha1(0.80, 5.0)
+        assert ch.alpha1_series == []
+
+    def test_noop_after_reset(self):
+        ch, *_ = _make()
+        ch.start(0.0)
+        ch.reset()
+        ch.record_dfa_alpha1(0.80, 5.0)
+        assert ch.alpha1_series == []
+
+    def test_elapsed_excludes_paused_time(self):
+        """α1 must be pause-adjusted like power/HR, or the trace drifts right after a pause."""
+        ch, *_ = _make()
+        ch.start(0.0)
+        ch.record_pause(end_mono=20.0, duration=8.0)
+        ch.record_dfa_alpha1(0.75, 30.0)
+        assert ch.alpha1_series == [pytest.approx((22.0, 0.75))]
+
+    def test_elapsed_includes_skipped_time(self):
+        """A skip shifts subsequent α1 samples forward, matching the other traces."""
+        ch, *_ = _make()
+        ch.start(0.0)
+        ch.record_skip(now=10.0, elapsed_before=10.0, elapsed_after=40.0)
+        ch.record_dfa_alpha1(0.65, 20.0)
+        assert ch.alpha1_series == [pytest.approx((50.0, 0.65))]
 
 
 # ── record_skip() ─────────────────────────────────────────────────────────────
@@ -336,6 +408,22 @@ class TestOnTickRoutingToScreen:
         ch.on_tick(_FakeSnapshot(), None, is_free_ride=True)
         assert len(screen.free_ride_calls) == 1
         assert screen.chart_calls == []
+
+    def test_alpha1_series_passed_to_update_charts(self):
+        now_val = [5.0]
+        ch, _, screen, _ = _make(clock_fn=lambda: now_val[0])
+        ch.start(0.0)
+        ch.record_dfa_alpha1(0.82, 3.0)
+        ch.on_tick(_FakeSnapshot(interval_index=1), None, is_free_ride=False)
+        assert screen.chart_calls[-1]["alpha1_series"] == [pytest.approx((3.0, 0.82))]
+
+    def test_alpha1_series_passed_to_update_free_ride_charts(self):
+        now_val = [5.0]
+        ch, _, screen, _ = _make(clock_fn=lambda: now_val[0])
+        ch.start(0.0)
+        ch.record_dfa_alpha1(0.82, 3.0)
+        ch.on_tick(_FakeSnapshot(), None, is_free_ride=True)
+        assert screen.free_ride_calls[-1]["alpha1_series"] == [pytest.approx((3.0, 0.82))]
 
     def test_interval_index_passed_to_update_charts(self):
         now_val = [5.0]

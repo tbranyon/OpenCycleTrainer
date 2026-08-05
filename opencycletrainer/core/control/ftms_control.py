@@ -17,6 +17,7 @@ from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnaps
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
 from opencycletrainer.devices.decoders.ftms import ResistanceLevelRange
 from opencycletrainer.devices.types import FTMS_CONTROL_POINT_CHARACTERISTIC_UUID
+from opencycletrainer.storage.settings import DEFAULT_JOG_PERSISTENCE_MODE, JogPersistenceMode
 
 _OPCODE_REQUEST_CONTROL = 0x00
 _OPCODE_SET_TARGET_RESISTANCE = 0x04
@@ -35,6 +36,12 @@ _OPCODE_LABELS = {
     _OPCODE_SET_TARGET_POWER: "set_target_power",
     _OPCODE_SPIN_DOWN_CONTROL: "spin_down_control",
 }
+
+WORK_INTERVAL_MIN_PERCENT_FTP = 60.0
+"""Minimum interval intensity (% FTP) treated as a 'work' interval for jog persistence."""
+
+_RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
+"""Engine states in which the trainer should be held at the interval setpoint."""
 
 _RESULT_LABELS = {
     0x01: "success",
@@ -300,7 +307,7 @@ class WorkoutEngineFTMSBridge:
         lead_time_seconds: int = 0,
         lead_time_increasing_only: bool = False,
         kj_mode: bool = False,
-        erg_jog_persistent: bool = False,
+        erg_jog_persistence_mode: JogPersistenceMode = DEFAULT_JOG_PERSISTENCE_MODE,
     ) -> None:
         self._control = control
         self._alert_callback = alert_callback
@@ -309,7 +316,7 @@ class WorkoutEngineFTMSBridge:
         self._lead_time_seconds = lead_time_seconds
         self._lead_time_increasing_only = lead_time_increasing_only
         self._kj_mode = kj_mode
-        self._erg_jog_persistent = erg_jog_persistent
+        self._erg_jog_persistence_mode = erg_jog_persistence_mode
         self._last_state: EngineState | None = None
         self._last_interval_index: int | None = None
         self._lead_time_sent_for_interval: int | None = None
@@ -353,9 +360,9 @@ class WorkoutEngineFTMSBridge:
             jogged = int(round(self._current_erg_target_base_watts + offset_watts))
             self._send_erg_target(self._apply_opentrueup_target(jogged), force=True)
 
-    def set_erg_jog_persistent(self, persistent: bool) -> None:
+    def set_erg_jog_persistence_mode(self, mode: JogPersistenceMode) -> None:
         """Control whether the manual ERG jog offset survives interval boundaries."""
-        self._erg_jog_persistent = persistent
+        self._erg_jog_persistence_mode = mode
 
     def apply_manual_erg_target(self, target_watts: int) -> None:
         """Apply a Free Ride ERG target while preserving any active jog offset."""
@@ -436,14 +443,17 @@ class WorkoutEngineFTMSBridge:
             self._last_interval_index = snapshot.current_interval_index
             return
 
-        if snapshot.state != EngineState.RUNNING:
+        if snapshot.state not in _RIDING_STATES:
             self._last_state = snapshot.state
             self._last_interval_index = snapshot.current_interval_index
             return
 
+        # RAMP_IN is treated as riding so the interval setpoint is restored as
+        # soon as the rider starts pedaling again, giving the trainer time to
+        # reach the target before recording resumes.
         interval_changed = snapshot.current_interval_index != self._last_interval_index
-        entered_running = self._last_state != EngineState.RUNNING
-        if interval_changed or entered_running:
+        entered_riding = self._last_state not in _RIDING_STATES
+        if interval_changed or entered_riding:
             self._lead_time_sent_for_interval = None
             self._apply_interval_setpoint(snapshot, workout, manual_resistance_level=manual_resistance_level)
         elif (
@@ -478,7 +488,7 @@ class WorkoutEngineFTMSBridge:
         interval = workout.intervals[interval_index]
         elapsed_in_interval = snapshot.current_interval_elapsed_seconds or 0.0
         if self._control.mode is ControlMode.ERG:
-            if not self._erg_jog_persistent:
+            if not should_jog_persist_into_interval(self._erg_jog_persistence_mode, interval):
                 self._erg_jog_offset_watts = 0.0
             target_watts = _resolve_interval_target_watts(interval, elapsed_in_interval)
             self._current_erg_target_base_watts = target_watts
@@ -607,6 +617,24 @@ class WorkoutEngineFTMSBridge:
         self._control.set_resistance_level(resistance)
         self._last_sent_resistance_level = resistance
         self._last_sent_erg_target_watts = None
+
+
+def should_jog_persist_into_interval(
+    mode: JogPersistenceMode, interval: WorkoutInterval
+) -> bool:
+    """Return whether a manual ERG jog offset should survive into *interval* under *mode*.
+
+    ALWAYS keeps it, NEVER clears it, and WORK_INTERVALS_ONLY keeps it only when
+    *interval* is at or above :data:`WORK_INTERVAL_MIN_PERCENT_FTP`. For ramp
+    intervals, the higher of the start/end intensity is used so a ramp up into
+    work still counts as a work interval.
+    """
+    if mode is JogPersistenceMode.ALWAYS:
+        return True
+    if mode is JogPersistenceMode.NEVER:
+        return False
+    intensity = max(interval.start_percent_ftp, interval.end_percent_ftp)
+    return intensity >= WORK_INTERVAL_MIN_PERCENT_FTP
 
 
 def _resolve_interval_target_watts(interval: WorkoutInterval, elapsed_in_interval: float) -> int:

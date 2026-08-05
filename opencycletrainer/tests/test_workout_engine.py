@@ -233,3 +233,39 @@ def test_workout_interval_is_ramp_unaffected_by_free_ride():
     )
     assert interval.is_ramp is False
 
+
+
+def test_ramp_in_holds_while_not_pedaling():
+    """The ramp-in countdown must not advance on ticks where the rider is not pedaling."""
+    engine = WorkoutEngine()
+    engine.load_workout(_build_workout())
+    engine.start()
+    engine.tick(0)
+    engine.tick(5)
+    engine.pause()
+    engine.resume()
+    engine.tick(20)
+
+    held = engine.tick(25, pedaling=False)
+    assert held.state == EngineState.RAMP_IN
+    assert held.ramp_in_remaining_seconds == 3
+
+
+def test_ramp_in_restarts_when_pedaling_stops_partway():
+    """Stopping partway through ramp-in restarts the full 3 s of required pedaling."""
+    engine = WorkoutEngine()
+    engine.load_workout(_build_workout())
+    engine.start()
+    engine.tick(0)
+    engine.tick(5)
+    engine.pause()
+    engine.resume()
+    engine.tick(20)
+
+    assert engine.tick(22, pedaling=True).ramp_in_remaining_seconds == 1
+    assert engine.tick(23, pedaling=False).ramp_in_remaining_seconds == 3
+
+    assert engine.tick(25, pedaling=True).state == EngineState.RAMP_IN
+    resumed = engine.tick(26, pedaling=True)
+    assert resumed.state == EngineState.RUNNING
+    assert resumed.elapsed_seconds == 5

@@ -7,6 +7,7 @@ from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.core.workout_engine import WorkoutEngine
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
 from opencycletrainer.storage.opentrueup_offsets import OpenTrueUpOffsetStore, build_pair_key
+from opencycletrainer.storage.settings import JogPersistenceMode
 
 
 class _MemoryOffsetStore:
@@ -229,11 +230,11 @@ def test_bridge_clears_jog_offset_at_interval_boundary_by_default():
     assert control.erg_targets[-1] == 250  # base only, jog cleared
 
 
-def test_bridge_preserves_jog_offset_across_interval_boundary_when_persistent():
-    """With persistence enabled the jog offset carries into the next interval."""
+def test_bridge_preserves_jog_offset_across_interval_boundary_when_always():
+    """With ALWAYS persistence the jog offset carries into the next interval."""
     workout = _build_workout((30, 70.0, 200), (30, 70.0, 250))
     control = _StubControl(mode=ControlMode.ERG)
-    bridge = WorkoutEngineFTMSBridge(control, erg_jog_persistent=True)
+    bridge = WorkoutEngineFTMSBridge(control, erg_jog_persistence_mode=JogPersistenceMode.ALWAYS)
     engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
 
     engine.load_workout(workout)
@@ -246,6 +247,79 @@ def test_bridge_preserves_jog_offset_across_interval_boundary_when_persistent():
 
     engine.tick(31.0)  # cross into the second interval
     assert control.erg_targets[-1] == 270  # 250 base + 20 jog preserved
+
+
+def test_bridge_preserves_jog_offset_when_work_only_and_entering_work_interval():
+    """WORK_INTERVALS_ONLY keeps the jog when the entered interval is >= 60% FTP."""
+    workout = _build_workout((30, 50.0, 200), (30, 70.0, 250))
+    control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(
+        control, erg_jog_persistence_mode=JogPersistenceMode.WORK_INTERVALS_ONLY
+    )
+    engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0.0)
+    bridge.set_erg_jog_offset_watts(20.0)
+    assert control.erg_targets[-1] == 220
+
+    engine.tick(31.0)  # cross into the second (70% FTP, work) interval
+    assert control.erg_targets[-1] == 270  # 250 base + 20 jog preserved
+
+
+def test_bridge_resets_jog_offset_when_work_only_and_entering_recovery_interval():
+    """WORK_INTERVALS_ONLY clears the jog when the entered interval is below 60% FTP."""
+    workout = _build_workout((30, 70.0, 200), (30, 50.0, 250))
+    control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(
+        control, erg_jog_persistence_mode=JogPersistenceMode.WORK_INTERVALS_ONLY
+    )
+    engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0.0)
+    bridge.set_erg_jog_offset_watts(20.0)
+    assert control.erg_targets[-1] == 220
+
+    engine.tick(31.0)  # cross into the second (50% FTP, recovery) interval
+    assert control.erg_targets[-1] == 250  # base only, jog cleared
+
+
+def test_bridge_preserves_jog_offset_when_work_only_and_entering_ramp_up_into_work():
+    """A ramp interval counts as work if its higher endpoint is >= 60% FTP, even ramping up from below."""
+    first = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=30,
+        start_percent_ftp=50.0,
+        end_percent_ftp=50.0,
+        start_target_watts=150,
+        end_target_watts=150,
+    )
+    ramp = WorkoutInterval(
+        start_offset_seconds=30,
+        duration_seconds=30,
+        start_percent_ftp=40.0,
+        end_percent_ftp=80.0,
+        start_target_watts=120,
+        end_target_watts=240,
+    )
+    workout = Workout(name="Ramp Test", ftp_watts=300, intervals=(first, ramp))
+    control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(
+        control, erg_jog_persistence_mode=JogPersistenceMode.WORK_INTERVALS_ONLY
+    )
+    engine = WorkoutEngine(on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout))
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0.0)
+    bridge.set_erg_jog_offset_watts(20.0)
+    assert control.erg_targets[-1] == 170
+
+    engine.tick(30.0)  # cross into the ramp (40% -> 80%, higher endpoint is work)
+    assert control.erg_targets[-1] == 140  # 120 base (ramp start) + 20 jog preserved
 
 
 def test_bridge_computes_offset_in_background_when_control_mode_is_resistance():

@@ -35,6 +35,12 @@ class CadenceHistory:
         """Return the most recently accepted cadence reading, or None."""
         return self._last_rpm
 
+    def fresh_rpm(self, now: float) -> float | None:
+        """Return the last accepted cadence reading, or None if the active source is stale."""
+        if self.active_source(now) is None:
+            return None
+        return self._last_rpm
+
     def windowed_avg(self, now: float) -> int | None:
         """Return the 1 s rolling average cadence, holding the last value up to 3 s on dropout."""
         cutoff_1s = now - _WINDOWED_AVG_SECONDS

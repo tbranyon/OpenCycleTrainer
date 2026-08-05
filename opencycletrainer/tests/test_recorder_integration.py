@@ -19,6 +19,7 @@ class _FakeRecorder:
         self.recording_enabled = False
         self.samples: list[object] = []
         self.stop_calls = 0
+        self.stop_finished_at_utc: list[object] = []
         self.discard_calls = 0
         self.data_dirs: list[Path] = []
 
@@ -41,12 +42,13 @@ class _FakeRecorder:
     def get_recorded_samples(self) -> list[object]:
         return list(self.samples)
 
-    def stop(self, finished_at_utc: object, activity_name: str | None = None) -> object:  # noqa: ARG002
+    def stop(self, finished_at_utc: object, activity_name: str | None = None) -> object:
         if not self.started:
             raise RuntimeError("Recorder is not active.")
         self.started = False
         self.recording_enabled = False
         self.stop_calls += 1
+        self.stop_finished_at_utc.append(finished_at_utc)
         return SimpleNamespace(
             fit_file_path=Path("Quick_Start_20260311_1200.fit"),
             normalized_power=None,
@@ -113,6 +115,7 @@ def _make(
     screen=None,
     settings=None,
     utc_now=None,
+    monotonic_now=None,
     strava_upload_fn=None,
     intervals_icu_upload_fn=None,
     alert_fn=None,
@@ -129,6 +132,7 @@ def _make(
         intervals_icu_upload_fn=intervals_icu_upload_fn,
         alert_signal=alert_fn or (lambda msg, typ: None),
         mode_state=mode_state or _FakeModeState(),
+        monotonic_now=monotonic_now,
     )
     return ri, rec, scr
 
@@ -445,8 +449,12 @@ class TestSync:
         assert len(rec.samples) == 1
 
     def test_trainer_power_in_sample(self) -> None:
+        """Power now arrives solely via ingest_power() (Task A); sync() alone no
+        longer carries it into the recorded sample, so this must ingest
+        explicitly rather than rely on the sensor snapshot's held value."""
         ri, rec, _ = _make()
-        ri.start(_FakeWorkout(), _UTC_NOW)
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        ri.ingest_power(0.0, trainer_watts=200)
         ri.sync(_FakeSnapshot(), None, _SENSOR)
         ri.finalize(_FakeWorkout())
         assert rec.samples[-1].trainer_power_watts == 200
@@ -552,6 +560,160 @@ class TestSync:
         ri.start(_FakeWorkout(), _UTC_NOW)
         ri.sync(_FakeSnapshot(recording_active=True), None, _SENSOR)
         assert ri.total_kj == pytest.approx(0.0)
+
+    def test_record_sample_valueerror_does_not_propagate(self) -> None:
+        """A ValueError from record_sample (e.g. non-monotonic timestamps) must not
+        escape sync(); it is caught and halts recording like a RuntimeError."""
+
+        class _RaiseValueError(_FakeRecorder):
+            def record_sample(self, sample: object) -> bool:
+                raise ValueError("Sample timestamps must be monotonic.")
+
+        t0 = _UTC_NOW
+        t1 = _UTC_NOW + timedelta(seconds=1)
+        times = iter([t0, t1])
+        ri, rec, _ = _make(recorder=_RaiseValueError(), utc_now=lambda: next(times))
+        ri.start(_FakeWorkout(), t0)
+        ri.sync(_FakeSnapshot(), None, _SENSOR)  # accumulates into bin at t0
+        ri.sync(_FakeSnapshot(), None, _SENSOR)  # t1 -> closes bin -> record_sample raises
+        assert ri.recorder_active is False
+
+
+# ── ingest_power() ───────────────────────────────────────────────────────────
+
+
+class TestIngestPower:
+    def test_two_readings_are_time_weighted_by_notification_time(self) -> None:
+        """200 W held 0.25 s then 300 W held 0.75 s -> 275 W, proving weighting
+        follows measurement time rather than tick/poll time."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        ri.ingest_power(0.0, trainer_watts=200)
+        ri.ingest_power(0.25, trainer_watts=300)
+        ri.ingest_power(1.0, trainer_watts=0)  # closes the bin
+        assert rec.samples[-1].trainer_power_watts == 275
+
+    def test_reading_between_ticks_is_not_lost(self) -> None:
+        """A reading overwritten within a single 250 ms tick period must still
+        contribute; the pre-fix poll model would have dropped it."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        ri.ingest_power(0.0, trainer_watts=200)
+        ri.ingest_power(0.1, trainer_watts=999)
+        ri.ingest_power(0.9, trainer_watts=200)
+        ri.ingest_power(1.0, trainer_watts=200)  # closes the bin
+        # If the 999 W reading were dropped, the average would be exactly 200 W.
+        assert rec.samples[-1].trainer_power_watts != 200
+
+    def test_power_faster_than_tick_rate_contributes_every_reading(self) -> None:
+        """4 Hz notifications (every 250 ms) all land in the average."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        for t, w in ((0.0, 100), (0.25, 150), (0.5, 200), (0.75, 250)):
+            ri.ingest_power(t, trainer_watts=w)
+        ri.ingest_power(1.0, trainer_watts=250)  # closes the bin
+        assert rec.samples[-1].trainer_power_watts == 175
+
+    def test_sync_no_longer_carries_power_into_the_sample(self) -> None:
+        """sync()'s raw sample must ignore the sensor snapshot's power fields
+        even when they hold a live reading, since power now arrives solely via
+        ingest_power(); this proves power is not double-counted."""
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        sensor = SensorSnapshot(
+            last_power_watts=999,  # would corrupt the average if sync() used it
+            last_bike_power_watts=None,
+            last_hr_bpm=150,
+            last_cadence_rpm=90.0,
+            last_speed_mps=10.0,
+        )
+        ri.ingest_power(0.0, trainer_watts=200)
+        ri.sync(_FakeSnapshot(), 1.0, sensor)  # closes the bin
+        assert rec.samples[-1].trainer_power_watts == 200
+
+    def test_bike_power_ingested_independently(self) -> None:
+        ri, rec, _ = _make()
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        ri.ingest_power(0.0, bike_watts=220)
+        ri.ingest_power(1.0, bike_watts=0)  # closes the bin
+        assert rec.samples[-1].bike_power_watts == 220
+        assert rec.samples[-1].trainer_power_watts is None
+
+    def test_record_sample_failure_during_close_halts_recording(self) -> None:
+        class _FailSample(_FakeRecorder):
+            def record_sample(self, sample: object) -> bool:
+                raise RuntimeError("broken")
+
+        ri, rec, _ = _make(recorder=_FailSample())
+        ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
+        ri.ingest_power(0.0, trainer_watts=200)
+        ri.ingest_power(1.0, trainer_watts=200)  # closes the bin -> record_sample raises
+        assert ri.recorder_active is False
+
+
+# ── Monotonic anchoring ──────────────────────────────────────────────────────
+
+
+class TestMonotonicAnchoring:
+    def test_backward_wall_clock_step_does_not_move_bin_timestamp(self) -> None:
+        """A backward NTP step reflected in utc_now() must not move an anchored
+        sample's recorded timestamp."""
+        t0 = _UTC_NOW
+        ri, rec, _ = _make(utc_now=lambda: t0 - timedelta(hours=1))
+        ri.start(_FakeWorkout(), t0, 1000.0)
+        ri.sync(_FakeSnapshot(), 1000.0, _SENSOR)  # opens bin anchored at t0
+        ri.sync(_FakeSnapshot(), 1001.0, _SENSOR)  # +1s monotonic -> closes bin at t0
+        assert len(rec.samples) == 1
+        assert rec.samples[0].timestamp_utc == t0
+
+    def test_forward_wall_clock_jump_does_not_move_bin_timestamp(self) -> None:
+        """A forward wall-clock jump reflected in utc_now() must not move an
+        anchored sample's recorded timestamp or create a spurious gap."""
+        t0 = _UTC_NOW
+        ri, rec, _ = _make(utc_now=lambda: t0 + timedelta(hours=5))
+        ri.start(_FakeWorkout(), t0, 1000.0)
+        ri.sync(_FakeSnapshot(), 1000.0, _SENSOR)
+        ri.sync(_FakeSnapshot(), 1001.0, _SENSOR)
+        assert len(rec.samples) == 1
+        assert rec.samples[0].timestamp_utc == t0
+
+    def test_normal_clock_tracks_real_elapsed_time(self) -> None:
+        """With a well-behaved clock, anchored timestamps still advance in step
+        with real elapsed monotonic time (anchoring must not break the happy path)."""
+        t0 = _UTC_NOW
+        ri, rec, _ = _make(utc_now=lambda: t0)
+        ri.start(_FakeWorkout(), t0, 100.0)
+        ri.sync(_FakeSnapshot(), 100.0, _SENSOR)  # opens bin anchored at t0
+        ri.sync(_FakeSnapshot(), 103.0, _SENSOR)  # +3s -> closes bin at t0
+        assert rec.samples[0].timestamp_utc == t0
+        ri.sync(_FakeSnapshot(), 104.0, _SENSOR)  # +1s -> closes bin at t0+3s
+        assert rec.samples[1].timestamp_utc == t0 + timedelta(seconds=3)
+
+    def test_no_anchor_falls_back_to_utc_now(self) -> None:
+        """start() called without a monotonic anchor preserves prior behaviour:
+        each sample timestamp comes straight from utc_now()."""
+        t0 = _UTC_NOW
+        t1 = _UTC_NOW + timedelta(seconds=1)
+        times = iter([t0, t1])
+        ri, rec, _ = _make(utc_now=lambda: next(times))
+        ri.start(_FakeWorkout(), t0)  # no now_monotonic supplied
+        ri.sync(_FakeSnapshot(), None, _SENSOR)
+        ri.sync(_FakeSnapshot(), None, _SENSOR)  # t1 -> closes bin at t0
+        assert rec.samples[0].timestamp_utc == t0
+
+    def test_commit_duration_uses_monotonic_anchor_not_wall_clock(self) -> None:
+        """The finish timestamp passed to the recorder's stop() must derive from
+        the monotonic anchor, so a clock step at commit time cannot corrupt the
+        recorded session duration."""
+        t0 = _UTC_NOW
+        ri, rec, _ = _make(
+            utc_now=lambda: t0 - timedelta(hours=10),  # would corrupt duration if consulted
+            monotonic_now=lambda: 1010.0,  # 10s after the session-start anchor
+        )
+        ri.start(_FakeWorkout(), t0, 1000.0)
+        ri.prepare_summary()
+        ri.commit()
+        assert rec.stop_finished_at_utc[-1] == t0 + timedelta(seconds=10)
 
 
 # ── update_total_kj() ────────────────────────────────────────────────────────

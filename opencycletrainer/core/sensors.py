@@ -44,6 +44,7 @@ class SensorSample:
     speed_mps: float | None = None
     accumulated_energy_kj: float | None = None
     pedal_balance_left_pct: float | None = None
+    rr_intervals_ms: tuple[float, ...] | None = None
 
 
 class SensorStreamDecoder:
@@ -83,4 +84,5 @@ class SensorStreamDecoder:
             speed_mps=metrics.speed_mps,
             accumulated_energy_kj=metrics.accumulated_energy_kj,
             pedal_balance_left_pct=metrics.pedal_balance_left_pct,
+            rr_intervals_ms=metrics.rr_intervals_ms,
         )

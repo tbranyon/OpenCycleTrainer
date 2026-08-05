@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,16 @@ SUPPORTED_WORKOUT_BEHAVIORS = {
     "free_ride_mode",
     "kj_mode",
 }
+
+class JogPersistenceMode(str, Enum):
+    """Controls whether a manual ERG power jog survives interval boundaries."""
+
+    ALWAYS = "always"
+    WORK_INTERVALS_ONLY = "work_only"
+    NEVER = "never"
+
+
+DEFAULT_JOG_PERSISTENCE_MODE = JogPersistenceMode.NEVER
 
 THEME_MODE_SYSTEM = "system"
 THEME_MODE_LIGHT = "light"
@@ -37,6 +48,24 @@ def _restore_dir(value: str | None) -> Path | None:
     return path if path.exists() else None
 
 
+def _resolve_jog_persistence_mode(data: dict[str, Any]) -> JogPersistenceMode:
+    """Resolve the jog persistence mode, migrating the legacy boolean if needed.
+
+    Prefers the current ``erg_jog_persistence_mode`` key. If absent, falls back to
+    the legacy ``erg_jog_persistent`` bool (``True`` -> ALWAYS, ``False`` -> NEVER).
+    Unknown or missing values fall back to the default (NEVER).
+    """
+    raw_mode = data.get("erg_jog_persistence_mode")
+    if raw_mode is None:
+        if "erg_jog_persistent" in data:
+            return JogPersistenceMode.ALWAYS if bool(data["erg_jog_persistent"]) else JogPersistenceMode.NEVER
+        return DEFAULT_JOG_PERSISTENCE_MODE
+    try:
+        return JogPersistenceMode(str(raw_mode))
+    except ValueError:
+        return DEFAULT_JOG_PERSISTENCE_MODE
+
+
 @dataclass
 class AppSettings:
     ftp: int = 250
@@ -55,7 +84,7 @@ class AppSettings:
     intervals_icu_auto_sync_enabled: bool = False
     intervals_icu_athlete_name: str = ""
     show_interval_plot: bool = True
-    erg_jog_persistent: bool = False
+    erg_jog_persistence_mode: JogPersistenceMode = DEFAULT_JOG_PERSISTENCE_MODE
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,7 +104,7 @@ class AppSettings:
             "intervals_icu_auto_sync_enabled": self.intervals_icu_auto_sync_enabled,
             "intervals_icu_athlete_name": self.intervals_icu_athlete_name,
             "show_interval_plot": self.show_interval_plot,
-            "erg_jog_persistent": self.erg_jog_persistent,
+            "erg_jog_persistence_mode": self.erg_jog_persistence_mode.value,
         }
 
     @classmethod
@@ -94,6 +123,8 @@ class AppSettings:
         if default_workout_behavior not in SUPPORTED_WORKOUT_BEHAVIORS:
             default_workout_behavior = DEFAULT_WORKOUT_BEHAVIOR
 
+        erg_jog_persistence_mode = _resolve_jog_persistence_mode(data)
+
         return cls(
             ftp=int(data.get("ftp", 250)),
             lead_time=int(data.get("lead_time", 0)),
@@ -111,7 +142,7 @@ class AppSettings:
             intervals_icu_auto_sync_enabled=bool(data.get("intervals_icu_auto_sync_enabled", False)),
             intervals_icu_athlete_name=str(data.get("intervals_icu_athlete_name", "")),
             show_interval_plot=bool(data.get("show_interval_plot", True)),
-            erg_jog_persistent=bool(data.get("erg_jog_persistent", False)),
+            erg_jog_persistence_mode=erg_jog_persistence_mode,
         )
 
 

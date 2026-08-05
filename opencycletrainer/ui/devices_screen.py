@@ -173,6 +173,12 @@ class DevicesScreen(QWidget):
                 return device.device_id
         return None
 
+    def connected_heart_rate_device_id(self) -> str | None:
+        for device in self._backend.get_paired_devices():
+            if device.device_type is DeviceType.HEART_RATE and device.connected:
+                return device.device_id
+        return None
+
     def connected_power_meter_device_id(self) -> str | None:
         for device in self._backend.get_paired_devices():
             if device.device_type is DeviceType.POWER_METER and device.connected:
@@ -405,6 +411,7 @@ class DevicesScreen(QWidget):
                 source_characteristic_uuid=characteristic_uuid,
                 device_id=device_id,
                 heart_rate_bpm=metrics.heart_rate_bpm,
+                rr_intervals_ms=metrics.rr_intervals_ms,
             )
             reading_text = f"{metrics.heart_rate_bpm} bpm" if metrics.heart_rate_bpm is not None else None
             return sample, reading_text

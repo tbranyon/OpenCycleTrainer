@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import math
 import os
 from pathlib import Path
 import struct
@@ -16,7 +18,7 @@ from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.core.sensors import CadenceSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
-from opencycletrainer.storage.settings import AppSettings
+from opencycletrainer.storage.settings import AppSettings, JogPersistenceMode
 from opencycletrainer.ui.workout_controller import WorkoutSessionController
 from opencycletrainer.ui.workout_screen import WorkoutScreen
 
@@ -111,6 +113,9 @@ def _wait_until(app: QApplication, predicate, timeout_seconds: float = 1.0) -> b
     return predicate()
 
 
+_SESSION_START_UTC = datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+
 def _ftms_target_power_payload(watts: int) -> bytes:
     return bytes([0x05]) + int(watts).to_bytes(2, "little", signed=True)
 
@@ -123,12 +128,20 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     def _monotonic() -> float:
         return monotonic_now
 
+    # One-second recorder bins are keyed on UTC time, so the sample-count
+    # assertion below only holds if wall time advances with the fake monotonic
+    # clock; against the real clock a second boundary crossed anywhere in the
+    # test body opens an extra bin.
+    def _utc_now() -> datetime:
+        return _SESSION_START_UTC + timedelta(seconds=monotonic_now)
+
     screen = WorkoutScreen(settings=AppSettings())
     controller = WorkoutSessionController(
         screen=screen,
         settings=AppSettings(),
         recorder=fake_recorder,
         monotonic_clock=_monotonic,
+        utc_now=_utc_now,
         summary_dialog_factory=_auto_accept_summary_dialog_factory,
     )
 
@@ -172,7 +185,11 @@ def test_workout_controller_wires_screen_controls_to_engine_and_recorder():
     assert controller.last_snapshot is not None
     assert controller.last_snapshot.state == EngineState.STOPPED
     assert _wait_until(app, lambda: fake_recorder.stop_calls == 1)
-    assert fake_recorder.samples == []
+    # No sensors ever reported data, but one full second (t=0 to t=1) elapsed
+    # while recording was active before the pause: Task B emits a bin for it
+    # (all fields None) rather than silently dropping it from the sample list.
+    assert len(fake_recorder.samples) == 1
+    assert fake_recorder.samples[0].trainer_power_watts is None
 
     controller.shutdown()
 
@@ -245,9 +262,17 @@ def test_sensor_data_is_included_in_recorder_samples():
     app = _get_or_create_qapp()
     fake_recorder = _FakeRecorder()
     monotonic_now = 0.0
+    # Pinned to a whole UTC second: power now enters at its own notification
+    # time (Task A), so an unpinned wall clock's sub-second offset would make
+    # a mid-second reading land in a different bin than this tick depending on
+    # real-world timing — this keeps the scenario deterministic.
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     def _monotonic() -> float:
         return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
 
     screen = WorkoutScreen(settings=AppSettings())
     controller = WorkoutSessionController(
@@ -255,6 +280,7 @@ def test_sensor_data_is_included_in_recorder_samples():
         settings=AppSettings(),
         recorder=fake_recorder,
         monotonic_clock=_monotonic,
+        utc_now=_utc_now,
     )
 
     test_data_dir = Path(__file__).parent / "data"
@@ -267,7 +293,9 @@ def test_sensor_data_is_included_in_recorder_samples():
     controller.receive_cadence_rpm(95.0)
     controller.receive_speed_mps(10.5)
 
-    monotonic_now = 1.0
+    # Stay within the same UTC second as the power reading (no boundary
+    # crossing here); shutdown()'s flush closes the single open bin below.
+    monotonic_now = 0.9
     controller.process_tick(monotonic_now)
 
     # The aggregator holds the partial bin until a second boundary or session end.
@@ -281,6 +309,361 @@ def test_sensor_data_is_included_in_recorder_samples():
     assert last.heart_rate_bpm == 155
     assert last.cadence_rpm == 95.0
     assert last.speed_mps == 10.5
+
+
+def test_power_ingested_at_notification_time_not_tick_time():
+    """Two power readings at known sub-second offsets, with no intervening
+    process_tick, must still produce the correct time-weighted average —
+    proving power enters the recorder at BLE-notification time, not poll time."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    # Pinned to a whole UTC second so sub-second offsets below are unambiguous.
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_power_watts(200, now_monotonic=0.0)
+    controller.receive_power_watts(300, now_monotonic=0.25)
+    controller.receive_power_watts(0, now_monotonic=1.0)  # crosses into second 1
+
+    # The bin must already have closed and reached the recorder without any
+    # process_tick call.
+    recorded = fake_recorder.samples
+    assert recorded, "Expected the bin to close without any process_tick call"
+    assert recorded[0].trainer_power_watts == 275
+
+    controller.shutdown()
+
+
+def test_short_lived_power_reading_between_polls_is_not_dropped():
+    """A reading held for less than the 250 ms tick period must still be
+    counted (the pre-fix poll model would drop values overwritten within a
+    single tick)."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_power_watts(200, now_monotonic=0.0)
+    controller.receive_power_watts(999, now_monotonic=0.05)  # short-lived
+    controller.receive_power_watts(200, now_monotonic=0.10)
+    controller.receive_power_watts(200, now_monotonic=1.0)  # closes bin 0
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert recorded
+    # If the 999 W reading had been dropped the average would be exactly 200 W.
+    assert recorded[0].trainer_power_watts != 200
+
+
+def test_stale_hr_bpm_omitted_from_recorded_sample():
+    """A held HR value must stop being recorded once older than the 3.0 s staleness window."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_hr_bpm(165)
+    controller.receive_power_watts(100, now_monotonic=monotonic_now)  # keep-alive channel
+    controller.process_tick(monotonic_now)
+
+    monotonic_now = 4.0
+    utc_now_val += timedelta(seconds=4)
+    controller.receive_power_watts(100, now_monotonic=monotonic_now)  # keep-alive channel
+    controller.process_tick(monotonic_now)
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert len(recorded) >= 2, "Expected both the fresh and stale bins to be recorded"
+    assert recorded[0].heart_rate_bpm == 165
+    assert recorded[-1].heart_rate_bpm is None
+
+
+def test_stale_speed_omitted_from_recorded_sample():
+    """A held speed value must stop being recorded once older than the 3.0 s staleness window."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_speed_mps(10.5)
+    controller.receive_power_watts(100, now_monotonic=monotonic_now)  # keep-alive channel
+    controller.process_tick(monotonic_now)
+
+    monotonic_now = 4.0
+    utc_now_val += timedelta(seconds=4)
+    controller.receive_power_watts(100, now_monotonic=monotonic_now)  # keep-alive channel
+    controller.process_tick(monotonic_now)
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert len(recorded) >= 2, "Expected both the fresh and stale bins to be recorded"
+    assert recorded[0].speed_mps == 10.5
+    assert recorded[-1].speed_mps is None
+
+
+def test_stale_cadence_omitted_from_recorded_sample():
+    """A held cadence value must stop being recorded once older than the 3.0 s staleness window."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_cadence_rpm(95.0)
+    controller.receive_power_watts(100, now_monotonic=monotonic_now)  # keep-alive channel
+    controller.process_tick(monotonic_now)
+
+    monotonic_now = 4.0
+    utc_now_val += timedelta(seconds=4)
+    controller.receive_power_watts(100, now_monotonic=monotonic_now)  # keep-alive channel
+    controller.process_tick(monotonic_now)
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert len(recorded) >= 2, "Expected both the fresh and stale bins to be recorded"
+    assert recorded[0].cadence_rpm == 95.0
+    assert recorded[-1].cadence_rpm is None
+
+
+def test_dead_power_meter_falls_back_to_trainer_power_in_recorded_sample():
+    """A stale power meter must not shadow a live trainer's power in the recorded sample."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_bike_power_watts(165, now_monotonic=monotonic_now)
+    controller.receive_power_watts(200, now_monotonic=monotonic_now)
+    controller.process_tick(monotonic_now)
+
+    # Power meter dies; trainer keeps reporting.
+    monotonic_now = 4.0
+    utc_now_val += timedelta(seconds=4)
+    controller.receive_power_watts(200, now_monotonic=monotonic_now)
+    controller.process_tick(monotonic_now)
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert len(recorded) >= 2, "Expected both the fresh and stale bins to be recorded"
+    assert recorded[0].bike_power_watts == 165
+    assert recorded[0].trainer_power_watts == 200
+    assert recorded[-1].bike_power_watts is None
+    assert recorded[-1].trainer_power_watts == 200
+
+
+def test_hr_reading_after_staleness_restores_recorded_sample():
+    """A fresh HR notification after a dropout must resume being recorded."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_hr_bpm(165)
+    controller.process_tick(monotonic_now)
+
+    # Dropout: HR goes stale.
+    monotonic_now = 4.0
+    utc_now_val += timedelta(seconds=4)
+    controller.process_tick(monotonic_now)
+
+    # Strap reconnects with a fresh reading.
+    monotonic_now = 4.5
+    controller.receive_hr_bpm(150)
+    utc_now_val += timedelta(seconds=1)
+    controller.process_tick(monotonic_now)
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert recorded, "Expected recorded samples"
+    assert recorded[0].heart_rate_bpm == 165
+    assert recorded[-1].heart_rate_bpm == 150
+
+
+def test_hr_at_staleness_boundary_is_still_recorded():
+    """Exactly at the 3.0 s staleness window, the HR reading is still considered fresh."""
+    app = _get_or_create_qapp()
+    fake_recorder = _FakeRecorder()
+    monotonic_now = 0.0
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=fake_recorder,
+        monotonic_clock=_monotonic,
+        utc_now=_utc_now,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    controller.receive_hr_bpm(165)
+    controller.process_tick(monotonic_now)
+
+    # Exactly at the boundary: now - received_at == 3.0, still fresh (inclusive).
+    monotonic_now = 3.0
+    utc_now_val += timedelta(seconds=3)
+    controller.process_tick(monotonic_now)
+
+    controller.shutdown()
+
+    recorded = fake_recorder.samples
+    assert recorded, "Expected recorded samples"
+    assert recorded[-1].heart_rate_bpm == 165
 
 
 def test_receive_cadence_and_speed_are_available():
@@ -436,9 +819,15 @@ def test_bike_power_is_included_in_recorder_sample():
     app = _get_or_create_qapp()
     fake_recorder = _FakeRecorder()
     monotonic_now = 0.0
+    # Pinned to a whole UTC second for the same reason as
+    # test_sensor_data_is_included_in_recorder_samples above.
+    utc_now_val = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     def _monotonic() -> float:
         return monotonic_now
+
+    def _utc_now() -> datetime:
+        return utc_now_val
 
     screen = WorkoutScreen(settings=AppSettings())
     controller = WorkoutSessionController(
@@ -446,6 +835,7 @@ def test_bike_power_is_included_in_recorder_sample():
         settings=AppSettings(),
         recorder=fake_recorder,
         monotonic_clock=_monotonic,
+        utc_now=_utc_now,
     )
 
     test_data_dir = Path(__file__).parent / "data"
@@ -456,7 +846,9 @@ def test_bike_power_is_included_in_recorder_sample():
     controller.receive_power_watts(200, now_monotonic=0.5)
     controller.receive_bike_power_watts(215, now_monotonic=0.5)
 
-    monotonic_now = 1.0
+    # Stay within the same UTC second as the power readings (no boundary
+    # crossing here); shutdown()'s flush closes the single open bin below.
+    monotonic_now = 0.9
     controller.process_tick(monotonic_now)
 
     # Flush the aggregator's partial bin by ending the session.
@@ -578,7 +970,7 @@ def test_on_chart_tick_passes_correct_elapsed_and_series_to_screen():
     screen = WorkoutScreen(settings=AppSettings())
     original_update = screen.update_charts
 
-    def _capture(elapsed, interval_index, power_series, hr_series):
+    def _capture(elapsed, interval_index, power_series, hr_series, alpha1_series=None):
         received.append({
             "elapsed": elapsed,
             "interval_index": interval_index,
@@ -951,6 +1343,8 @@ def test_trainer_controls_hidden_when_trainer_disconnected():
     assert screen.trainer_mode_label.isHidden()
     assert screen.mode_selector.isHidden()
 
+    controller.shutdown()
+
 
 # ── Strava upload trigger ─────────────────────────────────────────────────────
 
@@ -1176,9 +1570,9 @@ def test_chart_cursor_frozen_while_paused():
     screen = WorkoutScreen(settings=AppSettings())
     original_update = screen.update_charts
 
-    def _capture(elapsed, interval_index, power_series, hr_series):
+    def _capture(elapsed, interval_index, power_series, hr_series, alpha1_series=None):
         received.append(elapsed)
-        original_update(elapsed, interval_index, power_series, hr_series)
+        original_update(elapsed, interval_index, power_series, hr_series, alpha1_series)
 
     screen.update_charts = _capture
 
@@ -1223,9 +1617,9 @@ def test_chart_cursor_frozen_during_ramp_in():
     screen = WorkoutScreen(settings=AppSettings())
     original_update = screen.update_charts
 
-    def _capture(elapsed, interval_index, power_series, hr_series):
+    def _capture(elapsed, interval_index, power_series, hr_series, alpha1_series=None):
         received.append(elapsed)
-        original_update(elapsed, interval_index, power_series, hr_series)
+        original_update(elapsed, interval_index, power_series, hr_series, alpha1_series)
 
     screen.update_charts = _capture
 
@@ -1862,6 +2256,8 @@ def test_trainer_no_reconnect_alert_before_workout_starts():
 
     assert screen.alert_label.text() == ""
 
+    controller.shutdown()
+
 
 # ── Interval plot visibility ──────────────────────────────────────────────────
 
@@ -1960,13 +2356,39 @@ def _make_two_interval_erg_workout() -> Workout:
     )
 
 
-def test_interval_boundary_resets_erg_jog_when_not_persistent():
-    """With the default setting, the ERG jog clears when crossing an interval boundary."""
+def _make_two_interval_erg_workout_second_is_work() -> Workout:
+    """Two back-to-back ERG intervals: recovery (50% FTP) then work (70% FTP)."""
+    return Workout(
+        name="Two Interval ERG Work Second",
+        ftp_watts=200,
+        intervals=(
+            WorkoutInterval(
+                start_offset_seconds=0,
+                duration_seconds=300,
+                start_percent_ftp=50.0,
+                end_percent_ftp=50.0,
+                start_target_watts=100,
+                end_target_watts=100,
+            ),
+            WorkoutInterval(
+                start_offset_seconds=300,
+                duration_seconds=300,
+                start_percent_ftp=70.0,
+                end_percent_ftp=70.0,
+                start_target_watts=140,
+                end_target_watts=140,
+            ),
+        ),
+    )
+
+
+def test_interval_boundary_resets_erg_jog_when_never():
+    """With NEVER (the default), the ERG jog clears when crossing an interval boundary."""
     _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
     controller = WorkoutSessionController(
         screen=screen,
-        settings=AppSettings(erg_jog_persistent=False),
+        settings=AppSettings(erg_jog_persistence_mode=JogPersistenceMode.NEVER),
         recorder=_FakeRecorder(),
         monotonic_clock=lambda: 0.0,
     )
@@ -1983,18 +2405,66 @@ def test_interval_boundary_resets_erg_jog_when_not_persistent():
     controller.shutdown()
 
 
-def test_interval_boundary_keeps_erg_jog_when_persistent():
-    """With persistence enabled, the ERG jog survives crossing an interval boundary."""
+def test_interval_boundary_keeps_erg_jog_when_always():
+    """With ALWAYS persistence, the ERG jog survives crossing an interval boundary."""
     _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
     controller = WorkoutSessionController(
         screen=screen,
-        settings=AppSettings(erg_jog_persistent=True),
+        settings=AppSettings(erg_jog_persistence_mode=JogPersistenceMode.ALWAYS),
         recorder=_FakeRecorder(),
         monotonic_clock=lambda: 0.0,
     )
 
     controller._workout = _make_two_interval_erg_workout()
+    controller._mode_state.select_mode("ERG")
+    controller._active_interval_index = 0
+    controller._mode_state.jog(10, ftp=200.0, snapshot=_make_snapshot(0), workout=controller._workout)
+    jog_before = controller._mode_state.erg_jog_watts
+    assert jog_before != 0.0
+
+    controller._handle_snapshot(_make_snapshot(interval_index=1), now_monotonic=None)
+
+    assert controller._mode_state.erg_jog_watts == jog_before
+    controller.shutdown()
+
+
+def test_interval_boundary_resets_erg_jog_when_work_only_and_entering_recovery():
+    """WORK_INTERVALS_ONLY clears the jog when the entered interval is below 60% FTP."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(erg_jog_persistence_mode=JogPersistenceMode.WORK_INTERVALS_ONLY),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    # Both intervals in this workout are 50% FTP — below the work threshold.
+    controller._workout = _make_two_interval_erg_workout()
+    controller._mode_state.select_mode("ERG")
+    controller._active_interval_index = 0
+    controller._mode_state.jog(10, ftp=200.0, snapshot=_make_snapshot(0), workout=controller._workout)
+    assert controller._mode_state.erg_jog_watts != 0.0
+
+    controller._handle_snapshot(_make_snapshot(interval_index=1), now_monotonic=None)
+
+    assert controller._mode_state.erg_jog_watts == 0.0
+    controller.shutdown()
+
+
+def test_interval_boundary_keeps_erg_jog_when_work_only_and_entering_work_interval():
+    """WORK_INTERVALS_ONLY keeps the jog when the entered interval is >= 60% FTP."""
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(erg_jog_persistence_mode=JogPersistenceMode.WORK_INTERVALS_ONLY),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    controller._workout = _make_two_interval_erg_workout_second_is_work()
     controller._mode_state.select_mode("ERG")
     controller._active_interval_index = 0
     controller._mode_state.jog(10, ftp=200.0, snapshot=_make_snapshot(0), workout=controller._workout)
@@ -2103,6 +2573,8 @@ def test_trainer_bridge_sends_resistance_command_during_free_ride_interval():
         app,
         lambda: any(payload[:1] == b"\x04" for payload in transport.writes),
     ), "Expected resistance command (0x04) to be sent for free_ride interval"
+
+    controller.shutdown()
 
 
 def test_effective_power_prefers_bike_over_trainer_in_workout_avg():
@@ -2626,5 +3098,376 @@ def test_summary_interval_result_captured_for_stopped_workout():
     assert len(results) == 1
     assert results[0].interval_number == 1
     assert results[0].avg_watts == 180
+
+    controller.shutdown()
+
+
+# ── DFA α1 pipeline wiring ─────────────────────────────────────────────────
+
+
+def _clean_rr_series(n: int, mean: float = 800.0, amp: float = 20.0, cycles: float = 6.0) -> list[float]:
+    """Smooth, artifact-free synthetic RR series (ms) for pipeline-wiring tests."""
+    import math as _math
+    return [mean + amp * _math.sin(2.0 * _math.pi * cycles * k / n) for k in range(n)]
+
+
+def test_receive_rr_intervals_feeds_dfa_pipeline_and_produces_record():
+    """RR batches fed via receive_rr_intervals_ms should reach the DFA pipeline
+    and, once a full 120 s window is available, produce a DfaRecord on tick."""
+    from opencycletrainer.core.dfa.pipeline import SignalQuality
+
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    assert controller.latest_dfa_record() is None
+
+    # 160 beats * ~800 ms >= the 120_000 ms DFA analysis window.
+    rr = _clean_rr_series(160)
+    controller.receive_rr_intervals_ms(tuple(rr))
+
+    monotonic_now = 1.0
+    controller.process_tick(monotonic_now)
+
+    record = controller.latest_dfa_record()
+    assert record is not None
+    assert record.quality != SignalQuality.INSUFFICIENT
+    assert record.artifact_fraction == pytest.approx(0.0)
+
+    controller.shutdown()
+
+
+def test_dfa_recompute_lands_alpha1_sample_in_chart_history():
+    """A recompute-producing tick should record the record's alpha1 into chart history."""
+    app = _get_or_create_qapp()
+    monotonic_now = 0.0
+
+    def _monotonic() -> float:
+        return monotonic_now
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=_monotonic,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+
+    assert controller._chart_history.alpha1_series == []
+
+    # 160 beats * ~800 ms >= the 120_000 ms DFA analysis window.
+    rr = _clean_rr_series(160)
+    controller.receive_rr_intervals_ms(tuple(rr))
+
+    monotonic_now = 1.0
+    controller.process_tick(monotonic_now)
+
+    record = controller.latest_dfa_record()
+    assert record is not None
+
+    assert len(controller._chart_history.alpha1_series) == 1
+    elapsed, value = controller._chart_history.alpha1_series[0]
+    assert elapsed == pytest.approx(1.0)
+    if record.alpha1 is None:
+        assert math.isnan(value)
+    else:
+        assert value == pytest.approx(record.alpha1)
+
+    controller.shutdown()
+
+
+def test_dfa_pipeline_resets_on_workout_start():
+    """Starting a workout should clear any DFA pipeline state left over from before."""
+    app = _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: 0.0,
+    )
+
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+
+    # Seed the pipeline with a computed record before Start is pressed.
+    controller._dfa_pipeline.ingest_rr(tuple(_clean_rr_series(160)), 0.0)
+    controller._dfa_pipeline.recompute(0.0)
+    assert controller.latest_dfa_record() is not None
+
+    screen.start_button.click()
+    app.processEvents()
+    assert controller.latest_dfa_record() is None
+
+    controller.shutdown()
+
+
+# ── Pedaling-driven start / pause / resume ────────────────────────────────────
+
+
+def _make_loaded_controller_with_clock(app):
+    """Helper: returns (controller, screen, clock) with a workout loaded but not started."""
+    monotonic_now = [0.0]
+
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: monotonic_now[0],
+    )
+    test_data_dir = Path(__file__).parent / "data"
+    controller._load_workout_from_file(test_data_dir / "ramp.mrc")
+    app.processEvents()
+    return controller, screen, monotonic_now
+
+
+def _pedal(controller, clock, now, *, watts=200, rpm=90.0):
+    """Feed one pedaling observation (power plus cadence) at *now*."""
+    clock[0] = now
+    if rpm is not None:
+        controller.receive_cadence_rpm(rpm)
+    controller.receive_power_watts(watts, now_monotonic=now)
+
+
+def test_auto_start_after_three_seconds_of_pedaling():
+    """A loaded workout starts itself once the rider has pedaled for 3 s."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_loaded_controller_with_clock(app)
+
+    for now in (0.0, 1.0, 2.0, 3.0):
+        _pedal(controller, clock, now)
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
+
+    controller.shutdown()
+
+
+def test_no_auto_start_before_three_seconds_of_pedaling():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_loaded_controller_with_clock(app)
+
+    for now in (0.0, 1.0, 2.0):
+        _pedal(controller, clock, now)
+
+    assert controller.last_snapshot.state == EngineState.READY
+
+    controller.shutdown()
+
+
+def test_no_auto_start_while_cadence_is_zero():
+    """Power without cadence (a coasting rider on a spinning flywheel) must not start the workout."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_loaded_controller_with_clock(app)
+
+    for now in (0.0, 1.0, 2.0, 3.0, 4.0):
+        _pedal(controller, clock, now, rpm=0.0)
+
+    assert controller.last_snapshot.state == EngineState.READY
+
+    controller.shutdown()
+
+
+def test_no_auto_start_while_power_is_zero():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_loaded_controller_with_clock(app)
+
+    for now in (0.0, 1.0, 2.0, 3.0, 4.0):
+        _pedal(controller, clock, now, watts=0)
+
+    assert controller.last_snapshot.state == EngineState.READY
+
+    controller.shutdown()
+
+
+def test_auto_start_uses_power_alone_when_no_cadence_source_is_present():
+    """Trainers that report no cadence at all must still be able to auto-start."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_loaded_controller_with_clock(app)
+
+    for now in (0.0, 1.0, 2.0, 3.0):
+        _pedal(controller, clock, now, rpm=None)
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
+
+    controller.shutdown()
+
+
+def test_auto_pause_when_cadence_drops_to_zero():
+    """Coasting with a live power stream still pauses after 3 s."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    _pedal(controller, clock, 1.0)
+    for now in (2.0, 3.0, 4.0):
+        _pedal(controller, clock, now, rpm=0.0)
+
+    clock[0] = 4.1
+    controller.process_tick(4.1)
+
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_auto_pause_when_power_drops_to_zero():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    _pedal(controller, clock, 1.0)
+    for now in (2.0, 3.0, 4.0):
+        _pedal(controller, clock, now, watts=0)
+
+    clock[0] = 4.1
+    controller.process_tick(4.1)
+
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_no_auto_pause_while_pedaling_continues():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    for now in (1.0, 2.0, 3.0, 4.0, 5.0):
+        _pedal(controller, clock, now)
+        controller.process_tick(now)
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
+
+    controller.shutdown()
+
+
+def _auto_pause_running_controller(app):
+    """Helper: returns (controller, screen, clock) auto-paused at t=4.1 after pedaling stopped."""
+    controller, screen, clock = _make_running_controller_with_clock(app)
+    _pedal(controller, clock, 1.0)
+    clock[0] = 4.1
+    controller.process_tick(4.1)
+    assert controller.last_snapshot.state == EngineState.PAUSED
+    return controller, screen, clock
+
+
+def test_auto_resume_enters_ramp_in_when_pedaling_restarts():
+    """Pedaling again after an auto-pause returns to RAMP_IN, which re-applies the target."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _auto_pause_running_controller(app)
+
+    _pedal(controller, clock, 5.0)
+    app.processEvents()
+
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    controller.shutdown()
+
+
+def test_recording_resumes_after_three_seconds_of_pedaling():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _auto_pause_running_controller(app)
+
+    for now in (5.0, 6.0, 7.0, 8.0):
+        _pedal(controller, clock, now)
+        controller.process_tick(now)
+    app.processEvents()
+
+    assert controller.last_snapshot.state == EngineState.RUNNING
+    assert controller.last_snapshot.recording_active is True
+
+    controller.shutdown()
+
+
+def test_ramp_in_does_not_complete_while_pedaling_is_absent():
+    """Ramp-in must not hand back to RUNNING on elapsed time alone."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _auto_pause_running_controller(app)
+
+    _pedal(controller, clock, 5.0)
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    # Pedaling stops again immediately: 2 s later the ramp must still be pending.
+    for now in (5.5, 6.0, 6.5, 7.0):
+        _pedal(controller, clock, now, watts=0)
+        controller.process_tick(now)
+
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    controller.shutdown()
+
+
+def test_ramp_in_falls_back_to_paused_when_pedaling_stops():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _auto_pause_running_controller(app)
+
+    _pedal(controller, clock, 5.0)
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
+
+    clock[0] = 8.1
+    controller.process_tick(8.1)
+
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_manual_pause_is_not_auto_resumed_while_still_pedaling():
+    """A deliberate pause must survive the rider still turning the cranks."""
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    _pedal(controller, clock, 1.0)
+    clock[0] = 2.0
+    screen.pause_button.click()
+    app.processEvents()
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    for now in (2.5, 3.0, 3.5, 4.0):
+        _pedal(controller, clock, now)
+        controller.process_tick(now)
+
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    controller.shutdown()
+
+
+def test_manual_pause_auto_resumes_once_pedaling_restarts():
+    app = _get_or_create_qapp()
+    controller, screen, clock = _make_running_controller_with_clock(app)
+
+    _pedal(controller, clock, 1.0)
+    clock[0] = 2.0
+    screen.pause_button.click()
+    app.processEvents()
+
+    # Rider stops...
+    _pedal(controller, clock, 3.0, watts=0)
+    controller.process_tick(3.0)
+    assert controller.last_snapshot.state == EngineState.PAUSED
+
+    # ...then starts pedaling again.
+    _pedal(controller, clock, 4.0)
+    app.processEvents()
+
+    assert controller.last_snapshot.state == EngineState.RAMP_IN
 
     controller.shutdown()

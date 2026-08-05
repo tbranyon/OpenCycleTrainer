@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from opencycletrainer.core.dfa.pipeline import DfaRecord, SignalQuality
 from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.storage.settings import AppSettings
@@ -92,13 +93,42 @@ def _make_tile(
     pm_energy=None,
     ftms_energy=None,
     balance_left_pct=None,
+    dfa_source=None,
 ) -> TileComputation:
     ph = power_history or _MockPowerHistory()
     ch = cadence_history or _MockCadenceHistory()
     ist = interval_stats or _MockIntervalStats()
     pm = pm_energy if pm_energy is not None else ExternalEnergyTracker()
     ftms = ftms_energy if ftms_energy is not None else ExternalEnergyTracker()
-    return TileComputation(ph, ch, ist, lambda: now, lambda: hr_bpm, pm, ftms, balance_source=lambda: balance_left_pct)
+    return TileComputation(
+        ph,
+        ch,
+        ist,
+        lambda: now,
+        lambda: hr_bpm,
+        pm,
+        ftms,
+        balance_source=lambda: balance_left_pct,
+        dfa_source=dfa_source,
+    )
+
+
+def _make_dfa_record(**overrides) -> DfaRecord:
+    defaults = dict(
+        t=1.0,
+        alpha1=0.8123,
+        mean_power_w=215.0,
+        hr_bpm=142.0,
+        rmssd_ms=42.0,
+        quality=SignalQuality.GOOD,
+        artifact_fraction=0.0,
+        artifact_breakdown={"missed": 0, "extra": 0, "ectopic": 0, "long": 0, "short": 0},
+        max_correction_run=0,
+        r2_loglog=0.98,
+        quality_reason="",
+    )
+    defaults.update(overrides)
+    return DfaRecord(**defaults)
 
 
 class TestWindowedAvgPower:
@@ -272,6 +302,30 @@ class TestPedalBalance:
         assert result == "--"
 
 
+class TestDfaAlpha1:
+    def test_returns_dash_when_no_source(self):
+        tc = _make_tile()
+        result = tc.compute("dfa_a1", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+    def test_returns_dash_when_source_returns_none(self):
+        tc = _make_tile(dfa_source=lambda: None)
+        result = tc.compute("dfa_a1", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+    def test_returns_dash_when_alpha1_is_none(self):
+        record = _make_dfa_record(alpha1=None, quality=SignalQuality.POOR)
+        tc = _make_tile(dfa_source=lambda: record)
+        result = tc.compute("dfa_a1", _make_snapshot(), AppSettings())
+        assert result == "--"
+
+    def test_returns_formatted_alpha1(self):
+        record = _make_dfa_record(alpha1=0.8123)
+        tc = _make_tile(dfa_source=lambda: record)
+        result = tc.compute("dfa_a1", _make_snapshot(), AppSettings())
+        assert result == "0.81"
+
+
 class TestUnknownKey:
     def test_unknown_key_returns_dash(self):
         tc = _make_tile()
@@ -322,6 +376,45 @@ class TestUpdateScreen:
 
         assert screen.set_calls["heart_rate"] == "130 bpm"
         assert screen.set_calls["cadence_rpm"] == "75 rpm"
+
+    def test_update_screen_pushes_dfa_record_when_tile_selected(self):
+        """When dfa_a1 is a selected tile, update_screen pushes the full record too."""
+
+        class MockScreen:
+            def __init__(self):
+                self.set_calls: dict[str, str] = {}
+                self.dfa_record = "unset"
+
+            def get_selected_tile_keys(self):
+                return ["dfa_a1"]
+
+            def set_tile_value(self, key, value):
+                self.set_calls[key] = value
+
+            def set_dfa_record(self, record):
+                self.dfa_record = record
+
+        screen = MockScreen()
+        record = _make_dfa_record(alpha1=0.55)
+        tc = _make_tile(dfa_source=lambda: record)
+        tc.update_screen(screen, _make_snapshot(), AppSettings())
+
+        assert screen.set_calls["dfa_a1"] == "0.55"
+        assert screen.dfa_record is record
+
+    def test_update_screen_skips_dfa_record_push_when_tile_not_selected(self):
+        """No set_dfa_record call (and no AttributeError) when dfa_a1 isn't selected."""
+
+        class MockScreen:
+            def get_selected_tile_keys(self):
+                return ["heart_rate"]
+
+            def set_tile_value(self, key, value):
+                pass
+
+        screen = MockScreen()
+        tc = _make_tile(hr_bpm=100, dfa_source=lambda: _make_dfa_record())
+        tc.update_screen(screen, _make_snapshot(), AppSettings())  # must not raise
 
 
 class TestKjWorkCompletedSourceSelection:

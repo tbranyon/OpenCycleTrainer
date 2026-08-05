@@ -4,7 +4,12 @@ import json
 import shutil
 from pathlib import Path
 
-from opencycletrainer.storage.settings import AppSettings, load_settings, save_settings
+from opencycletrainer.storage.settings import (
+    AppSettings,
+    JogPersistenceMode,
+    load_settings,
+    save_settings,
+)
 
 
 def _settings_file() -> Path:
@@ -140,27 +145,80 @@ def test_intervals_icu_athlete_name_missing_key_defaults_to_empty_string():
     assert loaded.intervals_icu_athlete_name == ""
 
 
-def test_erg_jog_persistent_defaults_to_false():
-    assert AppSettings().erg_jog_persistent is False
+def test_erg_jog_persistence_mode_defaults_to_never():
+    assert AppSettings().erg_jog_persistence_mode is JogPersistenceMode.NEVER
 
 
-def test_erg_jog_persistent_round_trips_through_serialization():
+def test_erg_jog_persistence_mode_round_trips_through_serialization():
     settings_file = _settings_file()
-    settings = AppSettings(erg_jog_persistent=True)
+    settings = AppSettings(erg_jog_persistence_mode=JogPersistenceMode.ALWAYS)
 
     save_settings(settings, settings_file)
     loaded = load_settings(settings_file)
 
-    assert loaded.erg_jog_persistent is True
+    assert loaded.erg_jog_persistence_mode is JogPersistenceMode.ALWAYS
 
 
-def test_erg_jog_persistent_missing_key_defaults_to_false():
+def test_erg_jog_persistence_mode_missing_key_defaults_to_never():
     settings_file = _settings_file()
     settings_file.write_text('{"ftp": 250}', encoding="utf-8")
 
     loaded = load_settings(settings_file)
 
-    assert loaded.erg_jog_persistent is False
+    assert loaded.erg_jog_persistence_mode is JogPersistenceMode.NEVER
+
+
+def test_erg_jog_persistence_mode_serializes_only_new_key():
+    settings_file = _settings_file()
+    settings = AppSettings(erg_jog_persistence_mode=JogPersistenceMode.WORK_INTERVALS_ONLY)
+
+    save_settings(settings, settings_file)
+    raw = json.loads(settings_file.read_text(encoding="utf-8"))
+
+    assert raw["erg_jog_persistence_mode"] == "work_only"
+    assert "erg_jog_persistent" not in raw
+
+
+def test_erg_jog_persistence_mode_legacy_true_migrates_to_always():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250, "erg_jog_persistent": true}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.erg_jog_persistence_mode is JogPersistenceMode.ALWAYS
+
+
+def test_erg_jog_persistence_mode_legacy_false_migrates_to_never():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250, "erg_jog_persistent": false}', encoding="utf-8")
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.erg_jog_persistence_mode is JogPersistenceMode.NEVER
+
+
+def test_erg_jog_persistence_mode_new_key_takes_precedence_over_legacy():
+    settings_file = _settings_file()
+    settings_file.write_text(
+        '{"ftp": 250, "erg_jog_persistent": true, "erg_jog_persistence_mode": "work_only"}',
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.erg_jog_persistence_mode is JogPersistenceMode.WORK_INTERVALS_ONLY
+
+
+def test_erg_jog_persistence_mode_invalid_value_falls_back_to_never():
+    settings_file = _settings_file()
+    settings_file.write_text(
+        '{"ftp": 250, "erg_jog_persistence_mode": "sometimes"}',
+        encoding="utf-8",
+    )
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.erg_jog_persistence_mode is JogPersistenceMode.NEVER
 
 
 def test_theme_mode_defaults_to_system():

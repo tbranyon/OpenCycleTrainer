@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from opencycletrainer import __version__
+from opencycletrainer.core.control.ftms_control import WORK_INTERVAL_MIN_PERCENT_FTP
 from opencycletrainer.integrations.strava.app_credentials import (
     has_app_credentials,
     load_app_credentials,
@@ -44,6 +45,7 @@ from opencycletrainer.integrations.intervalsicu.key_store import (
 from opencycletrainer.storage.paths import get_workout_fit_dir
 from opencycletrainer.storage.settings import (
     AppSettings,
+    JogPersistenceMode,
     THEME_MODE_DARK,
     THEME_MODE_LIGHT,
     THEME_MODE_SYSTEM,
@@ -67,6 +69,19 @@ THEME_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Use System Theme", THEME_MODE_SYSTEM),
     ("Light", THEME_MODE_LIGHT),
     ("Dark", THEME_MODE_DARK),
+)
+
+JOG_PERSISTENCE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Always", JogPersistenceMode.ALWAYS.value),
+    ("Work Intervals Only", JogPersistenceMode.WORK_INTERVALS_ONLY.value),
+    ("Never", JogPersistenceMode.NEVER.value),
+)
+
+JOG_PERSISTENCE_TOOLTIP = (
+    "Controls whether manual ERG power jogs carry over across interval boundaries.\n"
+    "Always: jogs persist for the whole workout.\n"
+    f"Work Intervals Only: jogs persist into intervals at or above {WORK_INTERVAL_MIN_PERCENT_FTP:g}% FTP.\n"
+    "Never: jogs reset at every interval boundary."
 )
 
 
@@ -209,13 +224,18 @@ class SettingsScreen(QWidget):
         self.windowed_power_window_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
         general_layout.addRow("Power Averaging Time (s)", self.windowed_power_window_spinbox)
 
-        self.erg_jog_persistent_checkbox = ToggleSwitch("Persist power jogs across whole workout", general_group)
-        self.erg_jog_persistent_checkbox.setChecked(self._settings.erg_jog_persistent)
-        self.erg_jog_persistent_checkbox.setToolTip(
-            "When enabled, manual ERG power jogs carry over to subsequent intervals "
-            "instead of resetting at each interval boundary."
+        self.erg_jog_persistence_mode_combo = QComboBox(general_group)
+        for label, value in JOG_PERSISTENCE_OPTIONS:
+            self.erg_jog_persistence_mode_combo.addItem(label, value)
+        selected_jog_index = self.erg_jog_persistence_mode_combo.findData(
+            self._settings.erg_jog_persistence_mode.value
         )
-        general_layout.addRow("Power Jog", self.erg_jog_persistent_checkbox)
+        if selected_jog_index < 0:
+            selected_jog_index = self.erg_jog_persistence_mode_combo.findData(JogPersistenceMode.NEVER.value)
+        self.erg_jog_persistence_mode_combo.setCurrentIndex(selected_jog_index)
+        self.erg_jog_persistence_mode_combo.setMaximumWidth(COMBO_MAX_WIDTH)
+        self.erg_jog_persistence_mode_combo.setToolTip(JOG_PERSISTENCE_TOOLTIP)
+        general_layout.addRow("Power Jog", self.erg_jog_persistence_mode_combo)
 
         self.theme_mode_combo = QComboBox(general_group)
         for label, value in THEME_OPTIONS:
@@ -380,7 +400,7 @@ class SettingsScreen(QWidget):
             strava_auto_sync_enabled=self.strava_auto_sync_checkbox.isChecked(),
             intervals_icu_auto_sync_enabled=self.intervals_icu_auto_sync_checkbox.isChecked(),
             show_interval_plot=self.show_interval_plot_checkbox.isChecked(),
-            erg_jog_persistent=self.erg_jog_persistent_checkbox.isChecked(),
+            erg_jog_persistence_mode=JogPersistenceMode(str(self.erg_jog_persistence_mode_combo.currentData())),
         )
 
     def set_tile_selected(self, tile_key: str, selected: bool) -> None:
@@ -413,7 +433,7 @@ class SettingsScreen(QWidget):
         self.lead_time_spinbox.valueChanged.connect(self._autosave)
         self.lead_time_increasing_only_checkbox.toggled.connect(self._autosave)
         self.windowed_power_window_spinbox.valueChanged.connect(self._autosave)
-        self.erg_jog_persistent_checkbox.toggled.connect(self._autosave)
+        self.erg_jog_persistence_mode_combo.currentIndexChanged.connect(self._autosave)
         self.theme_mode_combo.currentIndexChanged.connect(self._autosave)
         self.workout_data_dir_edit.editingFinished.connect(self._autosave)
         self.opentrueup_checkbox.toggled.connect(self._autosave)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from opencycletrainer.core.dfa.pipeline import DfaRecord
+
 
 class TileComputation:
     """Stateless tile value computation; holds read-only references to sub-objects."""
@@ -16,6 +18,7 @@ class TileComputation:
         pm_energy=None,
         ftms_energy=None,
         balance_source: Callable[[], float | None] | None = None,
+        dfa_source: Callable[[], DfaRecord | None] | None = None,
     ) -> None:
         self._power_history = power_history
         self._cadence_history = cadence_history
@@ -25,6 +28,7 @@ class TileComputation:
         self._pm_energy = pm_energy
         self._ftms_energy = ftms_energy
         self._balance_source = balance_source
+        self._dfa_source = dfa_source
         self.kj_workout_source: str = "calculated"
 
     def compute(self, key: str, snapshot, settings) -> str:  # noqa: ARG002
@@ -83,6 +87,11 @@ class TileComputation:
             left = round(val)
             right = 100 - left
             return f"{left} / {right} %"
+        if key == "dfa_a1":
+            record = self._dfa_source() if self._dfa_source is not None else None
+            if record is None or record.alpha1 is None:
+                return "--"
+            return f"{record.alpha1:.2f}"
         return "--"
 
     def available_kj_sources(self) -> list[str]:
@@ -95,6 +104,14 @@ class TileComputation:
         return sources
 
     def update_screen(self, screen, snapshot, settings) -> None:
-        """Recompute all selected tile values and push them to the screen."""
-        for key in screen.get_selected_tile_keys():
+        """Recompute all selected tile values and push them to the screen.
+
+        The dfa_a1 tile additionally needs the full DfaRecord (for its quality
+        dot, power sub-line, and open popup), so push it separately when that
+        tile is selected and a source is configured.
+        """
+        selected_keys = screen.get_selected_tile_keys()
+        for key in selected_keys:
             screen.set_tile_value(key, self.compute(key, snapshot, settings))
+        if "dfa_a1" in selected_keys and self._dfa_source is not None:
+            screen.set_dfa_record(self._dfa_source())

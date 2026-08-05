@@ -35,6 +35,8 @@ class RecorderSample:
     mode: str | None = None
     erg_setpoint_watts: int | None = None
     total_kj: float | None = None
+    dfa_alpha1: float | None = None
+    dfa_quality: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,10 @@ class WorkoutRecorder:
         self._recorded_samples: list[RecorderSample] = []
         self._pending_rows: list[dict[str, Any]] = []
         self._last_recorded_timestamp_utc: datetime | None = None
+        # High-water mark of every timestamp ever accepted this session. Unlike
+        # _last_recorded_timestamp_utc, set_recording_active(True) does not reset
+        # this, so a resume cannot re-emit a UTC second already recorded pre-pause.
+        self._max_recorded_timestamp_utc: datetime | None = None
         self._effective_power_sum = 0.0
         self._effective_power_count = 0
 
@@ -146,6 +152,7 @@ class WorkoutRecorder:
         self._recording_enabled = True
         self._pending_rows = []
         self._last_recorded_timestamp_utc = None
+        self._max_recorded_timestamp_utc = None
         self._effective_power_sum = 0.0
         self._effective_power_count = 0
 
@@ -165,6 +172,15 @@ class WorkoutRecorder:
             return False
 
         normalized_timestamp = _normalize_utc(sample.timestamp_utc)
+        if (
+            self._max_recorded_timestamp_utc is not None
+            and normalized_timestamp <= self._max_recorded_timestamp_utc
+        ):
+            # set_recording_active(True) resets _last_recorded_timestamp_utc so a
+            # resume can accept its first sample immediately; this high-water mark
+            # persists across that reset and rejects an already-emitted UTC second.
+            return False
+
         last_timestamp = self._last_recorded_timestamp_utc
         if last_timestamp is not None:
             delta_seconds = (normalized_timestamp - last_timestamp).total_seconds()
@@ -184,9 +200,12 @@ class WorkoutRecorder:
             mode=sample.mode,
             erg_setpoint_watts=sample.erg_setpoint_watts,
             total_kj=sample.total_kj,
+            dfa_alpha1=sample.dfa_alpha1,
+            dfa_quality=sample.dfa_quality,
         )
         self._recorded_samples.append(normalized_sample)
         self._last_recorded_timestamp_utc = normalized_timestamp
+        self._max_recorded_timestamp_utc = normalized_timestamp
 
         effective_power = normalized_sample.bike_power_watts
         if effective_power is None:
@@ -235,6 +254,7 @@ class WorkoutRecorder:
                 heart_rate_bpm=sample.heart_rate_bpm,
                 cadence_rpm=sample.cadence_rpm,
                 speed_mps=sample.speed_mps,
+                dfa_alpha1=sample.dfa_alpha1,
             )
             for sample in self._recorded_samples
         ]
@@ -280,6 +300,7 @@ class WorkoutRecorder:
         self._writer_thread = None
         self._pending_rows = []
         self._last_recorded_timestamp_utc = None
+        self._max_recorded_timestamp_utc = None
         return summary
 
     def discard(self) -> None:
@@ -304,6 +325,7 @@ class WorkoutRecorder:
         self._pending_rows = []
         self._recorded_samples = []
         self._last_recorded_timestamp_utc = None
+        self._max_recorded_timestamp_utc = None
         self._effective_power_sum = 0.0
         self._effective_power_count = 0
 
@@ -357,6 +379,8 @@ class WorkoutRecorder:
             "mode": sample.mode,
             "erg_setpoint_watts": sample.erg_setpoint_watts,
             "total_kj": sample.total_kj,
+            "dfa_alpha1": sample.dfa_alpha1,
+            "dfa_quality": sample.dfa_quality,
         }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 from pathlib import Path
 
@@ -50,6 +51,14 @@ _5_MIN_SECONDS = 300.0  # five minutes in seconds
 # Power-duration curve chart
 _PD_CURVE_PEN = (34, 197, 94)  # same green as the actual-power trace
 _PD_NEAREST_DURATION_RATIO = 1.5  # max ratio between cursor x and nearest point before hiding readout
+
+# DFA α1 chart overlay (spec [8]) — violet, distinct from target/actual/HR.
+# Defined here rather than in ui/theme.py, which is owned by a concurrent
+# phase; a follow-up could migrate this alongside the other trace colours.
+_ALPHA1_PEN = (168, 85, 247)  # #a855f7
+_ALPHA1_AXIS_LABEL = "α1"
+_ALPHA1_AXIS_MIN = 0.0
+_ALPHA1_AXIS_MAX = 1.6
 
 
 # ── Time axis ─────────────────────────────────────────────────────────────────
@@ -135,6 +144,16 @@ class WorkoutChartWidget(QWidget):
 
         self._skip_markers: list[tuple[pg.LinearRegionItem, pg.LinearRegionItem]] = []
 
+        # DFA α1 overlay: created/torn down on demand (spec [8]/[0e], gated on
+        # the dfa_a1 tile selection), never present at construction time.
+        self._dfa_alpha1_enabled: bool = False
+        self._interval_alpha1_vb: pg.ViewBox | None = None
+        self._workout_alpha1_vb: pg.ViewBox | None = None
+        self._interval_alpha1_curve: pg.PlotDataItem | None = None
+        self._workout_alpha1_curve: pg.PlotDataItem | None = None
+        self._interval_alpha1_resize_cb: Callable[[], None] | None = None
+        self._workout_alpha1_resize_cb: Callable[[], None] | None = None
+
         for item in (
             self._interval_target, self._interval_actual, self._interval_hr,
             self._interval_ftp_line, self._interval_ftp_text, self._interval_pos,
@@ -193,6 +212,7 @@ class WorkoutChartWidget(QWidget):
             self._workout_actual,  self._workout_hr,
         ):
             item.setData([], [])
+        self._clear_alpha1_curves()
 
         for pos in (self._interval_pos, self._workout_pos):
             pos.setValue(0.0)
@@ -233,12 +253,50 @@ class WorkoutChartWidget(QWidget):
         self._workout_plot.setXRange(0.0, total, padding=0)
         self._update_interval_range(0)
 
+    def set_dfa_alpha1_enabled(self, enabled: bool) -> None:
+        """Show or tear down the DFA α1 overlay (curve + right axis) on both charts.
+
+        Active only while the ``dfa_a1`` tile is selected (spec [0e]/[8]); the
+        overlay and its secondary ``pg.ViewBox`` are created lazily and fully
+        removed on teardown so the primary traces are unaffected either way.
+        """
+        if enabled == self._dfa_alpha1_enabled:
+            return
+        self._dfa_alpha1_enabled = enabled
+        if enabled:
+            self._interval_alpha1_vb, self._interval_alpha1_curve, self._interval_alpha1_resize_cb = (
+                _install_alpha1_overlay(self._interval_plot)
+            )
+            self._workout_alpha1_vb, self._workout_alpha1_curve, self._workout_alpha1_resize_cb = (
+                _install_alpha1_overlay(self._workout_plot)
+            )
+        else:
+            _teardown_alpha1_overlay(
+                self._interval_plot,
+                self._interval_alpha1_vb,
+                self._interval_alpha1_curve,
+                self._interval_alpha1_resize_cb,
+            )
+            _teardown_alpha1_overlay(
+                self._workout_plot,
+                self._workout_alpha1_vb,
+                self._workout_alpha1_curve,
+                self._workout_alpha1_resize_cb,
+            )
+            self._interval_alpha1_vb = None
+            self._workout_alpha1_vb = None
+            self._interval_alpha1_curve = None
+            self._workout_alpha1_curve = None
+            self._interval_alpha1_resize_cb = None
+            self._workout_alpha1_resize_cb = None
+
     def update_charts(
         self,
         elapsed_seconds: float,
         current_interval_index: int | None,
         power_series: list[tuple[float, int]],
         hr_series: list[tuple[float, int]],
+        alpha1_series: list[tuple[float, float]] | None = None,
     ) -> None:
         """Update live traces and position indicator. Called once per second."""
         if self._workout is None:
@@ -281,6 +339,9 @@ class WorkoutChartWidget(QWidget):
             self._interval_hr.setData(ht[mask_hr], hw[mask_hr])
         else:
             self._interval_hr.setData([], [])
+
+        if self._dfa_alpha1_enabled:
+            self._update_alpha1_curves(alpha1_series, x_min, x_max)
 
         # Expand y range if live data exceeds current ceiling
         if pt.size or hw.size:
@@ -343,6 +404,7 @@ class WorkoutChartWidget(QWidget):
             self._workout_target,  self._workout_actual,  self._workout_hr,
         ):
             item.setData([], [])
+        self._clear_alpha1_curves()
         for pos in (self._interval_pos, self._workout_pos):
             pos.setValue(0.0)
         for text in (self._interval_ftp_text, self._workout_ftp_text):
@@ -372,6 +434,10 @@ class WorkoutChartWidget(QWidget):
                 axis = plot.getAxis(axis_name)
                 axis.setPen(pg.mkPen(settings["axis_color"]))
                 axis.setTextPen(pg.mkPen(settings["axis_color"]))
+            if self._dfa_alpha1_enabled:
+                right_axis = plot.getAxis("right")
+                right_axis.setPen(pg.mkPen(settings["axis_color"]))
+                right_axis.setTextPen(pg.mkPen(settings["axis_color"]))
 
         self._interval_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
         self._workout_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
@@ -394,6 +460,7 @@ class WorkoutChartWidget(QWidget):
             self._workout_target,  self._workout_actual,  self._workout_hr,
         ):
             item.setData([], [])
+        self._clear_alpha1_curves()
         for pos in (self._interval_pos, self._workout_pos):
             pos.setValue(0.0)
         for text in (self._interval_ftp_text, self._workout_ftp_text):
@@ -409,6 +476,7 @@ class WorkoutChartWidget(QWidget):
         power_series: list[tuple[float, int]],
         hr_series: list[tuple[float, int]],
         erg_target_watts: int | None = None,
+        alpha1_series: list[tuple[float, float]] | None = None,
     ) -> None:
         """Update live traces on the workout overview chart for free ride mode."""
         while elapsed_seconds >= self._free_ride_x_window_seconds:
@@ -432,6 +500,15 @@ class WorkoutChartWidget(QWidget):
         self._workout_actual.setData(pt, pw)
         self._workout_hr.setData(ht, hw)
 
+        if self._dfa_alpha1_enabled:
+            series = alpha1_series or []
+            if series:
+                at = np.fromiter((a[0] for a in series), dtype=float, count=len(series))
+                aw = np.fromiter((a[1] for a in series), dtype=float, count=len(series))
+            else:
+                at = aw = np.array([], dtype=float)
+            self._workout_alpha1_curve.setData(at, aw)
+
         if erg_target_watts is not None:
             self._workout_erg_target.setValue(float(erg_target_watts))
             self._workout_erg_target.setVisible(True)
@@ -451,6 +528,35 @@ class WorkoutChartWidget(QWidget):
                 _configure_y_axis(self._workout_plot, float(new_y_max))
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _update_alpha1_curves(
+        self,
+        alpha1_series: list[tuple[float, float]] | None,
+        x_min: float,
+        x_max: float,
+    ) -> None:
+        """Push the α1 trace to both charts. NaN values render as gaps (spec [8])."""
+        series = alpha1_series or []
+        if series:
+            at = np.fromiter((a[0] for a in series), dtype=float, count=len(series))
+            aw = np.fromiter((a[1] for a in series), dtype=float, count=len(series))
+        else:
+            at = aw = np.array([], dtype=float)
+
+        self._workout_alpha1_curve.setData(at, aw)
+
+        if at.size:
+            mask = (at >= x_min) & (at <= x_max)
+            self._interval_alpha1_curve.setData(at[mask], aw[mask])
+        else:
+            self._interval_alpha1_curve.setData([], [])
+
+    def _clear_alpha1_curves(self) -> None:
+        """Empty the α1 curves if the overlay is currently installed. No-op otherwise."""
+        if self._interval_alpha1_curve is not None:
+            self._interval_alpha1_curve.setData([], [])
+        if self._workout_alpha1_curve is not None:
+            self._workout_alpha1_curve.setData([], [])
 
     def _clear_skip_markers(self) -> None:
         for interval_region, workout_region in self._skip_markers:
@@ -537,6 +643,58 @@ def _make_erg_target_line() -> pg.InfiniteLine:
 def _make_ftp_text() -> pg.TextItem:
     item = pg.TextItem(text="", color=_FTP_TEXT_COL, anchor=(1.0, 1.0))
     return item
+
+
+def _install_alpha1_overlay(
+    plot: pg.PlotWidget,
+) -> tuple[pg.ViewBox, pg.PlotDataItem, Callable[[], None]]:
+    """Create the α1 curve on a secondary, fixed-range right-hand y-axis.
+
+    Standard pyqtgraph twin-axis pattern: a second ``ViewBox`` shares the
+    plot's scene and X range but keeps its own Y range. Its geometry must be
+    kept in sync with the main ViewBox on every resize, or the curve drifts
+    out of the visible plot area.
+    """
+    plot_item = plot.getPlotItem()
+    view_box = pg.ViewBox()
+    view_box.setMouseEnabled(x=False, y=False)
+    plot_item.showAxis("right")
+    plot_item.scene().addItem(view_box)
+
+    right_axis = plot_item.getAxis("right")
+    right_axis.linkToView(view_box)
+    right_axis.setLabel(_ALPHA1_AXIS_LABEL)
+
+    view_box.setXLink(plot_item)
+    view_box.setYRange(_ALPHA1_AXIS_MIN, _ALPHA1_AXIS_MAX, padding=0)
+
+    def _sync_geometry() -> None:
+        view_box.setGeometry(plot_item.vb.sceneBoundingRect())
+        view_box.linkedViewChanged(plot_item.vb, view_box.XAxis)
+
+    plot_item.vb.sigResized.connect(_sync_geometry)
+    _sync_geometry()
+
+    curve = pg.PlotDataItem([], [], pen=pg.mkPen(color=_ALPHA1_PEN, width=2), connect="finite")
+    view_box.addItem(curve)
+    return view_box, curve, _sync_geometry
+
+
+def _teardown_alpha1_overlay(
+    plot: pg.PlotWidget,
+    view_box: pg.ViewBox | None,
+    curve: pg.PlotDataItem | None,
+    resize_cb: Callable[[], None] | None,
+) -> None:
+    """Undo :func:`_install_alpha1_overlay`, leaving the plot exactly as before."""
+    plot_item = plot.getPlotItem()
+    if resize_cb is not None:
+        plot_item.vb.sigResized.disconnect(resize_cb)
+    if curve is not None and view_box is not None:
+        view_box.removeItem(curve)
+    if view_box is not None:
+        plot_item.scene().removeItem(view_box)
+    plot_item.hideAxis("right")
 
 
 def _theme_settings(color_theme: str) -> dict[str, object]:

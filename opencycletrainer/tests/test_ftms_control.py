@@ -630,3 +630,42 @@ def test_decode_ftms_supported_power_range_parses_fields():
 def test_decode_ftms_supported_power_range_raises_on_short_payload():
     with pytest.raises(ValueError, match="too short"):
         decode_ftms_supported_power_range(bytes(5))
+
+
+def test_bridge_restores_interval_target_on_ramp_in():
+    """Ramp-in must re-apply the interval setpoint so the trainer spins up before recording resumes."""
+    workout = _build_workout()
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control)
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+    engine.pause()
+    assert stub_control.erg_targets[-1] == 0
+
+    engine.resume()
+
+    assert stub_control.erg_targets[-1] == 150
+
+
+def test_bridge_restores_resistance_level_on_ramp_in():
+    workout = _build_workout()
+    stub_control = _StubControl(mode=ControlMode.RESISTANCE)
+    bridge = WorkoutEngineFTMSBridge(stub_control, mode=ControlMode.RESISTANCE)
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+    engine.pause()
+    assert stub_control.resistance_levels[-1] == 0
+
+    engine.resume()
+
+    assert stub_control.resistance_levels[-1] == 50.0

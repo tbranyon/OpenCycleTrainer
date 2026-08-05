@@ -138,6 +138,35 @@ class TestWindowedAvg:
         assert ch.windowed_avg(now=12.0) == 90
 
 
+class TestFreshRpm:
+    def test_returns_none_when_empty(self):
+        ch = CadenceHistory()
+        assert ch.fresh_rpm(now=100.0) is None
+
+    def test_returns_last_rpm_when_source_fresh(self):
+        ch = CadenceHistory(staleness_seconds=3.0)
+        ch.record(90.0, CadenceSource.TRAINER, now=10.0)
+        assert ch.fresh_rpm(now=12.0) == 90.0
+
+    def test_returns_none_when_source_stale(self):
+        ch = CadenceHistory(staleness_seconds=3.0)
+        ch.record(90.0, CadenceSource.TRAINER, now=10.0)
+        assert ch.fresh_rpm(now=14.0) is None
+
+    def test_boundary_inclusive(self):
+        ch = CadenceHistory(staleness_seconds=3.0)
+        ch.record(90.0, CadenceSource.TRAINER, now=10.0)
+        # Exactly at boundary: now - staleness = 10.0, which is >= cutoff
+        assert ch.fresh_rpm(now=13.0) == 90.0
+
+    def test_does_not_mutate_last_rpm(self):
+        """fresh_rpm() must not change last_rpm()'s own (non-staleness-aware) behaviour."""
+        ch = CadenceHistory(staleness_seconds=3.0)
+        ch.record(90.0, CadenceSource.TRAINER, now=10.0)
+        ch.fresh_rpm(now=14.0)
+        assert ch.last_rpm() == 90.0
+
+
 class TestAsDeque:
     def test_empty_deque_when_no_samples(self):
         ch = CadenceHistory()
