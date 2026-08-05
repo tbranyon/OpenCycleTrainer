@@ -18,6 +18,7 @@ from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.cadence_history import CadenceHistory
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaPipeline, DfaRecord
 from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
+from opencycletrainer.core.fit_exporter import FitExporter, FitExportSample
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.pedaling_detector import PedalingDetector
 from opencycletrainer.core.power_history import PowerHistory
@@ -25,6 +26,8 @@ from opencycletrainer.core.recorder import WorkoutRecorder
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+from opencycletrainer.storage.filenames import build_activity_filename
+from opencycletrainer.storage.paths import get_workout_data_root, get_workout_fit_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
 from .chart_history import ChartHistory
@@ -69,6 +72,7 @@ class WorkoutSessionController(QObject):
         utc_now: Callable[[], datetime] | None = None,
         strava_upload_fn: Callable[[Path, Path | None], None] | None = None,
         intervals_icu_upload_fn: Callable[[Path, Path | None], None] | None = None,
+        fit_exporter: FitExporter | None = None,
         tick_interval_ms: int = 250,
         parent: QObject | None = None,
     ) -> None:
@@ -79,6 +83,9 @@ class WorkoutSessionController(QObject):
         self._monotonic_clock = monotonic_clock
         self._utc_now = utc_now if utc_now is not None else lambda: datetime.now(timezone.utc)
         self._recorder = recorder if recorder is not None else WorkoutRecorder()
+        self._manual_save_fit_exporter = fit_exporter if fit_exporter is not None else FitExporter()
+        self._completed_recording: dict | None = None
+        self._workout_started_at_utc: datetime | None = None
         self._ftms_transport_factory = (
             ftms_transport_factory
             if ftms_transport_factory is not None
@@ -270,6 +277,7 @@ class WorkoutSessionController(QObject):
         self._screen.pause_button.clicked.connect(self._pause_workout)
         self._screen.resume_button.clicked.connect(self._resume_workout)
         self._screen.end_button.clicked.connect(self._stop_workout)
+        self._screen.save_button.clicked.connect(self._manual_save_completed_workout)
         self._screen.extend_interval_requested.connect(self._extend_interval)
         self._screen.skip_interval_requested.connect(self._skip_interval)
         self._screen.jog_requested.connect(self._jog_target)
@@ -324,6 +332,7 @@ class WorkoutSessionController(QObject):
             self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
             return
 
+        self._clear_completed_recording()
         self._workout = workout
         self._interval_extra_seconds = {}
         self._mode_state._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
@@ -722,12 +731,15 @@ class WorkoutSessionController(QObject):
             dialog.rejected.connect(self._on_summary_discard)
             dialog.open()
         else:
-            self._recorder_integration.commit()
-            self._set_no_workout_state()
+            self._on_summary_finish(None)
 
     def _on_summary_finish(self, activity_name: str | None = None) -> None:
+        completed = self._capture_completed_recording(activity_name)
         self._recorder_integration.commit(activity_name=activity_name or None)
         self._set_no_workout_state()
+        if completed is not None:
+            self._completed_recording = completed
+            self._screen.set_save_available(True)
 
     def _on_summary_discard(self) -> None:
         self._recorder_integration.discard()

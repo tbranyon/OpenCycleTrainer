@@ -572,6 +572,10 @@ class WorkoutScreen(QWidget):
         self.resume_button.setVisible(can_resume)
         self.end_button.setVisible(can_stop)
 
+    def set_save_available(self, available: bool) -> None:
+        """Show or hide the post-workout manual Save button."""
+        self.save_button.setVisible(bool(available))
+
     def set_mode_state(self, mode: str) -> None:
         if mode not in MODE_OPTIONS:
             return
@@ -703,14 +707,17 @@ class WorkoutScreen(QWidget):
         self.pause_button = QPushButton("Pause", self)
         self.resume_button = QPushButton("Resume", self)
         self.end_button = QPushButton("Stop", self)
+        self.save_button = QPushButton("Save", self)
 
         controls_row.addWidget(self.start_button)
         controls_row.addWidget(self.pause_button)
         controls_row.addWidget(self.resume_button)
         controls_row.addWidget(self.end_button)
+        controls_row.addWidget(self.save_button)
         controls_row.addStretch(1)
         root_layout.addLayout(controls_row)
         self.set_session_state("idle")
+        self.set_save_available(False)
 
     def _wire_button_state_tracking(self) -> None:
         self.pause_button.clicked.connect(lambda: self._set_paused(True))

@@ -375,3 +375,32 @@ def test_control_buttons_finished_state():
     assert screen.pause_button.isHidden()
     assert screen.resume_button.isHidden()
     assert screen.end_button.isHidden()
+
+
+def test_save_button_hidden_by_default():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    assert screen.save_button.text() == "Save"
+    assert screen.save_button.isHidden()
+
+
+def test_set_save_available_toggles_save_button():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+
+    screen.set_save_available(True)
+    assert not screen.save_button.isHidden()
+
+    screen.set_save_available(False)
+    assert screen.save_button.isHidden()
+
+
+def test_set_session_state_does_not_affect_save_button():
+    _get_or_create_qapp()
+    screen = WorkoutScreen(settings=AppSettings())
+    screen.set_save_available(True)
+
+    for state in ("idle", "ready", "running", "ramp_in", "paused", "stopped", "finished"):
+        screen.set_session_state(state)
+        assert not screen.save_button.isHidden(), f"save button hidden after set_session_state({state!r})"
