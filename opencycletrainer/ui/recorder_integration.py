@@ -84,6 +84,11 @@ class RecorderIntegration:
         """Accumulated target-based kilojoules for the current session."""
         return self._total_kj
 
+    @property
+    def session_start_utc(self) -> datetime | None:
+        """UTC start of the current session, or None when no session has started."""
+        return self._session_start_utc
+
     def start(self, workout: Workout, utc_now: datetime, now_monotonic: float | None = None) -> None:
         """Start a new recording session for *workout*.
 
