@@ -376,8 +376,11 @@ class WorkoutSessionController(QObject):
         self._dfa_pipeline.reset()
         self._pedaling.reset()
         self._pause_state.reset()
+        self._clear_completed_recording()
         now = float(self._monotonic_clock())
-        self._recorder_integration.start(self._workout, self._utc_now(), now)
+        started_at_utc = self._utc_now()
+        self._workout_started_at_utc = started_at_utc
+        self._recorder_integration.start(self._workout, started_at_utc, now)
 
         self._engine.start()
         self._chart_history.start(now)
@@ -430,8 +433,11 @@ class WorkoutSessionController(QObject):
         self._screen.load_free_ride_chart()
         self._screen.set_workout_name("Free Ride")
 
+        self._clear_completed_recording()
         now = float(self._monotonic_clock())
-        self._recorder_integration.start(self._workout, self._utc_now(), now)
+        started_at_utc = self._utc_now()
+        self._workout_started_at_utc = started_at_utc
+        self._recorder_integration.start(self._workout, started_at_utc, now)
         self._engine.start()
         self._chart_history.start(now)
         snapshot = self._engine.tick(now)
@@ -744,6 +750,71 @@ class WorkoutSessionController(QObject):
     def _on_summary_discard(self) -> None:
         self._recorder_integration.discard()
         self._set_no_workout_state()
+
+    def _capture_completed_recording(self, activity_name: str | None) -> dict | None:
+        """Snapshot the just-finished recording for manual FIT save. Called before commit()."""
+        if self._workout is None or self._workout_started_at_utc is None:
+            return None
+        get_samples = getattr(self._recorder, "get_recorded_samples", None)
+        samples = list(get_samples()) if callable(get_samples) else []
+        name = activity_name.strip() if isinstance(activity_name, str) and activity_name.strip() else self._workout.name
+        return {
+            "samples": samples,
+            "workout_name": name,
+            "started_at_utc": self._workout_started_at_utc,
+            "finished_at_utc": self._utc_now(),
+        }
+
+    def _clear_completed_recording(self) -> None:
+        self._completed_recording = None
+        self._screen.set_save_available(False)
+
+    def _manual_save_completed_workout(self) -> None:
+        """Prompt for a directory and write a FIT file from the last completed recording."""
+        snapshot = self._completed_recording
+        if snapshot is None:
+            return
+        default_dir = str(get_workout_fit_dir(get_workout_data_root(self._settings.workout_data_dir)))
+        directory = QFileDialog.getExistingDirectory(
+            self._screen,
+            "Save Workout FIT to Directory",
+            default_dir,
+        )
+        if not directory:
+            return
+        filename = build_activity_filename(
+            snapshot["workout_name"],
+            snapshot["started_at_utc"],
+            "fit",
+        )
+        dest_path = Path(directory) / filename
+        fit_samples = [
+            FitExportSample(
+                timestamp_utc=sample.timestamp_utc,
+                power_watts=(
+                    sample.bike_power_watts
+                    if sample.bike_power_watts is not None
+                    else sample.trainer_power_watts
+                ),
+                heart_rate_bpm=sample.heart_rate_bpm,
+                cadence_rpm=sample.cadence_rpm,
+                speed_mps=sample.speed_mps,
+            )
+            for sample in snapshot["samples"]
+        ]
+        try:
+            self._manual_save_fit_exporter.export_activity(
+                workout_name=snapshot["workout_name"],
+                started_at_utc=snapshot["started_at_utc"],
+                finished_at_utc=snapshot["finished_at_utc"],
+                fit_file_path=dest_path,
+                samples=fit_samples,
+            )
+        except Exception as exc:
+            _logger.warning("Manual FIT save failed: %s", exc)
+            self._screen.show_alert("Failed to save FIT file", "error")
+            return
+        self._screen.show_alert(f"Saved: {dest_path.name}", "success")
 
     @staticmethod
     def _fresh_value(value: object, received_at: float | None, now: float) -> object | None:
