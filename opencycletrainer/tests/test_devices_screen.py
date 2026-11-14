@@ -542,3 +542,21 @@ def test_double_click_disconnected_power_meter_does_not_emit_cps_signal():
     app.processEvents()
 
     assert not received, "Expected no signal for disconnected power meter"
+
+
+def test_on_notification_stamps_monotonic_receipt_time():
+    """The receipt time is taken where the notification lands (the BLE thread),
+    before the queued signal hop to the GUI thread."""
+    app = _get_or_create_qapp()
+    screen = DevicesScreen(backend=MockDeviceBackend())
+    received: list[SensorSample] = []
+    screen.sensor_sample_received.connect(lambda s: received.append(s))
+
+    before = time.monotonic()
+    screen._on_notification("dev-hr", HRS_MEASUREMENT_CHARACTERISTIC_UUID, _HRS_SAMPLE_8BIT)
+    after = time.monotonic()
+    app.processEvents()
+
+    assert len(received) == 1
+    assert received[0].received_at_monotonic is not None
+    assert before <= received[0].received_at_monotonic <= after

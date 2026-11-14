@@ -8,13 +8,19 @@ from opencycletrainer.core.recorder import RecorderSample
 # Missing-data policy:
 #   trainer_power / bike_power:
 #       Fed exclusively through add_power() at BLE-notification time (not feed()),
-#       and aggregated using piecewise-constant time-weighted averaging. Any gap
-#       at the start of a bin is filled with the last known value from the
-#       previous bin (carry-forward). Carry-forward is cleared whenever recording
-#       goes inactive (pause/stop) so a resume never backfills from stale
-#       pre-pause power; it still applies across an ordinary bin boundary.  If no
-#       carry-forward exists, the first reading in the bin is extended back to
-#       bin start.  If there are no readings at all in the bin, emits None.
+#       and aggregated using piecewise-constant time-weighted averaging: each
+#       reading is held until the next one arrives. The value held into a new
+#       bin (carry-forward) is therefore the last *raw* reading, never the
+#       previous bin's average -- carrying the average would make every bin a
+#       recursive blend of the one before it. A bin with no readings at all is
+#       still covered by the held reading and emits it, so a 1 Hz sensor whose
+#       notification straddles a boundary does not produce a spurious gap.
+#       The hold is capped at POWER_HOLD_SECONDS measured from the reading to
+#       the end of the bin; beyond that the value is stale and the gap (or the
+#       whole bin) reports None instead. Carry-forward is cleared whenever
+#       recording goes inactive (pause/stop) so a resume never backfills from
+#       pre-pause power. If no carry-forward exists, the first reading in the
+#       bin is extended back to bin start.
 #   heart_rate_bpm / cadence_rpm / speed_mps / dfa_alpha1 / dfa_quality:
 #       Last value seen within the bin; None if no reading arrived in this bin.
 #       dfa_alpha1/dfa_quality are already forward-filled by the caller (the
@@ -24,6 +30,24 @@ from opencycletrainer.core.recorder import RecorderSample
 #   when it carries no sensor data at all (all fields None), so the recorded
 #   series stays contiguous over active-recording time. A bin discarded by a
 #   pause (see set_recording_active) never emits.
+
+
+# Longest a power reading is held as "still in effect" when no newer reading
+# has arrived, measured from the reading to the end of the bin being closed.
+# Matches the sensor staleness window used for live display.
+POWER_HOLD_SECONDS = 3.0
+
+
+@dataclass
+class _HeldPower:
+    """The last raw reading on one power channel and when it was taken."""
+
+    watts: int
+    timestamp: float  # absolute UTC seconds (float)
+
+    def is_valid_at(self, bin_end: float) -> bool:
+        """True while the reading may still be held through *bin_end*."""
+        return bin_end - self.timestamp <= POWER_HOLD_SECONDS
 
 
 @dataclass
@@ -37,16 +61,24 @@ class _PowerBin:
         """Append a reading at *offset* seconds from the start of this bin."""
         self.segments.append((offset, watts))
 
+    def last_reading(self) -> tuple[float, int] | None:
+        """Return the latest (offset, watts) reading in this bin, if any."""
+        readings = [(o, w) for o, w in self.segments if w is not None]
+        if not readings:
+            return None
+        return max(readings, key=lambda segment: segment[0])
+
     def compute_average(self, carry_forward: int | None) -> int | None:
         """Return the time-weighted average power for this 1-second bin.
 
         The piecewise-constant model treats each reading as constant until the
         next reading (or bin end).  Any gap at the start of the bin is filled
         with *carry_forward*; if that is also None the first reading is extended
-        back to offset 0 instead.
+        back to offset 0 instead.  With no readings at all the bin is entirely
+        covered by *carry_forward* (None if there is none).
         """
         if not self.segments:
-            return None
+            return carry_forward
 
         # Segments may arrive out of order (e.g. a late-arriving reading); sort
         # by offset before building the effective timeline so durations are
@@ -93,9 +125,10 @@ class OneSecondAggregator:
 
         self._trainer_bin: _PowerBin = _PowerBin()
         self._bike_bin: _PowerBin = _PowerBin()
-        # Carry-forward: last aggregated power from the previous bin.
-        self._prev_trainer_power: int | None = None
-        self._prev_bike_power: int | None = None
+        # Carry-forward: the last raw reading on each channel, held until the
+        # next reading arrives (capped by POWER_HOLD_SECONDS).
+        self._held_trainer: _HeldPower | None = None
+        self._held_bike: _HeldPower | None = None
 
         # Last-value-in-bin fields (reset at each new bin).
         self._last_hr_bpm: int | None = None
@@ -122,8 +155,8 @@ class OneSecondAggregator:
             return
         if not active:
             self._reset_bin()
-            self._prev_trainer_power = None
-            self._prev_bike_power = None
+            self._held_trainer = None
+            self._held_bike = None
         self._active = active
 
     def feed(self, sample: RecorderSample) -> list[RecorderSample]:
@@ -198,8 +231,8 @@ class OneSecondAggregator:
         self._bin_second = None
         self._trainer_bin = _PowerBin()
         self._bike_bin = _PowerBin()
-        self._prev_trainer_power = None
-        self._prev_bike_power = None
+        self._held_trainer = None
+        self._held_bike = None
         self._last_hr_bpm = None
         self._last_cadence_rpm = None
         self._last_speed_mps = None
@@ -267,15 +300,15 @@ class OneSecondAggregator:
         if self._bin_second is None:
             return None
 
-        trainer_avg = self._trainer_bin.compute_average(self._prev_trainer_power)
-        bike_avg = self._bike_bin.compute_average(self._prev_bike_power)
+        bin_start = float(self._bin_second)
+        trainer_avg, self._held_trainer = self._close_channel(
+            self._trainer_bin, self._held_trainer, bin_start
+        )
+        bike_avg, self._held_bike = self._close_channel(
+            self._bike_bin, self._held_bike, bin_start
+        )
 
-        if trainer_avg is not None:
-            self._prev_trainer_power = trainer_avg
-        if bike_avg is not None:
-            self._prev_bike_power = bike_avg
-
-        bin_ts = datetime.fromtimestamp(float(self._bin_second), tz=timezone.utc)
+        bin_ts = datetime.fromtimestamp(bin_start, tz=timezone.utc)
         result = RecorderSample(
             timestamp_utc=bin_ts,
             target_power_watts=self._last_target_power,
@@ -292,6 +325,30 @@ class OneSecondAggregator:
         )
         self._reset_bin()
         return result
+
+    @staticmethod
+    def _close_channel(
+        power_bin: _PowerBin,
+        held: _HeldPower | None,
+        bin_start: float,
+    ) -> tuple[int | None, _HeldPower | None]:
+        """Average one power channel's bin and advance its held reading.
+
+        The carry-forward into this bin is the held reading only while it is
+        still within POWER_HOLD_SECONDS of the bin's end; a reading older than
+        that is dropped rather than backfilled.  The held reading leaving the
+        bin is the bin's latest raw reading if it had one.
+        """
+        bin_end = bin_start + 1.0
+        if held is not None and not held.is_valid_at(bin_end):
+            held = None
+        carry = held.watts if held is not None else None
+        average = power_bin.compute_average(carry)
+        last = power_bin.last_reading()
+        if last is not None:
+            offset, watts = last
+            held = _HeldPower(watts=watts, timestamp=bin_start + offset)
+        return average, held
 
     def _reset_bin(self) -> None:
         """Reset per-bin accumulation state.

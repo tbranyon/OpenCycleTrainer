@@ -69,25 +69,27 @@ def _compute_kj(effective_powers: list[int | None]) -> float:
     return sum(p for p in effective_powers if p is not None) / 1000.0
 
 
+_NP_WINDOW_SECONDS = 30
+
+
 def _compute_np(effective_powers: list[int | None]) -> int | None:
     """30-second rolling 4th-power mean of the 1 Hz effective power series.
 
-    Samples with no power (None) are treated as 0 W, consistent with paused
-    seconds being zero-power rather than missing from the series.
-    Returns None when fewer than 30 samples are present.
+    Seconds with no power reading (None) are missing data, not 0 W: they are
+    excluded from the series, exactly as the average and kJ exclude them, so
+    the three metrics agree with each other.  Paused seconds never reach this
+    list at all.  Returns None when fewer than 30 seconds carry power.
     """
-    n = len(effective_powers)
-    if n < 30:
+    pw = [float(p) for p in effective_powers if p is not None]
+    n = len(pw)
+    if n < _NP_WINDOW_SECONDS:
         return None
 
-    # Replace None with 0 W (paused / no-signal seconds)
-    pw = [float(p) if p is not None else 0.0 for p in effective_powers]
-
-    window_sum = sum(pw[:30])
-    fourth_powers = [(window_sum / 30.0) ** 4]
-    for i in range(30, n):
-        window_sum += pw[i] - pw[i - 30]
-        fourth_powers.append((window_sum / 30.0) ** 4)
+    window_sum = sum(pw[:_NP_WINDOW_SECONDS])
+    fourth_powers = [(window_sum / _NP_WINDOW_SECONDS) ** 4]
+    for i in range(_NP_WINDOW_SECONDS, n):
+        window_sum += pw[i] - pw[i - _NP_WINDOW_SECONDS]
+        fourth_powers.append((window_sum / _NP_WINDOW_SECONDS) ** 4)
 
     return int(round((sum(fourth_powers) / len(fourth_powers)) ** 0.25))
 

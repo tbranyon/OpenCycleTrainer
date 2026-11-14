@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -20,6 +20,10 @@ _DFA_ALPHA1_FIELD_DEFINITION_NUMBER = 0
 _DFA_ALPHA1_FIELD_NAME = "dfa_alpha1"
 _DFA_ALPHA1_FIELD_UNITS = ""
 _DFA_DEVELOPER_APP_ID = bytes(16)  # placeholder 16-byte OCT developer/application id
+
+# Records are one per recorded second; a larger step between consecutive
+# record timestamps means recording was paused in between.
+_RECORD_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,7 @@ class _FitToolWriterBackend:
         try:
             from fit_tool.fit_file_builder import FitFileBuilder
             from fit_tool.profile.messages.activity_message import ActivityMessage
+            from fit_tool.profile.messages.event_message import EventMessage
             from fit_tool.profile.messages.file_id_message import FileIdMessage
             from fit_tool.profile.messages.lap_message import LapMessage
             from fit_tool.profile.messages.record_message import RecordMessage
@@ -134,6 +139,21 @@ class _FitToolWriterBackend:
                 exc_info=True,
             )
 
+        def add_timer_event(timestamp_ms: int, event_type: object) -> None:
+            event = EventMessage()
+            _set_field(event, ("timestamp",), timestamp_ms)
+            _set_field(event, ("event",), _enum_value(Event.TIMER))
+            _set_field(event, ("event_type", "eventType"), _enum_value(event_type))
+            _set_field(event, ("event_group", "eventGroup"), 0)
+            builder.add(event)
+
+        # Timer start/stop events bracket the recording and every pause so
+        # readers derive moving time from the timer, not from elapsed time.
+        add_timer_event(_to_fit_timestamp_ms(started_at_utc), EventType.START)
+        for pause_start, pause_end in _pause_intervals(samples):
+            add_timer_event(_to_fit_timestamp_ms(pause_start), EventType.STOP_ALL)
+            add_timer_event(_to_fit_timestamp_ms(pause_end), EventType.START)
+
         for sample in samples:
             record = RecordMessage()
             _set_field(record, ("timestamp",), _to_fit_timestamp_ms(sample.timestamp_utc))
@@ -150,14 +170,17 @@ class _FitToolWriterBackend:
             builder.add(record)
 
         elapsed_seconds = (finished_at_utc - started_at_utc).total_seconds()
+        timer_seconds = float(len(samples)) * _RECORD_INTERVAL_SECONDS
         finish_ts_ms = _to_fit_timestamp_ms(finished_at_utc)
         start_ts_ms = _to_fit_timestamp_ms(started_at_utc)
+
+        add_timer_event(finish_ts_ms, EventType.STOP_ALL)
 
         lap = LapMessage()
         _set_field(lap, ("timestamp",), finish_ts_ms)
         _set_field(lap, ("start_time", "startTime"), start_ts_ms)
         _set_field(lap, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
-        _set_field(lap, ("total_timer_time", "totalTimerTime"), elapsed_seconds)
+        _set_field(lap, ("total_timer_time", "totalTimerTime"), timer_seconds)
         _set_field(lap, ("event",), _enum_value(Event.LAP))
         _set_field(lap, ("event_type", "eventType"), _enum_value(EventType.STOP))
         builder.add(lap)
@@ -166,7 +189,7 @@ class _FitToolWriterBackend:
         _set_field(session, ("timestamp",), finish_ts_ms)
         _set_field(session, ("start_time", "startTime"), start_ts_ms)
         _set_field(session, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
-        _set_field(session, ("total_timer_time", "totalTimerTime"), elapsed_seconds)
+        _set_field(session, ("total_timer_time", "totalTimerTime"), timer_seconds)
         _set_field(session, ("sport",), _enum_value(Sport.CYCLING))
         _set_field(session, ("sub_sport", "subSport"), _enum_value(SubSport.INDOOR_CYCLING))
         _set_field(session, ("event",), _enum_value(Event.SESSION))
@@ -177,7 +200,7 @@ class _FitToolWriterBackend:
         activity = ActivityMessage()
         _set_field(activity, ("timestamp",), finish_ts_ms)
         _set_field(activity, ("local_timestamp", "localTimestamp"), _to_local_fit_timestamp(finished_at_utc))
-        _set_field(activity, ("total_timer_time", "totalTimerTime"), elapsed_seconds)
+        _set_field(activity, ("total_timer_time", "totalTimerTime"), timer_seconds)
         _set_field(activity, ("num_sessions", "numSessions"), 1)
         _set_field(activity, ("type",), _enum_value(Activity.MANUAL))
         _set_field(activity, ("event",), _enum_value(Event.ACTIVITY))
@@ -186,6 +209,21 @@ class _FitToolWriterBackend:
 
         fit_file = builder.build()
         fit_file.to_file(str(fit_file_path))
+
+
+def _pause_intervals(samples: list[FitExportSample]) -> list[tuple[datetime, datetime]]:
+    """Return (pause_start, pause_end) pairs implied by gaps in the record stream.
+
+    Records are one per recorded second, so a pause begins one record interval
+    after the last record before the gap and ends at the first record after it.
+    """
+    pauses: list[tuple[datetime, datetime]] = []
+    for previous, current in zip(samples, samples[1:]):
+        gap = (current.timestamp_utc - previous.timestamp_utc).total_seconds()
+        if gap > _RECORD_INTERVAL_SECONDS:
+            pause_start = previous.timestamp_utc + timedelta(seconds=_RECORD_INTERVAL_SECONDS)
+            pauses.append((pause_start, current.timestamp_utc))
+    return pauses
 
 
 def _add_dfa_developer_field_definitions(

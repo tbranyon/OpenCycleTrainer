@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 
 from opencycletrainer.core.sensors import PowerSource
+from opencycletrainer.core.time_weighted_mean import TimeWeightedMean
 
 _POWER_SOURCE_STALENESS_SECONDS = 3.0
 _NP_ROLLING_WINDOW_SECONDS = 30
@@ -22,8 +23,7 @@ class PowerHistory:
         self._samples: list[tuple[float, int]] = []
         self._live_samples: deque[tuple[float, int]] = deque()
         self._source_last_times: dict[PowerSource, float] = {}
-        self._workout_power_sum = 0.0
-        self._workout_power_count = 0
+        self._workout_power = TimeWeightedMean()
         self._workout_actual_kj = 0.0
         self._last_actual_power_tick: float | None = None
         self._np = _IncrementalNormalizedPower()
@@ -46,8 +46,7 @@ class PowerHistory:
 
         self._samples.append((now, int(watts)))
         self._np.add(now, int(watts))
-        self._workout_power_sum += float(watts)
-        self._workout_power_count += 1
+        self._workout_power.add(watts, now)
         if self._last_actual_power_tick is not None:
             delta = now - self._last_actual_power_tick
             if delta > 0 and recording_active:
@@ -113,10 +112,9 @@ class PowerHistory:
         return result
 
     def workout_avg_watts(self) -> int | None:
-        """Return the mean watts since the last reset, or None if no samples."""
-        if not self._workout_power_count:
-            return None
-        return round(self._workout_power_sum / self._workout_power_count)
+        """Return the time-weighted mean watts since the last reset, or None if no samples."""
+        mean = self._workout_power.mean()
+        return None if mean is None else round(mean)
 
     def workout_actual_kj(self) -> float:
         """Return measured energy (kJ) accumulated while recording was active."""
@@ -135,8 +133,7 @@ class PowerHistory:
         self._samples.clear()
         self._live_samples.clear()
         self._source_last_times.clear()
-        self._workout_power_sum = 0.0
-        self._workout_power_count = 0
+        self._workout_power.reset()
         self._workout_actual_kj = 0.0
         self._last_actual_power_tick = None
         self._np = _IncrementalNormalizedPower()

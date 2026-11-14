@@ -440,3 +440,16 @@ class TestNormalizedPowerDuringRide:
         ph.record(500, now=40.5, recording_active=True)
         recorded.append((40.5, 500))
         assert ph.compute_normalized_power() == _reference_normalized_power(recorded)
+
+
+class TestWorkoutAvgIsTimeWeighted:
+    def test_burst_of_fast_notifications_does_not_dominate_average(self):
+        """4 Hz at 100 W for 1 s then 1 Hz at 300 W for 1 s: the average must
+        weight each reading by how long it was in effect (233 W), not by how
+        many notifications arrived (167 W)."""
+        ph = PowerHistory()
+        for t in (0.0, 0.25, 0.5, 0.75):
+            ph.record(100, now=t, recording_active=True)
+        ph.record(300, now=1.0, recording_active=True)
+        ph.record(300, now=2.0, recording_active=True)
+        assert ph.workout_avg_watts() == 233

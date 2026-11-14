@@ -13,6 +13,9 @@ _MAX_CADENCE_RPM = 300.0
 _MAX_POWER_WATTS = 3000
 _MAX_SPEED_MPS = 33.3
 _MAX_HEART_RATE_BPM = 250
+# FTMS 4.9.1.2: when a Data Record is split across notifications, the More Data
+# bit is set and the Instantaneous Speed field is omitted from that notification.
+_MORE_DATA = 1 << 0
 _AVERAGE_SPEED_PRESENT = 1 << 1
 _INSTANTANEOUS_CADENCE_PRESENT = 1 << 2
 _AVERAGE_CADENCE_PRESENT = 1 << 3
@@ -29,18 +32,20 @@ _REMAINING_TIME_PRESENT = 1 << 12
 
 def decode_indoor_bike_data(payload: bytes) -> DecodedMetrics:
     """Decoder for FTMS Indoor Bike Data (0x2AD2)."""
-    if len(payload) < 4:
+    if len(payload) < 2:
         raise ValueError("FTMS Indoor Bike Data payload too short")
 
     index = 0
     flags = int.from_bytes(payload[index:index + 2], "little")
     index += 2
 
-    speed_raw = int.from_bytes(payload[index:index + 2], "little")
-    index += 2
-    speed_mps = (speed_raw / 100.0) / 3.6
-    if speed_mps > _MAX_SPEED_MPS:
-        _logger.warning("FTMS speed out of expected range (%.2f m/s)", speed_mps)
+    speed_mps: float | None = None
+    if not flags & _MORE_DATA:
+        speed_raw = int.from_bytes(payload[index:index + 2], "little")
+        index += 2
+        speed_mps = (speed_raw / 100.0) / 3.6
+        if speed_mps > _MAX_SPEED_MPS:
+            _logger.warning("FTMS speed out of expected range (%.2f m/s)", speed_mps)
 
     cadence_rpm: float | None = None
     power_watts: int | None = None

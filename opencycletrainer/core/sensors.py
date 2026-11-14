@@ -45,6 +45,10 @@ class SensorSample:
     accumulated_energy_kj: float | None = None
     pedal_balance_left_pct: float | None = None
     rr_intervals_ms: tuple[float, ...] | None = None
+    # Monotonic clock reading taken where the notification landed (the BLE
+    # thread), so downstream time-weighting reflects real arrival rather than
+    # when the GUI thread got around to the queued signal.
+    received_at_monotonic: float | None = None
 
 
 class SensorStreamDecoder:
@@ -59,6 +63,7 @@ class SensorStreamDecoder:
         characteristic_uuid: str,
         payload: bytes,
         received_at_utc: datetime | None = None,
+        received_at_monotonic: float | None = None,
     ) -> SensorSample | None:
         normalized_uuid = normalize_uuid(characteristic_uuid)
         timestamp_utc = received_at_utc or datetime.now(timezone.utc)
@@ -85,4 +90,5 @@ class SensorStreamDecoder:
             accumulated_energy_kj=metrics.accumulated_energy_kj,
             pedal_balance_left_pct=metrics.pedal_balance_left_pct,
             rr_intervals_ms=metrics.rr_intervals_ms,
+            received_at_monotonic=received_at_monotonic,
         )

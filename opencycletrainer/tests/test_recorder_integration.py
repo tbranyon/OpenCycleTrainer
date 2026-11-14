@@ -452,7 +452,7 @@ class TestSync:
         """Power now arrives solely via ingest_power() (Task A); sync() alone no
         longer carries it into the recorded sample, so this must ingest
         explicitly rather than rely on the sensor snapshot's held value."""
-        ri, rec, _ = _make()
+        ri, rec, _ = _make(monotonic_now=lambda: 0.5)  # same clock as the anchor
         ri.start(_FakeWorkout(), _UTC_NOW, 0.0)
         ri.ingest_power(0.0, trainer_watts=200)
         ri.sync(_FakeSnapshot(), None, _SENSOR)
@@ -700,6 +700,24 @@ class TestMonotonicAnchoring:
         ri.sync(_FakeSnapshot(), None, _SENSOR)
         ri.sync(_FakeSnapshot(), None, _SENSOR)  # t1 -> closes bin at t0
         assert rec.samples[0].timestamp_utc == t0
+
+    def test_sync_without_tick_time_stays_on_anchored_clock(self) -> None:
+        """User-action paths call sync() with no tick time. With an anchor
+        established they must still stamp from the monotonic clock: a wall-clock
+        stamp far ahead of the anchored stream would open a future bin and
+        silently reject every real power reading until the stream caught up."""
+        t0 = _UTC_NOW
+        ri, rec, _ = _make(
+            utc_now=lambda: t0 + timedelta(hours=5),  # e.g. clock ran on during suspend
+            monotonic_now=lambda: 1001.0,
+        )
+        ri.start(_FakeWorkout(), t0, 1000.0)
+        ri.sync(_FakeSnapshot(), 1000.0, _SENSOR)  # opens bin t0
+        ri.sync(_FakeSnapshot(), None, _SENSOR)  # user action at monotonic 1001 -> bin t0+1
+        ri.ingest_power(1001.5, trainer_watts=300)
+        ri.sync(_FakeSnapshot(), 1002.0, _SENSOR)  # closes bin t0+1
+        assert [s.timestamp_utc for s in rec.samples] == [t0, t0 + timedelta(seconds=1)]
+        assert rec.samples[1].trainer_power_watts == 300
 
     def test_commit_duration_uses_monotonic_anchor_not_wall_clock(self) -> None:
         """The finish timestamp passed to the recorder's stop() must derive from

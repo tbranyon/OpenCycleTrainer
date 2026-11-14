@@ -354,3 +354,38 @@ def test_cps_pedal_balance_present_alongside_crank_data():
     assert sample_2 is not None
     assert sample_2.pedal_balance_left_pct == pytest.approx(32.0)
     assert sample_2.cadence_rpm == pytest.approx(120.0)
+
+
+# FTMS: MORE_DATA (bit 0) | INSTANTANEOUS_CADENCE (bit 2) | INSTANTANEOUS_POWER (bit 6).
+# Per FTMS 4.9.1.2 the Instantaneous Speed field is absent when More Data is set.
+# flags=0x0045 LE, cadence=180 (90 rpm) LE, power=250 LE
+_FTMS_MORE_DATA_NO_SPEED = bytes.fromhex("4500b400fa00")
+
+
+def test_ftms_more_data_bit_omits_instantaneous_speed_field():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID, _FTMS_MORE_DATA_NO_SPEED)
+    assert sample is not None
+    assert sample.speed_mps is None
+    assert sample.cadence_rpm == pytest.approx(90.0)
+    assert sample.power_watts == 250
+
+
+def test_sensor_sample_carries_monotonic_receipt_time():
+    """The BLE thread stamps a monotonic receipt time so power is time-weighted
+    by when it actually arrived, not by when the GUI thread got to it."""
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(
+        HRS_MEASUREMENT_CHARACTERISTIC_UUID,
+        HRS_SAMPLE_8BIT,
+        received_at_monotonic=123.5,
+    )
+    assert sample is not None
+    assert sample.received_at_monotonic == 123.5
+
+
+def test_sensor_sample_monotonic_receipt_time_defaults_to_none():
+    decoder = SensorStreamDecoder()
+    sample = decoder.decode_notification(HRS_MEASUREMENT_CHARACTERISTIC_UUID, HRS_SAMPLE_8BIT)
+    assert sample is not None
+    assert sample.received_at_monotonic is None

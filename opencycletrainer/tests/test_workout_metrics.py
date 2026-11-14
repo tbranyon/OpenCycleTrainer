@@ -151,6 +151,20 @@ class TestNormalizedPower:
         metrics = compute_workout_metrics(samples, ftp_watts=250)
         assert metrics.normalized_power == 300
 
+    def test_np_excludes_seconds_with_no_power(self) -> None:
+        """Seconds with no power reading are missing data, not 0 W: they are
+        left out of the NP series exactly as they are left out of the average
+        and kJ, so the three metrics stay consistent with each other."""
+        samples = [_s(i, trainer=None if i % 6 == 5 else 200) for i in range(72)]
+        metrics = compute_workout_metrics(samples, ftp_watts=250)
+        assert metrics.normalized_power == 200
+        assert metrics.avg_power_watts == 200
+
+    def test_np_none_when_fewer_than_30_seconds_have_power(self) -> None:
+        samples = [_s(i, trainer=200 if i < 29 else None) for i in range(60)]
+        metrics = compute_workout_metrics(samples, ftp_watts=250)
+        assert metrics.normalized_power is None
+
 
 # ---------------------------------------------------------------------------
 # avg_hr

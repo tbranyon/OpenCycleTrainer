@@ -348,3 +348,113 @@ def test_fit_exporter_real_backend_includes_lap_session_activity_messages():
     assert session_messages[0].total_elapsed_time == pytest.approx(expected_elapsed)
     assert session_messages[0].num_laps == 1
     assert activity_messages[0].num_sessions == 1
+
+
+def _messages_of(fit_path: Path, message_type: type) -> list:
+    from fit_tool.fit_file import FitFile
+
+    fit_file = FitFile.from_file(str(fit_path))
+    return [rec.message for rec in fit_file.records if isinstance(rec.message, message_type)]
+
+
+def _timer_events(fit_path: Path) -> list[tuple[int, object]]:
+    """(timestamp_ms, EventType) for every TIMER event; fit-tool reads enums back as raw ints."""
+    from fit_tool.profile.messages.event_message import EventMessage
+    from fit_tool.profile.profile_type import Event, EventType
+
+    raw = lambda value: getattr(value, "value", value)  # noqa: E731
+    return [
+        (m.timestamp, EventType(raw(m.event_type)))
+        for m in _messages_of(fit_path, EventMessage)
+        if raw(m.event) == Event.TIMER.value
+    ]
+
+
+def test_fit_exporter_timer_time_counts_recorded_seconds_not_elapsed():
+    """A paused workout has elapsed time > timer time: the session/lap
+    total_timer_time must be the recorded seconds, not finish - start."""
+    pytest.importorskip("fit_tool")
+    from fit_tool.profile.messages.activity_message import ActivityMessage
+    from fit_tool.profile.messages.lap_message import LapMessage
+    from fit_tool.profile.messages.session_message import SessionMessage
+
+    data_dir = _test_data_dir()
+    fit_path = data_dir / "Timer_20260310_1842.fit"
+    start_time = datetime(2026, 3, 10, 18, 42, 0, tzinfo=timezone.utc)
+    # 10 s recorded, 60 s pause, 10 s recorded, finish 5 s after last record.
+    offsets = list(range(10)) + list(range(70, 80))
+    samples = [
+        FitExportSample(timestamp_utc=start_time + timedelta(seconds=i), power_watts=200)
+        for i in offsets
+    ]
+    finish_time = start_time + timedelta(seconds=85)
+
+    FitExporter().export_activity(
+        workout_name="Timer",
+        started_at_utc=start_time,
+        finished_at_utc=finish_time,
+        fit_file_path=fit_path,
+        samples=samples,
+    )
+
+    session = _messages_of(fit_path, SessionMessage)[0]
+    lap = _messages_of(fit_path, LapMessage)[0]
+    activity = _messages_of(fit_path, ActivityMessage)[0]
+    assert session.total_elapsed_time == pytest.approx(85.0)
+    assert session.total_timer_time == pytest.approx(20.0)
+    assert lap.total_timer_time == pytest.approx(20.0)
+    assert activity.total_timer_time == pytest.approx(20.0)
+
+
+def test_fit_exporter_writes_timer_events_around_pauses():
+    """Timer start/stop events bracket the recording and every pause, so
+    analysis tools compute moving time correctly."""
+    pytest.importorskip("fit_tool")
+    from fit_tool.profile.profile_type import EventType
+
+    data_dir = _test_data_dir()
+    fit_path = data_dir / "Events_20260310_1842.fit"
+    start_time = datetime(2026, 3, 10, 18, 42, 0, tzinfo=timezone.utc)
+    offsets = list(range(10)) + list(range(70, 80))
+    samples = [
+        FitExportSample(timestamp_utc=start_time + timedelta(seconds=i), power_watts=200)
+        for i in offsets
+    ]
+    finish_time = start_time + timedelta(seconds=85)
+
+    FitExporter().export_activity(
+        workout_name="Events",
+        started_at_utc=start_time,
+        finished_at_utc=finish_time,
+        fit_file_path=fit_path,
+        samples=samples,
+    )
+
+    ms = lambda seconds: int((start_time + timedelta(seconds=seconds)).timestamp() * 1000)  # noqa: E731
+    assert _timer_events(fit_path) == [
+        (ms(0), EventType.START),
+        (ms(10), EventType.STOP_ALL),  # pause begins after the last pre-pause second
+        (ms(70), EventType.START),
+        (ms(85), EventType.STOP_ALL),
+    ]
+
+
+def test_fit_exporter_no_pause_yields_single_start_stop_pair():
+    pytest.importorskip("fit_tool")
+    from fit_tool.profile.profile_type import EventType
+
+    data_dir = _test_data_dir()
+    fit_path = data_dir / "NoPause_20260310_1842.fit"
+    start_time = datetime(2026, 3, 10, 18, 42, 0, tzinfo=timezone.utc)
+    samples = [
+        FitExportSample(timestamp_utc=start_time + timedelta(seconds=i), power_watts=200)
+        for i in range(5)
+    ]
+    FitExporter().export_activity(
+        workout_name="NoPause",
+        started_at_utc=start_time,
+        finished_at_utc=start_time + timedelta(seconds=5),
+        fit_file_path=fit_path,
+        samples=samples,
+    )
+    assert [event_type for _, event_type in _timer_events(fit_path)] == [EventType.START, EventType.STOP_ALL]

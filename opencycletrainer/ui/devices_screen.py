@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import logging
+import time
 import threading
 from concurrent.futures import CancelledError, Future
 from functools import partial
@@ -459,9 +460,14 @@ class DevicesScreen(QWidget):
 
     def _on_notification(self, device_id: str, characteristic_uuid: str, payload: bytes) -> None:
         from datetime import datetime, timezone
+        received_at_monotonic = time.monotonic()
         try:
             sensor_sample, reading_text = self._decode_notification(
-                device_id, characteristic_uuid, payload, datetime.now(timezone.utc)
+                device_id,
+                characteristic_uuid,
+                payload,
+                datetime.now(timezone.utc),
+                received_at_monotonic,
             )
         except Exception:
             return
@@ -476,6 +482,7 @@ class DevicesScreen(QWidget):
         characteristic_uuid: str,
         payload: bytes,
         received_at_utc: object,
+        received_at_monotonic: float | None = None,
     ) -> tuple[SensorSample | None, str | None]:
         from datetime import datetime, timezone
         now = received_at_utc if isinstance(received_at_utc, datetime) else datetime.now(timezone.utc)
@@ -491,6 +498,7 @@ class DevicesScreen(QWidget):
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
                 device_id=device_id,
+                received_at_monotonic=received_at_monotonic,
                 power_watts=metrics.power_watts,
                 cadence_rpm=metrics.cadence_rpm,
                 accumulated_energy_kj=metrics.accumulated_energy_kj,
@@ -505,6 +513,7 @@ class DevicesScreen(QWidget):
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
                 device_id=device_id,
+                received_at_monotonic=received_at_monotonic,
                 power_watts=metrics.power_watts,
                 cadence_rpm=metrics.cadence_rpm,
                 speed_mps=metrics.speed_mps,
@@ -520,6 +529,7 @@ class DevicesScreen(QWidget):
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
                 device_id=device_id,
+                received_at_monotonic=received_at_monotonic,
                 heart_rate_bpm=metrics.heart_rate_bpm,
                 rr_intervals_ms=metrics.rr_intervals_ms,
             )
@@ -537,6 +547,7 @@ class DevicesScreen(QWidget):
                 timestamp_utc=now,
                 source_characteristic_uuid=characteristic_uuid,
                 device_id=device_id,
+                received_at_monotonic=received_at_monotonic,
                 cadence_rpm=metrics.cadence_rpm,
                 speed_mps=metrics.speed_mps,
             )

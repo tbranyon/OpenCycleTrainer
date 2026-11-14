@@ -372,13 +372,18 @@ class RecorderIntegration:
     def _anchored_timestamp(self, now_monotonic: float | None) -> datetime:
         """Return the current sample timestamp, anchored to elapsed monotonic time.
 
-        Falls back to the injected wall clock when no session anchor was
-        established (start() called without a monotonic anchor) or when
-        *now_monotonic* itself is unavailable, matching the pre-anchoring
-        behaviour rather than guessing.
+        Once a session anchor exists every timestamp comes from the monotonic
+        clock -- reading it now when *now_monotonic* was not supplied -- so the
+        sample stream never mixes clock domains: a wall-clock stamp that had
+        drifted ahead of the anchored stream (NTP step, suspend/resume) would
+        open a future bin and silently reject real readings until the stream
+        caught up.  Falls back to the injected wall clock only when no anchor
+        was established (start() called without a monotonic anchor).
         """
-        if now_monotonic is None or self._session_start_monotonic is None:
+        if self._session_start_monotonic is None:
             return self._utc_now()
+        if now_monotonic is None:
+            now_monotonic = self._monotonic_now()
         elapsed_seconds = now_monotonic - self._session_start_monotonic
         return self._session_start_utc + timedelta(seconds=elapsed_seconds)
 
