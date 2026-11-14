@@ -70,12 +70,17 @@ class _Screen:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str]] = []
         self.exported_chart_paths: list[Path] = []
+        self.exported_chart_titles: list[str | None] = []
+        self.fail_export = False
 
     def show_alert(self, message: str, alert_type: str = "info") -> None:
         self.alerts.append((message, alert_type))
 
-    def export_chart_image(self, path: Path) -> None:
+    def export_chart_image(self, path: Path, title: str | None = None) -> None:
+        if self.fail_export:
+            raise OSError("disk full")
         self.exported_chart_paths.append(path)
+        self.exported_chart_titles.append(title)
 
 
 class _ModeState:
@@ -186,4 +191,43 @@ def test_failed_background_save_tells_the_rider_where_the_data_is():
     assert _wait_for(lambda: any(kind == "error" for _, kind in alerts))
     message = next(text for text, kind in alerts if kind == "error")
     assert message.startswith("Couldn't save the workout file")
+    integration.shutdown()
+
+
+def test_chart_image_is_saved_without_any_upload_configured(tmp_path):
+    finished = _FinishedRide()
+    finished.release.set()
+    integration, _, screen, _ = _ride(finished, settings=AppSettings(workout_data_dir=tmp_path))
+    integration.prepare_summary()
+
+    integration.commit()
+
+    assert [(p.parent.name, p.name) for p in screen.exported_chart_paths] == [("png", "Ride_20260311_1200.png")]
+    integration.shutdown()
+
+
+def test_chart_image_is_titled_with_the_activity_name_or_the_workout_name(tmp_path):
+    titles: list[str | None] = []
+    for activity_name in ("Morning Intervals", None):
+        finished = _FinishedRide()
+        finished.release.set()
+        integration, _, screen, _ = _ride(finished, settings=AppSettings(workout_data_dir=tmp_path))
+        integration.prepare_summary()
+        integration.commit(activity_name)
+        integration.shutdown()
+        titles.extend(screen.exported_chart_titles)
+
+    assert titles == ["Morning Intervals", "Ride"]
+
+
+def test_failed_chart_image_does_not_stop_the_ride_being_saved(tmp_path):
+    finished = _FinishedRide()
+    finished.release.set()
+    integration, _, screen, alerts = _ride(finished, settings=AppSettings(workout_data_dir=tmp_path))
+    screen.fail_export = True
+    integration.prepare_summary()
+
+    integration.commit()
+
+    assert _wait_for(lambda: ("Workout saved: Ride_20260311_1200.fit", "success") in alerts)
     integration.shutdown()

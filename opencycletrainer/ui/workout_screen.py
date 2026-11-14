@@ -767,9 +767,9 @@ class WorkoutScreen(QWidget):
         """Rebuild the chart target trace after interval durations change."""
         self.chart_widget.rebuild_target_series(interval_durations)
 
-    def export_chart_image(self, path: Path) -> Path:
-        """Capture the workout overview chart as a PNG and save it to *path*."""
-        return self.chart_widget.export_image(path)
+    def export_chart_image(self, path: Path, title: str | None = None) -> Path:
+        """Save the finished ride's chart as a PNG at *path*, headed by *title*."""
+        return self.chart_widget.export_image(path, title)
 
     def clear_charts(self) -> None:
         self.chart_widget.clear()

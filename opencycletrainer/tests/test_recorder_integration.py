@@ -73,7 +73,7 @@ class _FakeScreen:
     def show_alert(self, message: str, alert_type: str = "info") -> None:
         self.alerts.append((message, alert_type))
 
-    def export_chart_image(self, path: Path) -> None:
+    def export_chart_image(self, path: Path, title: str | None = None) -> None:  # noqa: ARG002
         self.exported_chart_paths.append(path)
 
 

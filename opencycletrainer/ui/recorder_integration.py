@@ -164,9 +164,8 @@ class RecorderIntegration:
             _logger.warning("Recorder finish failed: %s", exc)
             self._workout = None
             return
-        if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
-            # Grabbing the chart has to happen on the UI thread, before it is cleared.
-            self._export_chart_image(finished.fit_file_path)
+        # Drawing the chart has to happen on the UI thread, before it is cleared.
+        self._export_chart_image(finished.fit_file_path, activity_name)
         future = self._ensure_save_executor().submit(self._write_and_upload, finished, activity_name)
         self._workout = None
         if wait:
@@ -184,8 +183,7 @@ class RecorderIntegration:
             f"Workout saved: {summary.fit_file_path.name}",
             alert_type="success",
         )
-        if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
-            self._export_chart_image(summary.fit_file_path)
+        self._export_chart_image(summary.fit_file_path, activity_name)
         self._enqueue_uploads(summary.fit_file_path, activity_name)
         self._workout = None
 
@@ -202,9 +200,16 @@ class RecorderIntegration:
         self._alert_signal(f"Workout saved: {summary.fit_file_path.name}", "success")
         self._enqueue_uploads(summary.fit_file_path, activity_name)
 
-    def _export_chart_image(self, fit_file_path: Path) -> None:
-        data_root = get_workout_data_root(self._settings.workout_data_dir)
-        self._screen.export_chart_image(get_workout_png_dir(data_root) / f"{fit_file_path.stem}.png")
+    def _export_chart_image(self, fit_file_path: Path, activity_name: str | None) -> None:
+        """Save the ride's chart beside its other files; a failure never blocks the save."""
+        title = activity_name or getattr(self._workout, "name", None)
+        try:
+            data_root = get_workout_data_root(self._settings.workout_data_dir)
+            self._screen.export_chart_image(
+                get_workout_png_dir(data_root) / f"{fit_file_path.stem}.png", title,
+            )
+        except Exception:
+            _logger.exception("Saving the workout chart image failed")
 
     def _enqueue_uploads(self, fit_file_path: Path, activity_name: str | None) -> None:
         if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:

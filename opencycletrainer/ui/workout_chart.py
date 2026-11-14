@@ -43,9 +43,6 @@ _HOVER_FILL     = (255, 255, 255, 220)    # near-white, slightly transparent box
 _HOVER_BORDER   = (148, 163, 184, 220)    # light slate border
 _HOVER_TEXT_COL = (51, 65, 85)            # dark slate text
 
-# Chart export dimensions — 16:9 is widely used by Strava and social platforms.
-_EXPORT_WIDTH  = 1920
-_EXPORT_HEIGHT = 1080
 _5_MIN_SECONDS = 300.0  # five minutes in seconds
 
 # Power-duration curve chart
@@ -357,42 +354,30 @@ class WorkoutChartWidget(QWidget):
                 for plot in (self._interval_plot, self._workout_plot):
                     _configure_y_axis(plot, float(new_y_max))
 
-    def export_image(self, path: Path) -> Path:
-        """Capture the workout overview chart as a PNG and save it to *path*.
+    def export_image(self, path: Path, title: str | None = None) -> Path:
+        """Save the finished ride as a PNG at *path*, redrawn at the export size.
 
-        The raw grab is scaled to ``_EXPORT_WIDTH`` × ``_EXPORT_HEIGHT`` so the
-        saved image always has a consistent 16:9 aspect ratio regardless of the
-        current window size.
-
-        In free ride mode the X axis expands in 30-minute blocks, so the right
-        portion is often empty at the moment of capture.  We temporarily trim the
-        range to the actual elapsed data before grabbing.
+        The image is drawn on its own off-screen canvas rather than grabbed from the
+        window, so it is sharp at any window size and its time axis ends where the ride
+        did. The live chart is not touched.
         """
-        trimmed = False
-        original_x = self._workout_plot.getViewBox().viewRange()[0]
+        from .chart_export import ChartExportData, save_chart_image
 
-        if self._free_ride_mode:
-            xdata, _ = self._workout_actual.getData()
-            if xdata is not None and len(xdata) > 0:
-                actual_max = float(xdata[-1])
-                if actual_max < original_x[1] - 1.0:
-                    self._workout_plot.setXRange(0.0, actual_max, padding=0)
-                    self._workout_plot.repaint()
-                    trimmed = True
-
-        pixmap = self._workout_plot.grab()
-        scaled = pixmap.scaled(
-            _EXPORT_WIDTH,
-            _EXPORT_HEIGHT,
-            Qt.IgnoreAspectRatio,
-            Qt.SmoothTransformation,
+        if title is None:
+            title = self._workout.name if self._workout is not None else ""
+        data = ChartExportData(
+            title=title,
+            power=_series_of(self._workout_actual),
+            heart_rate=_series_of(self._workout_hr),
+            target=_series_of(self._workout_target),
+            alpha1=_series_of(self._workout_alpha1_curve) if self._dfa_alpha1_enabled else None,
+            skip_regions=tuple(
+                tuple(workout_region.getRegion()) for _, workout_region in self._skip_markers
+            ),
+            ftp_watts=self._ftp_watts if self._workout is not None else None,
+            color_theme=self._color_theme,
         )
-        scaled.save(str(path), "PNG")
-
-        if trimmed:
-            self._workout_plot.setXRange(original_x[0], original_x[1], padding=0)
-
-        return path
+        return save_chart_image(data, path)
 
     def clear(self) -> None:
         """Reset to idle state. Call before loading a new workout."""
@@ -598,6 +583,14 @@ def _make_plot() -> pg.PlotWidget:
     plot.getViewBox().disableAutoRange()
     plot.getPlotItem().hideButtons()
     return plot
+
+
+def _series_of(item: pg.PlotDataItem | None) -> tuple[np.ndarray, np.ndarray]:
+    """Return a curve's full (x, y) data as arrays; empty arrays when it has none."""
+    x, y = item.getOriginalDataset() if item is not None else (None, None)
+    if x is None or y is None:
+        return np.array([], dtype=float), np.array([], dtype=float)
+    return np.asarray(x, dtype=float), np.asarray(y, dtype=float)
 
 
 def _make_target_item() -> pg.PlotDataItem:
