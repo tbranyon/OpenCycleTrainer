@@ -533,3 +533,82 @@ class TestBoundaryConditions:
         agg.flush()
         agg.reset()
         assert agg.flush() is None
+
+
+# ── Carry-forward uses the last raw reading, and empty bins hold it ───────────
+
+
+class TestCarryForwardAccuracy:
+    def test_carry_forward_is_last_reading_not_bin_average(self) -> None:
+        """A step in power must not be smeared into the next bin.
+
+        Bin 0 averages 100 W (0–0.9 s) and 300 W (0.9–1.0 s) → 120 W, but the
+        value in effect at the boundary is 300 W, so bin 1 (no new reading until
+        0.9 s) must read 300 W, not a blend of 120 W and 300 W.
+        """
+        agg = _active_agg()
+        agg.add_power(_ts(0), 100, None)
+        agg.add_power(_ts(900), 300, None)
+        first = agg.add_power(_ts(1900), 300, None)  # closes bin 0
+        second = agg.add_power(_ts(2900), 300, None)  # closes bin 1
+        assert first[0].trainer_power_watts == 120
+        assert second[0].trainer_power_watts == 300
+
+    def test_step_settles_within_one_bin_for_late_notifications(self) -> None:
+        """1 Hz sensor whose notification lands at 0.9 s: after a 100→300 W
+        step the recorded series must settle at 300 W by the following bin."""
+        agg = _active_agg()
+        out: list[int | None] = []
+        for second in range(6):
+            watts = 100 if second < 3 else 300
+            out.extend(s.trainer_power_watts for s in agg.add_power(_ts(second * 1000 + 900), watts, None))
+        assert out == [100, 100, 100, 120, 300]
+
+    def test_bike_carry_forward_is_last_reading(self) -> None:
+        agg = _active_agg()
+        agg.add_power(_ts(0), None, 100)
+        agg.add_power(_ts(900), None, 300)
+        agg.add_power(_ts(1900), None, 300)
+        second = agg.add_power(_ts(2900), None, 300)
+        assert second[0].bike_power_watts == 300
+
+    def test_empty_bin_holds_last_reading(self) -> None:
+        """A whole second with no notification is still covered by the held
+        reading under the piecewise-constant model, not a gap."""
+        agg = _active_agg()
+        agg.add_power(_ts(500), 250, None)
+        agg.feed(_sample(1500, trainer=None))  # closes bin 0
+        result = agg.feed(_sample(2500, trainer=None))  # closes bin 1 (no power)
+        assert result[0].trainer_power_watts == 250
+
+    def test_empty_bin_beyond_hold_window_emits_none(self) -> None:
+        """The hold is capped: once the last reading is older than the hold
+        window at the bin's end, the bin reports no power."""
+        agg = _active_agg()
+        agg.add_power(_ts(500), 250, None)
+        results: list[int | None] = []
+        for second in range(1, 7):
+            results.extend(s.trainer_power_watts for s in agg.feed(_sample(second * 1000 + 500, trainer=None)))
+        # Bins 1..3 end at 2, 3, 4 s: within 3.0 s of the 0.5 s reading. Bin 4
+        # ends at 5 s (4.5 s stale) → None.
+        assert results == [250, 250, 250, None, None, None]
+
+    def test_empty_bin_after_pause_emits_none(self) -> None:
+        agg = _active_agg()
+        agg.add_power(_ts(500), 250, None)
+        agg.feed(_sample(1500, trainer=None))
+        agg.set_recording_active(False)
+        agg.set_recording_active(True)
+        agg.feed(_sample(2500, trainer=None))
+        result = agg.feed(_sample(3500, trainer=None))
+        assert result[0].trainer_power_watts is None
+
+    def test_leading_gap_carry_forward_respects_hold_window(self) -> None:
+        """A reading arriving 10 s after the previous one must not backfill the
+        leading gap of its bin with the stale value."""
+        agg = _active_agg()
+        agg.add_power(_ts(0), 100, None)
+        agg.feed(_sample(1000, trainer=None))
+        agg.add_power(_ts(10500), 300, None)  # opens bin 10 directly
+        result = agg.feed(_sample(11000, trainer=None))
+        assert result[0].trainer_power_watts == 300

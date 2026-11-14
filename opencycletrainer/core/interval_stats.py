@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from opencycletrainer.core.time_weighted_mean import TimeWeightedMean
+
 
 class IntervalStats:
     """Per-interval and workout-level HR/power accumulator."""
 
     def __init__(self) -> None:
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
+        self._interval_power = TimeWeightedMean()
         self._interval_actual_kj = 0.0
         self._last_actual_power_tick: float | None = None
         self._interval_hr_sum = 0.0
@@ -16,8 +17,7 @@ class IntervalStats:
 
     def record_power(self, watts: int, now: float, recording_active: bool) -> None:
         """Record a power sample and update interval-level accumulators."""
-        self._interval_power_sum += float(watts)
-        self._interval_power_count += 1
+        self._interval_power.add(watts, now)
         if self._last_actual_power_tick is not None:
             delta = now - self._last_actual_power_tick
             if delta > 0 and recording_active:
@@ -33,8 +33,7 @@ class IntervalStats:
 
     def reset_interval(self) -> None:
         """Clear interval-scoped accumulators; workout HR is preserved."""
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
+        self._interval_power.reset()
         self._interval_actual_kj = 0.0
         self._last_actual_power_tick = None
         self._interval_hr_sum = 0.0
@@ -42,8 +41,7 @@ class IntervalStats:
 
     def reset_workout(self) -> None:
         """Clear all accumulators for a new workout."""
-        self._interval_power_sum = 0.0
-        self._interval_power_count = 0
+        self._interval_power.reset()
         self._interval_actual_kj = 0.0
         self._last_actual_power_tick = None
         self._interval_hr_sum = 0.0
@@ -52,10 +50,9 @@ class IntervalStats:
         self._workout_hr_count = 0
 
     def interval_avg_watts(self) -> int | None:
-        """Return mean watts for the current interval, or None if no samples."""
-        if not self._interval_power_count:
-            return None
-        return round(self._interval_power_sum / self._interval_power_count)
+        """Return time-weighted mean watts for the current interval, or None if no samples."""
+        mean = self._interval_power.mean()
+        return None if mean is None else round(mean)
 
     def interval_actual_kj(self) -> float:
         """Return measured energy (kJ) accumulated during the current interval while recording."""

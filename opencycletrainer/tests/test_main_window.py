@@ -172,8 +172,12 @@ def test_main_window_routes_power_samples_by_characteristic_uuid(qapp):
     window = _make_window(qapp)
     trainer_values: list[int] = []
     bike_values: list[int] = []
-    window.workout_controller.receive_power_watts = lambda watts: trainer_values.append(watts)
-    window.workout_controller.receive_bike_power_watts = lambda watts: bike_values.append(watts)
+    window.workout_controller.receive_power_watts = (
+        lambda watts, now_monotonic=None: trainer_values.append(watts)
+    )
+    window.workout_controller.receive_bike_power_watts = (
+        lambda watts, now_monotonic=None: bike_values.append(watts)
+    )
 
     try:
         now = datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc)
@@ -192,5 +196,40 @@ def test_main_window_routes_power_samples_by_characteristic_uuid(qapp):
 
         assert trainer_values == [180]
         assert bike_values == [220]
+    finally:
+        _close_window(window, qapp)
+
+
+def test_main_window_forwards_monotonic_receipt_time_with_power(qapp):
+    """Power readings reach the controller stamped with the BLE receipt time
+    so the 1 s aggregator weights them by real arrival, not GUI-slot timing."""
+    window = _make_window(qapp)
+    trainer_calls: list[tuple[int, float | None]] = []
+    bike_calls: list[tuple[int, float | None]] = []
+    window.workout_controller.receive_power_watts = (
+        lambda watts, now_monotonic=None: trainer_calls.append((watts, now_monotonic))
+    )
+    window.workout_controller.receive_bike_power_watts = (
+        lambda watts, now_monotonic=None: bike_calls.append((watts, now_monotonic))
+    )
+
+    try:
+        now = datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc)
+        window._on_sensor_sample(SensorSample(
+            timestamp_utc=now,
+            device_id="trainer-1",
+            source_characteristic_uuid=FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
+            power_watts=180,
+            received_at_monotonic=42.25,
+        ))
+        window._on_sensor_sample(SensorSample(
+            timestamp_utc=now,
+            device_id="pm-1",
+            source_characteristic_uuid=CPS_MEASUREMENT_CHARACTERISTIC_UUID,
+            power_watts=220,
+            received_at_monotonic=43.5,
+        ))
+        assert trainer_calls == [(180, 42.25)]
+        assert bike_calls == [(220, 43.5)]
     finally:
         _close_window(window, qapp)

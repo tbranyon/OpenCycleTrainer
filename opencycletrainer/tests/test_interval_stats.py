@@ -167,3 +167,16 @@ class TestIntervalStatsResetWorkout:
         s.record_hr(200)
         # Both readings count toward workout avg
         assert s.workout_avg_hr() == 150
+
+
+class TestIntervalAvgIsTimeWeighted:
+    def test_burst_of_fast_notifications_does_not_dominate_average(self):
+        """4 Hz at 100 W for 1 s then 1 Hz at 300 W for 1 s: the average must
+        weight each reading by how long it was in effect (233 W), not by how
+        many notifications arrived (167 W)."""
+        s = IntervalStats()
+        for t in (0.0, 0.25, 0.5, 0.75):
+            s.record_power(100, now=t, recording_active=True)
+        s.record_power(300, now=1.0, recording_active=True)
+        s.record_power(300, now=2.0, recording_active=True)
+        assert s.interval_avg_watts() == 233

@@ -140,7 +140,9 @@ class MainWindow(QMainWindow):
             return
         if sample.source_characteristic_uuid == CPS_MEASUREMENT_CHARACTERISTIC_UUID:
             if sample.power_watts is not None:
-                self.workout_controller.receive_bike_power_watts(sample.power_watts)
+                self.workout_controller.receive_bike_power_watts(
+                    sample.power_watts, now_monotonic=sample.received_at_monotonic
+                )
             if sample.accumulated_energy_kj is not None:
                 trainer_id = self.devices_screen.connected_trainer_device_id()
                 if trainer_id is not None and sample.device_id == trainer_id:
@@ -151,7 +153,9 @@ class MainWindow(QMainWindow):
                 self.workout_controller.receive_pedal_balance(sample.pedal_balance_left_pct)
         else:
             if sample.power_watts is not None:
-                self.workout_controller.receive_power_watts(sample.power_watts)
+                self.workout_controller.receive_power_watts(
+                    sample.power_watts, now_monotonic=sample.received_at_monotonic
+                )
             if sample.accumulated_energy_kj is not None:
                 self.workout_controller.receive_trainer_energy_kj(sample.accumulated_energy_kj)
         if sample.heart_rate_bpm is not None:
