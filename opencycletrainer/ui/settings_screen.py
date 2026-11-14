@@ -157,6 +157,8 @@ class _OAuthWorker(QObject):
             self.failed.emit(str(exc))
 
 
+_READ_API_KEY_FROM_STORE = object()
+
 class SettingsScreen(QWidget):
     settings_applied = Signal(object)
     _sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
@@ -174,6 +176,7 @@ class SettingsScreen(QWidget):
         intervals_icu_sync_fn: object = None,
         opentrueup_devices_available: bool = False,
         parent: QWidget | None = None,
+        intervals_icu_api_key: str | None | object = _READ_API_KEY_FROM_STORE,
     ) -> None:
         super().__init__(parent)
         self._settings_path = settings_path
@@ -348,7 +351,12 @@ class SettingsScreen(QWidget):
         self.intervals_icu_api_key_edit.setPlaceholderText(
             "Paste your API key (intervals.icu → Settings → Developer Settings)"
         )
-        existing_key = get_api_key()
+        # The main window passes the key it already read, sparing a second keyring lookup.
+        existing_key = (
+            get_api_key()
+            if intervals_icu_api_key is _READ_API_KEY_FROM_STORE
+            else intervals_icu_api_key
+        )
         if existing_key:
             self.intervals_icu_api_key_edit.setText(existing_key)
         intervals_icu_layout.addRow("API Key", self.intervals_icu_api_key_edit)

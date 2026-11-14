@@ -8,6 +8,7 @@ from pathlib import Path
 import keyring
 from keyring.errors import PasswordDeleteError
 
+from opencycletrainer.integrations.keyring_support import keyring_is_usable, read_secret
 from opencycletrainer.storage.paths import get_data_dir
 
 _SERVICE = "OpenCycleTrainer/IntervalsICU"
@@ -16,13 +17,8 @@ _FALLBACK_FILENAME = "intervals_icu_key.json"
 
 
 def _has_working_keyring() -> bool:
-    """Return True if the system keyring backend can perform operations."""
-    try:
-        backend = keyring.get_keyring()
-        backend.get_password(_SERVICE, "__probe__")
-        return True
-    except Exception:
-        return False
+    """Return True if the system keyring backend can perform operations (probed once)."""
+    return keyring_is_usable()
 
 
 def _fallback_path() -> Path:
@@ -37,13 +33,9 @@ def is_available() -> bool:
 
 def get_api_key() -> str | None:
     """Return the stored intervals.icu API key, or None if none has been saved."""
-    if _has_working_keyring():
-        try:
-            value = keyring.get_password(_SERVICE, _USERNAME)
-            if value is not None:
-                return value
-        except Exception:
-            pass
+    value = read_secret(_SERVICE, _USERNAME)
+    if value is not None:
+        return value
     # Fall back to file-based storage.
     path = _fallback_path()
     if not path.exists():

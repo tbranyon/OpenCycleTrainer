@@ -58,12 +58,14 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.devices_screen = DevicesScreen(backend=backend, parent=self)
+        intervals_icu_api_key = get_api_key()
         self.settings_screen = SettingsScreen(
             settings=self._settings,
             settings_path=settings_path,
             strava_connected=get_tokens() is not None,
             strava_sync_fn=upload_fit_to_strava,
-            intervals_icu_connected=get_api_key() is not None,
+            intervals_icu_connected=intervals_icu_api_key is not None,
+            intervals_icu_api_key=intervals_icu_api_key,
             intervals_icu_sync_fn=upload_fit_to_intervals_icu,
             opentrueup_devices_available=self.devices_screen.has_opentrueup_devices(),
             parent=self,

@@ -9,6 +9,7 @@ from pathlib import Path
 import keyring
 from keyring.errors import PasswordDeleteError
 
+from opencycletrainer.integrations.keyring_support import keyring_is_usable, read_secret
 from opencycletrainer.storage.paths import get_data_dir
 
 _SERVICE = "OpenCycleTrainer/Strava"
@@ -26,13 +27,8 @@ class StravaTokenBundle:
 
 
 def _has_working_keyring() -> bool:
-    """Return True if the system keyring backend can perform operations."""
-    try:
-        backend = keyring.get_keyring()
-        backend.get_password(_SERVICE, "__probe__")
-        return True
-    except Exception:
-        return False
+    """Return True if the system keyring backend can perform operations (probed once)."""
+    return keyring_is_usable()
 
 
 def _fallback_path() -> Path:
@@ -56,11 +52,10 @@ def is_available() -> bool:
 
 def get_tokens() -> StravaTokenBundle | None:
     """Return the stored token bundle, or None if no tokens have been saved."""
-    if _has_working_keyring():
+    raw = read_secret(_SERVICE, _USERNAME)
+    if raw is not None:
         try:
-            raw = keyring.get_password(_SERVICE, _USERNAME)
-            if raw is not None:
-                return _decode(raw)
+            return _decode(raw)
         except Exception:
             pass
     # Fall back to file-based storage.
