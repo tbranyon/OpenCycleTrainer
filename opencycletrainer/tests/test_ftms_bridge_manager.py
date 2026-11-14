@@ -354,3 +354,149 @@ def test_submit_power_sample_noop_when_inactive():
     manager, _, _, _ = _make_manager()
     # Should not raise
     manager.submit_power_sample(timestamp=1.0, trainer_watts=200, bike_watts=None)
+
+
+# ── Tests: apply_settings (live update, no rebuild) ────────────────────────────
+
+_SET_TARGET_POWER_OPCODE = 0x05
+
+
+def _two_interval_workout():
+    from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+
+    intervals = (
+        WorkoutInterval(
+            start_offset_seconds=0, duration_seconds=10,
+            start_percent_ftp=50.0, end_percent_ftp=50.0,
+            start_target_watts=150, end_target_watts=150,
+        ),
+        WorkoutInterval(
+            start_offset_seconds=10, duration_seconds=20,
+            start_percent_ftp=75.0, end_percent_ftp=75.0,
+            start_target_watts=225, end_target_watts=225,
+        ),
+    )
+    return Workout(name="Lead Time", ftp_watts=300, intervals=intervals)
+
+
+def _erg_targets_sent_reaching_lead_time_window(manager: FTMSBridgeManager, transport) -> list[int]:
+    """Ride to 3 s before the 150 W -> 225 W change and return every ERG target written."""
+    from opencycletrainer.core.workout_engine import WorkoutEngine
+
+    workout = _two_interval_workout()
+    engine = WorkoutEngine()
+    engine.load_workout(workout)
+    engine.start()
+    for elapsed in (0, 7):
+        engine.tick(elapsed)
+        manager.submit_snapshot(engine.snapshot(), workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+    return [
+        int.from_bytes(w[1:3], "little", signed=True)
+        for w in transport.writes
+        if w[0] == _SET_TARGET_POWER_OPCODE
+    ]
+
+
+def _counting_factory(resistance_range=None):
+    """Transport factory that builds a fresh transport per call and records each one."""
+    created: list[_FakeTransport] = []
+
+    def factory(backend, device_id):
+        transport = _FakeTransport(resistance_range=resistance_range)
+        transport.read_count = 0
+        original_read = transport.read_resistance_level_range
+
+        def counted_read():
+            transport.read_count += 1
+            return original_read()
+
+        transport.read_resistance_level_range = counted_read
+        created.append(transport)
+        return transport
+
+    return factory, created
+
+
+def test_apply_settings_keeps_the_live_bridge_and_transport():
+    factory, created = _counting_factory()
+    manager, *_ = _make_manager(transport_factory=factory)
+    manager.configure("bleak", "trainer-1")
+
+    manager.apply_settings(SimpleNamespace(lead_time=5, lead_time_increasing_only=False,
+                                           erg_jog_persistence_mode="always"))
+
+    assert manager.active
+    assert len(created) == 1
+
+
+def test_apply_settings_pushes_lead_time_to_live_bridge():
+    factory, created = _counting_factory()
+    manager, *_ = _make_manager(transport_factory=factory)
+    manager.configure("bleak", "trainer-1")
+
+    manager.apply_settings(SimpleNamespace(lead_time=3, lead_time_increasing_only=False,
+                                           erg_jog_persistence_mode="always"))
+
+    assert _erg_targets_sent_reaching_lead_time_window(manager, created[-1]) == [150, 225]
+
+
+def test_apply_settings_before_configure_is_used_by_next_bridge():
+    factory, created = _counting_factory()
+    manager, *_ = _make_manager(transport_factory=factory)
+
+    manager.apply_settings(SimpleNamespace(lead_time=3, lead_time_increasing_only=False,
+                                           erg_jog_persistence_mode="always"))
+    manager.configure("bleak", "trainer-1")
+
+    assert _erg_targets_sent_reaching_lead_time_window(manager, created[-1]) == [150, 225]
+
+
+def test_set_opentrueup_routes_power_samples_to_new_controller():
+    manager, *_ = _configured_manager()
+    received: list[dict] = []
+
+    class _Controller:
+        def record_power_sample(self, **kwargs):
+            received.append(kwargs)
+            return SimpleNamespace(requires_erg_reapply=False, last_computed_offset_watts=None)
+
+    manager.set_opentrueup(_Controller())
+    manager.submit_power_sample(timestamp=1.0, trainer_watts=200, bike_watts=210)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert received == [{"timestamp": 1.0, "trainer_power_watts": 200, "bike_power_watts": 210}]
+
+
+# ── Tests: resistance range cache ──────────────────────────────────────────────
+
+
+def test_resistance_range_is_read_once_per_trainer_across_reconfigures():
+    factory, created = _counting_factory(resistance_range=SimpleNamespace(step_count=10))
+    manager, _, mode_state, _ = _make_manager(transport_factory=factory)
+
+    manager.configure("bleak", "trainer-1")
+    manager.configure("bleak", "trainer-1")
+
+    assert sum(t.read_count for t in created) == 1
+    assert mode_state.resistance_step_count == 10
+
+
+def test_resistance_range_is_read_again_for_a_different_trainer():
+    factory, created = _counting_factory(resistance_range=SimpleNamespace(step_count=10))
+    manager, *_ = _make_manager(transport_factory=factory)
+
+    manager.configure("bleak", "trainer-1")
+    manager.configure("bleak", "trainer-2")
+
+    assert sum(t.read_count for t in created) == 2
+
+
+def test_failed_resistance_range_read_is_retried_on_next_configure():
+    factory, created = _counting_factory(resistance_range=None)
+    manager, *_ = _make_manager(transport_factory=factory)
+
+    manager.configure("bleak", "trainer-1")
+    manager.configure("bleak", "trainer-1")
+
+    assert sum(t.read_count for t in created) == 2

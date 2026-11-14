@@ -10,8 +10,10 @@ from opencycletrainer.core.control.ftms_control import (
     FTMSControlTransport,
     WorkoutEngineFTMSBridge,
 )
+from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.core.workout_engine import WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
+from opencycletrainer.devices.decoders.ftms import ResistanceLevelRange
 from opencycletrainer.storage.settings import DEFAULT_JOG_PERSISTENCE_MODE, JogPersistenceMode
 
 _logger = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ class FTMSBridgeManager:
 
         self._ftms_bridge: WorkoutEngineFTMSBridge | None = None
         self._ftms_bridge_executor: ThreadPoolExecutor | None = None
+        self._resistance_ranges: dict[str, ResistanceLevelRange] = {}
 
     @property
     def active(self) -> bool:
@@ -67,7 +70,7 @@ class FTMSBridgeManager:
             self._screen.set_trainer_controls_visible(False)
             return
 
-        resistance_range = transport.read_resistance_level_range()
+        resistance_range = self._resistance_range_for(device_id, transport)
         if resistance_range is not None:
             step_count = resistance_range.step_count
             self._mode_state.set_trainer_resistance_step_count(step_count if step_count > 0 else None)
@@ -115,6 +118,26 @@ class FTMSBridgeManager:
         self._mode_state.set_trainer_resistance_step_count(None)
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def apply_settings(self, settings: object) -> None:
+        """Use *settings* for future bridges and push the bridge-relevant values to the live one.
+
+        The live bridge is updated in place rather than rebuilt, so a settings change never
+        re-subscribes to the trainer or blocks on BLE reads.
+        """
+        self._settings = settings
+        lead_time_seconds = max(0, int(settings.lead_time))
+        increasing_only = settings.lead_time_increasing_only
+        kj_mode = self._engine.kj_mode
+        self.submit_action(
+            lambda bridge: bridge.set_lead_time(lead_time_seconds, increasing_only=increasing_only)
+        )
+        self.submit_action(lambda bridge: bridge.set_kj_mode(kj_mode))
+        self.set_erg_jog_persistence_mode(settings.erg_jog_persistence_mode)
+
+    def set_opentrueup(self, controller: OpenTrueUpController | None) -> None:
+        """Hand the live bridge a replacement OpenTrueUp controller (or None to disable it)."""
+        self.submit_action(lambda bridge: bridge.set_opentrueup(controller))
 
     def set_erg_jog_persistence_mode(self, mode: JogPersistenceMode) -> None:
         """Update jog-persistence mode for the current and any future bridge."""
@@ -196,6 +219,23 @@ class FTMSBridgeManager:
         else:
             bridge.set_mode_erg()
             bridge.on_engine_snapshot(snapshot, workout)
+
+    def _resistance_range_for(
+        self,
+        device_id: str,
+        transport: FTMSControlTransport,
+    ) -> ResistanceLevelRange | None:
+        """Return the trainer's resistance range, reading it over BLE only once per device.
+
+        Failed reads are not cached, so a later reconnect retries them.
+        """
+        cached = self._resistance_ranges.get(device_id)
+        if cached is not None:
+            return cached
+        resistance_range = transport.read_resistance_level_range()
+        if resistance_range is not None:
+            self._resistance_ranges[device_id] = resistance_range
+        return resistance_range
 
     def _create_transport(
         self,

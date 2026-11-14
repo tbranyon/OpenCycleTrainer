@@ -364,6 +364,26 @@ class WorkoutEngineFTMSBridge:
         """Control whether the manual ERG jog offset survives interval boundaries."""
         self._erg_jog_persistence_mode = mode
 
+    def set_lead_time(self, seconds: int, *, increasing_only: bool) -> None:
+        """Change how early the next interval's target is sent, from the next tick on."""
+        self._lead_time_seconds = max(0, int(seconds))
+        self._lead_time_increasing_only = bool(increasing_only)
+
+    def set_kj_mode(self, enabled: bool) -> None:
+        """Enable or disable kJ mode, which suppresses time-based lead-time commands."""
+        self._kj_mode = bool(enabled)
+
+    def set_opentrueup(self, opentrueup: OpenTrueUpController | None) -> None:
+        """Swap the OpenTrueUp controller and re-send the current ERG target through it."""
+        self._opentrueup = opentrueup
+        if self._control.mode is not ControlMode.ERG or self._current_erg_target_base_watts is None:
+            return
+        jogged = int(round(self._current_erg_target_base_watts + self._erg_jog_offset_watts))
+        try:
+            self._send_erg_target(self._apply_opentrueup_target(jogged))
+        except FTMSControlError:
+            self._report_error("Error communicating with trainer")
+
     def apply_manual_erg_target(self, target_watts: int) -> None:
         """Apply a Free Ride ERG target while preserving any active jog offset."""
         base_target = int(target_watts)

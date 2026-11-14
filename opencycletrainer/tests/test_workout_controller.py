@@ -3636,3 +3636,66 @@ def test_manual_save_no_op_when_dialog_cancelled(tmp_path, monkeypatch):
     assert not screen.save_button.isHidden()
 
     controller.shutdown()
+
+
+# ── Settings changes must not rebuild the trainer bridge ──────────────────────
+
+
+def _controller_with_counting_transport(settings: AppSettings):
+    created: list[_FakeFTMSTransport] = []
+
+    def factory(backend, trainer_id):
+        transport = _FakeFTMSTransport()
+        created.append(transport)
+        return transport
+
+    controller = WorkoutSessionController(
+        screen=WorkoutScreen(settings=settings),
+        settings=settings,
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=factory,
+        monotonic_clock=lambda: 0.0,
+    )
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    return controller, created
+
+
+def _live_bridge_opentrueup(controller: WorkoutSessionController):
+    """Drain queued bridge actions, then return the OpenTrueUp controller the live bridge uses."""
+    manager = controller._ftms_bridge_manager
+    manager._ftms_bridge_executor.shutdown(wait=True)
+    return manager._ftms_bridge._opentrueup
+
+
+def test_apply_settings_does_not_rebuild_trainer_bridge():
+    _get_or_create_qapp()
+    controller, created = _controller_with_counting_transport(AppSettings())
+
+    controller.apply_settings(AppSettings(ftp=275, lead_time=2))
+
+    assert len(created) == 1
+    controller.shutdown()
+
+
+def test_enabling_opentrueup_via_apply_settings_reaches_live_bridge():
+    _get_or_create_qapp()
+    controller, _ = _controller_with_counting_transport(AppSettings(opentrueup_enabled=False))
+
+    controller.apply_settings(AppSettings(opentrueup_enabled=True))
+
+    expected = controller._opentrueup_state.controller
+    assert expected is not None
+    assert _live_bridge_opentrueup(controller) is expected
+    controller.shutdown()
+
+
+def test_opentrueup_controller_rebuilt_for_device_pair_reaches_live_bridge():
+    _get_or_create_qapp()
+    controller, _ = _controller_with_counting_transport(AppSettings(opentrueup_enabled=True))
+
+    controller.set_power_source_pair("trainer-1", "pm-1")
+
+    expected = controller._opentrueup_state.controller
+    assert expected._power_meter_id == "pm-1"
+    assert _live_bridge_opentrueup(controller) is expected
+    controller.shutdown()

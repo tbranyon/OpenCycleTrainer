@@ -669,3 +669,97 @@ def test_bridge_restores_resistance_level_on_ramp_in():
     engine.resume()
 
     assert stub_control.resistance_levels[-1] == 50.0
+
+
+# ── Live settings updates (no bridge rebuild) ─────────────────────────────────
+
+
+class _FakeOpenTrueUp:
+    """Minimal OpenTrueUp stand-in that applies a fixed offset to ERG targets."""
+
+    def __init__(self, offset_watts: int = 0) -> None:
+        self.offset_watts = offset_watts
+        self.power_samples: list[dict] = []
+
+    def adjust_erg_target(self, base_target_watts: int, *, apply_offset: bool = True) -> int:
+        return int(base_target_watts) + (self.offset_watts if apply_offset else 0)
+
+    def note_applied_erg_target(self, target_watts: int) -> None:
+        pass
+
+    def record_power_sample(self, **kwargs):
+        from types import SimpleNamespace
+
+        self.power_samples.append(kwargs)
+        return SimpleNamespace(requires_erg_reapply=False, last_computed_offset_watts=self.offset_watts)
+
+
+def _drive_to_lead_time_window(bridge: WorkoutEngineFTMSBridge) -> None:
+    """Start the two-interval workout and tick to 3 s before the 150 W -> 225 W change."""
+    workout = _build_workout()
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+    engine.tick(7)
+
+
+def test_bridge_set_lead_time_enables_early_next_interval_command():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, lead_time_seconds=0)
+
+    bridge.set_lead_time(3, increasing_only=False)
+    _drive_to_lead_time_window(bridge)
+
+    assert stub_control.erg_targets == [150, 225]
+
+
+def test_bridge_set_lead_time_zero_disables_early_command():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, lead_time_seconds=3)
+
+    bridge.set_lead_time(0, increasing_only=False)
+    _drive_to_lead_time_window(bridge)
+
+    assert stub_control.erg_targets == [150]
+
+
+def test_bridge_set_kj_mode_suppresses_lead_time():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, lead_time_seconds=3)
+
+    bridge.set_kj_mode(True)
+    _drive_to_lead_time_window(bridge)
+
+    assert stub_control.erg_targets == [150]
+
+
+def test_bridge_set_opentrueup_reapplies_current_erg_target():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, opentrueup=_FakeOpenTrueUp(offset_watts=15))
+    workout = _build_workout()
+    engine = WorkoutEngine(
+        on_snapshot_update=lambda snapshot: bridge.on_engine_snapshot(snapshot, workout),
+    )
+    engine.load_workout(workout)
+    engine.start()
+    engine.tick(0)
+
+    bridge.set_opentrueup(None)
+
+    assert stub_control.erg_targets == [165, 150]
+
+
+def test_bridge_set_opentrueup_routes_power_samples_to_new_controller():
+    stub_control = _StubControl(mode=ControlMode.ERG)
+    bridge = WorkoutEngineFTMSBridge(stub_control, opentrueup=None)
+    replacement = _FakeOpenTrueUp()
+
+    bridge.set_opentrueup(replacement)
+    bridge.on_power_sample(timestamp=1.0, trainer_power_watts=200, bike_power_watts=210)
+
+    assert replacement.power_samples == [
+        {"timestamp": 1.0, "trainer_power_watts": 200, "bike_power_watts": 210}
+    ]

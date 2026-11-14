@@ -219,6 +219,7 @@ class WorkoutSessionController(QObject):
             trainer_device_id,
             power_meter_device_id,
         )
+        self._ftms_bridge_manager.set_opentrueup(self._opentrueup_state.controller)
 
     def apply_settings(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -234,13 +235,9 @@ class WorkoutSessionController(QObject):
             )
         elif was_enabled and not now_enabled:
             self._opentrueup_state.disable()
-        self._ftms_bridge_manager.set_erg_jog_persistence_mode(settings.erg_jog_persistence_mode)
-        self._ftms_bridge_manager.configure(
-            self._trainer_connection.backend,
-            self._trainer_connection.device_id,
-            self._workout,
-            self._last_snapshot,
-        )
+        self._ftms_bridge_manager.apply_settings(settings)
+        if was_enabled != now_enabled:
+            self._ftms_bridge_manager.set_opentrueup(self._opentrueup_state.controller)
 
     def shutdown(self) -> None:
         self._timer.stop()
