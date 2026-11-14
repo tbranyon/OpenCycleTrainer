@@ -407,3 +407,66 @@ def test_recorder_stop_completes_gracefully_when_fit_export_fails():
     assert summary.summary_file_path.exists()
     summary_payload = json.loads(summary.summary_file_path.read_text(encoding="utf-8"))
     assert summary_payload["sample_count"] == 2
+
+
+# ── Finish now, write later ───────────────────────────────────────────────────
+
+
+def _recorder_with_samples(tmp_path: Path, seconds: int = 3) -> tuple[WorkoutRecorder, datetime]:
+    recorder = WorkoutRecorder(
+        data_dir=tmp_path,
+        flush_batch_size=2,
+        fit_exporter=FitExporter(writer_backend=JsonFitWriterBackend()),
+    )
+    start_time = datetime(2026, 3, 10, 18, 42, 0, tzinfo=timezone.utc)
+    recorder.start("Threshold", started_at_utc=start_time)
+    for i in range(seconds):
+        recorder.record_sample(_sample(start_time + timedelta(seconds=i), trainer=200 + 10 * i))
+    return recorder, start_time
+
+
+def test_finish_defers_file_writing_until_write_is_called(tmp_path):
+    recorder, start_time = _recorder_with_samples(tmp_path)
+
+    finished = recorder.finish(finished_at_utc=start_time + timedelta(seconds=3))
+
+    assert not finished.fit_file_path.exists()
+    assert not finished.summary_file_path.exists()
+    summary = finished.write()
+    assert summary.fit_file_path == finished.fit_file_path
+    assert summary.fit_file_path.exists()
+    assert summary.summary_file_path.exists()
+    assert summary.sample_count == 3
+    assert summary.duration_seconds == 3
+    assert summary.avg_power_watts == pytest.approx(210.0)
+
+
+def test_a_new_ride_can_start_before_the_previous_one_is_written(tmp_path):
+    recorder, start_time = _recorder_with_samples(tmp_path)
+    finished = recorder.finish(finished_at_utc=start_time + timedelta(seconds=3))
+
+    recorder.start("Next Ride", started_at_utc=start_time + timedelta(minutes=5))
+    recorder.record_sample(_sample(start_time + timedelta(minutes=5), trainer=300))
+
+    summary = finished.write()
+    assert summary.workout_name == "Threshold"
+    assert summary.sample_count == 3
+    assert recorder.get_recorded_samples()[-1].trainer_power_watts == 300
+
+
+def test_finish_reuses_metrics_already_computed_for_the_summary(tmp_path):
+    from opencycletrainer.core.workout_metrics import WorkoutMetrics
+
+    recorder, start_time = _recorder_with_samples(tmp_path)
+    precomputed = WorkoutMetrics(avg_power_watts=1.0, normalized_power=321, tss=None, avg_hr=111, kj=9.5)
+
+    summary = recorder.finish(finished_at_utc=start_time + timedelta(seconds=3), metrics=precomputed).write()
+
+    assert (summary.normalized_power, summary.avg_hr, summary.kj) == (321, 111, 9.5)
+
+
+def test_stop_still_writes_everything_immediately(tmp_path):
+    recorder, start_time = _recorder_with_samples(tmp_path)
+    summary = recorder.stop(finished_at_utc=start_time + timedelta(seconds=3))
+    assert summary.fit_file_path.exists()
+    assert summary.summary_file_path.exists()

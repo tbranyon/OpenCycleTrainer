@@ -12,7 +12,7 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 
 from opencycletrainer.core.fit_exporter import FitExportSample, FitExporter
-from opencycletrainer.core.workout_metrics import compute_workout_metrics
+from opencycletrainer.core.workout_metrics import WorkoutMetrics, compute_workout_metrics
 from opencycletrainer.storage.filenames import build_activity_filename
 from opencycletrainer.storage.paths import (
     ensure_dir,
@@ -73,6 +73,104 @@ class RecorderSummary:
             "avg_hr": self.avg_hr,
             "sample_count": self.sample_count,
         }
+
+
+class FinishedRecording:
+    """An ended recording whose files have not been written yet.
+
+    Holds its own copy of everything ``write()`` needs, so it is safe to write from a
+    worker thread while the recorder starts the next session.
+    """
+
+    def __init__(
+        self,
+        *,
+        session: RecorderSession,
+        finished_at_utc: datetime,
+        activity_name: str | None,
+        samples: list[RecorderSample],
+        avg_power_watts: float | None,
+        metrics: WorkoutMetrics | None,
+        fit_exporter: FitExporter,
+    ) -> None:
+        self._session = session
+        self._finished_at_utc = finished_at_utc
+        self._workout_name = activity_name or session.workout_name
+        self._samples = list(samples)
+        self._avg_power_watts = avg_power_watts
+        self._metrics = metrics
+        self._fit_exporter = fit_exporter
+
+    @property
+    def fit_file_path(self) -> Path:
+        return self._session.fit_file_path
+
+    @property
+    def samples_file_path(self) -> Path:
+        return self._session.samples_file_path
+
+    @property
+    def summary_file_path(self) -> Path:
+        return self._session.summary_file_path
+
+    def write(self) -> RecorderSummary:
+        """Encode the FIT file and write the JSON summary; returns the summary.
+
+        A FIT export failure is logged and the summary is still written, since the raw
+        samples file already holds the ride.
+        """
+        session = self._session
+        metrics = self._metrics or compute_workout_metrics(self._samples, ftp_watts=0)
+        fit_samples = [
+            FitExportSample(
+                timestamp_utc=sample.timestamp_utc,
+                power_watts=(
+                    sample.bike_power_watts
+                    if sample.bike_power_watts is not None
+                    else sample.trainer_power_watts
+                ),
+                heart_rate_bpm=sample.heart_rate_bpm,
+                cadence_rpm=sample.cadence_rpm,
+                speed_mps=sample.speed_mps,
+                dfa_alpha1=sample.dfa_alpha1,
+            )
+            for sample in self._samples
+        ]
+        try:
+            self._fit_exporter.export_activity(
+                workout_name=self._workout_name,
+                started_at_utc=session.started_at_utc,
+                finished_at_utc=self._finished_at_utc,
+                fit_file_path=session.fit_file_path,
+                samples=fit_samples,
+            )
+        except Exception:
+            _logger.exception(
+                "FIT export failed; workout data preserved in %s",
+                session.samples_file_path,
+            )
+        else:
+            size_kb = session.fit_file_path.stat().st_size / 1024
+            _logger.info("FIT file written: %s (%.1f KB)", session.fit_file_path, size_kb)
+
+        summary = RecorderSummary(
+            workout_name=self._workout_name,
+            start_time_utc=session.started_at_utc,
+            duration_seconds=int((self._finished_at_utc - session.started_at_utc).total_seconds()),
+            avg_power_watts=self._avg_power_watts,
+            normalized_power=metrics.normalized_power,
+            kj=metrics.kj,
+            avg_hr=metrics.avg_hr,
+            sample_count=len(self._samples),
+            fit_file_path=session.fit_file_path,
+            samples_file_path=session.samples_file_path,
+            summary_file_path=session.summary_file_path,
+        )
+        session.summary_file_path.write_text(
+            json.dumps(summary.to_dict(), indent=2),
+            encoding="utf-8",
+        )
+        return summary
 
 
 class WorkoutRecorder:
@@ -220,6 +318,22 @@ class WorkoutRecorder:
         return True
 
     def stop(self, finished_at_utc: datetime | None = None, activity_name: str | None = None) -> RecorderSummary:
+        """End the session and write its FIT and summary files before returning."""
+        return self.finish(finished_at_utc=finished_at_utc, activity_name=activity_name).write()
+
+    def finish(
+        self,
+        finished_at_utc: datetime | None = None,
+        activity_name: str | None = None,
+        metrics: WorkoutMetrics | None = None,
+    ) -> FinishedRecording:
+        """End the session without writing files yet; call ``write()`` on the result.
+
+        This part is quick (it only drains the samples writer), so it can run on the UI
+        thread; the slow FIT encode in ``write()`` can then run elsewhere. The recorder is
+        free to start a new session as soon as this returns. Pass *metrics* when they were
+        already computed for the summary screen, to avoid computing them twice.
+        """
         session = self._session
         if session is None:
             raise RuntimeError("Recorder is not active.")
@@ -236,62 +350,18 @@ class WorkoutRecorder:
             if self._writer_thread.is_alive():
                 raise RuntimeError("Timed out waiting for recorder writer thread.")
 
-        duration_seconds = int((finish_time_utc - session.started_at_utc).total_seconds())
         avg_power_watts: float | None = None
         if self._effective_power_count > 0:
             avg_power_watts = round(self._effective_power_sum / self._effective_power_count, 2)
 
-        metrics = compute_workout_metrics(self._recorded_samples, ftp_watts=0)
-
-        fit_samples = [
-            FitExportSample(
-                timestamp_utc=sample.timestamp_utc,
-                power_watts=(
-                    sample.bike_power_watts
-                    if sample.bike_power_watts is not None
-                    else sample.trainer_power_watts
-                ),
-                heart_rate_bpm=sample.heart_rate_bpm,
-                cadence_rpm=sample.cadence_rpm,
-                speed_mps=sample.speed_mps,
-                dfa_alpha1=sample.dfa_alpha1,
-            )
-            for sample in self._recorded_samples
-        ]
-        effective_name = activity_name or session.workout_name
-        try:
-            self._fit_exporter.export_activity(
-                workout_name=effective_name,
-                started_at_utc=session.started_at_utc,
-                finished_at_utc=finish_time_utc,
-                fit_file_path=session.fit_file_path,
-                samples=fit_samples,
-            )
-        except Exception:
-            _logger.exception(
-                "FIT export failed; workout data preserved in %s",
-                session.samples_file_path,
-            )
-        else:
-            size_kb = session.fit_file_path.stat().st_size / 1024
-            _logger.info("FIT file written: %s (%.1f KB)", session.fit_file_path, size_kb)
-
-        summary = RecorderSummary(
-            workout_name=effective_name,
-            start_time_utc=session.started_at_utc,
-            duration_seconds=duration_seconds,
+        finished = FinishedRecording(
+            session=session,
+            finished_at_utc=finish_time_utc,
+            activity_name=activity_name,
+            samples=self._recorded_samples,
             avg_power_watts=avg_power_watts,
-            normalized_power=metrics.normalized_power,
-            kj=metrics.kj,
-            avg_hr=metrics.avg_hr,
-            sample_count=len(self._recorded_samples),
-            fit_file_path=session.fit_file_path,
-            samples_file_path=session.samples_file_path,
-            summary_file_path=session.summary_file_path,
-        )
-        session.summary_file_path.write_text(
-            json.dumps(summary.to_dict(), indent=2),
-            encoding="utf-8",
+            metrics=metrics,
+            fit_exporter=self._fit_exporter,
         )
 
         self._session = None
@@ -301,7 +371,7 @@ class WorkoutRecorder:
         self._pending_rows = []
         self._last_recorded_timestamp_utc = None
         self._max_recorded_timestamp_utc = None
-        return summary
+        return finished
 
     def discard(self) -> None:
         """Abort the current session without saving any files."""

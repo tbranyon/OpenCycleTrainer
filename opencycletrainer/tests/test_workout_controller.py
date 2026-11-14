@@ -3656,11 +3656,55 @@ def test_manual_save_writes_fit_file_to_selected_directory(tmp_path, monkeypatch
         staticmethod(lambda *args, **kwargs: str(tmp_path)),
     )
     screen.save_button.click()
-    app.processEvents()
+    assert _wait_until(app, lambda: list(tmp_path.glob("*.fit")))
 
     written = list(tmp_path.glob("*.fit"))
     assert len(written) == 1
     assert written[0].name.endswith(".fit")
+
+    controller.shutdown()
+
+
+def test_manual_save_runs_in_the_background_and_keeps_dfa_alpha1(tmp_path, monkeypatch):
+    import threading  # noqa: PLC0415
+
+    from opencycletrainer.core.recorder import RecorderSample  # noqa: PLC0415
+
+    class _BlockingExporter:
+        """Holds the export open until released, like a long ride's FIT encode."""
+
+        def __init__(self) -> None:
+            self.release = threading.Event()
+            self.samples: list = []
+
+        def export_activity(self, *, workout_name, started_at_utc, finished_at_utc, fit_file_path, samples):  # noqa: ARG002
+            self.release.wait(3.0)
+            self.samples = list(samples)
+            Path(fit_file_path).write_bytes(b"fit")
+
+    app = _get_or_create_qapp()
+    recorder = _FakeRecorder()
+    exporter = _BlockingExporter()
+    controller, screen = _make_controller_ready_to_end(app, recorder=recorder, fit_exporter=exporter)
+    recorder.samples.append(RecorderSample(
+        timestamp_utc=datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc),
+        target_power_watts=200, trainer_power_watts=195, bike_power_watts=None,
+        heart_rate_bpm=130, cadence_rpm=90.0, speed_mps=8.0, dfa_alpha1=0.82,
+    ))
+    screen.end_button.click()
+    app.processEvents()
+    monkeypatch.setattr(
+        "opencycletrainer.ui.workout_controller.QFileDialog.getExistingDirectory",
+        staticmethod(lambda *args, **kwargs: str(tmp_path)),
+    )
+
+    screen.save_button.click()
+
+    assert list(tmp_path.glob("*.fit")) == []  # the click returned while the export is still running
+    exporter.release.set()
+    assert _wait_until(app, lambda: screen.alert_label.text().startswith("Saved: "), timeout_seconds=3.0)
+    assert len(list(tmp_path.glob("*.fit"))) == 1
+    assert exporter.samples[0].dfa_alpha1 == 0.82
 
     controller.shutdown()
 

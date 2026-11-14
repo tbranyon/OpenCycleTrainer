@@ -64,6 +64,8 @@ class RecorderIntegration:
         self._total_kj = 0.0
         self._last_energy_tick_monotonic: float | None = None
         self._upload_executor: ThreadPoolExecutor | None = None
+        self._save_executor: ThreadPoolExecutor | None = None
+        self._pending_metrics: object | None = None
         self._workout: Workout | None = None
         self._aggregator = OneSecondAggregator()
         # Session anchor: every sample timestamp is derived from these two
@@ -132,6 +134,7 @@ class RecorderIntegration:
         if callable(get_samples):
             samples = get_samples()
             metrics = compute_workout_metrics(samples, ftp_watts=0)
+            self._pending_metrics = metrics
             return SimpleNamespace(
                 normalized_power=metrics.normalized_power,
                 kj=metrics.kj,
@@ -139,12 +142,38 @@ class RecorderIntegration:
             )
         return None
 
-    def commit(self, activity_name: str | None = None) -> None:
-        """Write files and trigger Strava sync. Call after prepare_summary()."""
+    def commit(self, activity_name: str | None = None, *, wait: bool = False) -> None:
+        """Save the ride and trigger uploads. Call after prepare_summary().
+
+        The session is ended here, but the slow FIT encode (seconds for a long ride) runs
+        on a background thread, followed by the uploads, so the UI stays responsive. Pass
+        *wait* to block until the files are written (used when the app is closing).
+        """
         if not self._pending_finalize:
             return
         self._pending_finalize = False
         finished_at_utc = self._anchored_timestamp(self._monotonic_now())
+        metrics, self._pending_metrics = self._pending_metrics, None
+        finish = getattr(self._recorder, "finish", None)
+        if not callable(finish):
+            self._commit_synchronously(finished_at_utc, activity_name)
+            return
+        try:
+            finished = finish(finished_at_utc=finished_at_utc, activity_name=activity_name, metrics=metrics)
+        except RuntimeError as exc:
+            _logger.warning("Recorder finish failed: %s", exc)
+            self._workout = None
+            return
+        if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
+            # Grabbing the chart has to happen on the UI thread, before it is cleared.
+            self._export_chart_image(finished.fit_file_path)
+        future = self._ensure_save_executor().submit(self._write_and_upload, finished, activity_name)
+        self._workout = None
+        if wait:
+            future.result()
+
+    def _commit_synchronously(self, finished_at_utc: datetime, activity_name: str | None) -> None:
+        """Save through a recorder that only offers a blocking ``stop()``."""
         try:
             summary = self._recorder.stop(finished_at_utc=finished_at_utc, activity_name=activity_name)
         except RuntimeError as exc:
@@ -156,24 +185,47 @@ class RecorderIntegration:
             alert_type="success",
         )
         if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
-            data_root = get_workout_data_root(self._settings.workout_data_dir)
-            chart_image_path = get_workout_png_dir(data_root) / (
-                f"{summary.fit_file_path.stem}.png"
-            )
-            self._screen.export_chart_image(chart_image_path)
-            self._enqueue_strava_upload(summary.fit_file_path, activity_name)
+            self._export_chart_image(summary.fit_file_path)
+        self._enqueue_uploads(summary.fit_file_path, activity_name)
+        self._workout = None
+
+    def _write_and_upload(self, finished: object, activity_name: str | None) -> None:
+        """Background job: write the ride's files, report the result, then upload."""
+        try:
+            summary = finished.write()
+        except Exception:
+            _logger.exception("Saving the workout failed")
+            kept_in = getattr(finished, "samples_file_path", None)
+            detail = f" Your ride data is kept in {kept_in}." if kept_in is not None else ""
+            self._alert_signal(f"Couldn't save the workout file.{detail}", "error")
+            return
+        self._alert_signal(f"Workout saved: {summary.fit_file_path.name}", "success")
+        self._enqueue_uploads(summary.fit_file_path, activity_name)
+
+    def _export_chart_image(self, fit_file_path: Path) -> None:
+        data_root = get_workout_data_root(self._settings.workout_data_dir)
+        self._screen.export_chart_image(get_workout_png_dir(data_root) / f"{fit_file_path.stem}.png")
+
+    def _enqueue_uploads(self, fit_file_path: Path, activity_name: str | None) -> None:
+        if self._settings.strava_auto_sync_enabled and self._strava_upload_fn is not None:
+            self._enqueue_strava_upload(fit_file_path, activity_name)
         if (
             self._settings.intervals_icu_auto_sync_enabled
             and self._intervals_icu_upload_fn is not None
         ):
-            self._enqueue_intervals_icu_upload(summary.fit_file_path, activity_name)
-        self._workout = None
+            self._enqueue_intervals_icu_upload(fit_file_path, activity_name)
+
+    def _ensure_save_executor(self) -> ThreadPoolExecutor:
+        if self._save_executor is None:
+            self._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workout-save")
+        return self._save_executor
 
     def discard(self) -> None:
         """Abandon the current workout without writing any files."""
         if not self._pending_finalize:
             return
         self._pending_finalize = False
+        self._pending_metrics = None
         discard_fn = getattr(self._recorder, "discard", None)
         if callable(discard_fn):
             try:
@@ -182,7 +234,7 @@ class RecorderIntegration:
                 _logger.warning("Recorder discard failed: %s", exc)
         self._workout = None
 
-    def finalize(self, workout: Workout) -> object | None:  # noqa: ARG002
+    def finalize(self, workout: Workout, *, wait: bool = False) -> object | None:  # noqa: ARG002
         """Stop recording, save the file, and trigger any post-workout uploads.
 
         Convenience method that calls prepare_summary() then commit(). Used by
@@ -192,7 +244,7 @@ class RecorderIntegration:
         pending = self.prepare_summary()
         if pending is None:
             return None
-        self.commit()
+        self.commit(wait=wait)
         return pending
 
     def sync(
@@ -300,9 +352,13 @@ class RecorderIntegration:
     def shutdown(self) -> None:
         """Finalize any in-progress recording and shut down the upload thread pool."""
         if self._recorder_started:
-            self.finalize(self._workout)
+            self.finalize(self._workout, wait=True)
         elif self._pending_finalize:
-            self.commit()
+            self.commit(wait=True)
+        if self._save_executor is not None:
+            # Rides finished just before closing must reach disk before the app exits.
+            self._save_executor.shutdown(wait=True)
+            self._save_executor = None
         if self._upload_executor is not None:
             self._upload_executor.shutdown(wait=False)
 

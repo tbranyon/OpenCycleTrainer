@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import threading
 import time
 
 _logger = logging.getLogger(__name__)
@@ -795,9 +796,20 @@ class WorkoutSessionController(QObject):
                 heart_rate_bpm=sample.heart_rate_bpm,
                 cadence_rpm=sample.cadence_rpm,
                 speed_mps=sample.speed_mps,
+                dfa_alpha1=getattr(sample, "dfa_alpha1", None),
             )
             for sample in snapshot["samples"]
         ]
+        self._screen.show_alert(f"Saving {dest_path.name}…", "info")
+        # Encoding a long ride takes seconds, so it runs off the UI thread; the result is
+        # reported back through a queued signal.
+        threading.Thread(
+            target=self._export_manual_save,
+            args=(snapshot, dest_path, fit_samples),
+            name="manual-fit-save",
+        ).start()
+
+    def _export_manual_save(self, snapshot: dict, dest_path: Path, fit_samples: list[FitExportSample]) -> None:
         try:
             self._manual_save_fit_exporter.export_activity(
                 workout_name=snapshot["workout_name"],
@@ -808,9 +820,9 @@ class WorkoutSessionController(QObject):
             )
         except Exception as exc:
             _logger.warning("Manual FIT save failed: %s", exc)
-            self._screen.show_alert("Failed to save FIT file", "error")
+            self._strava_alert_signal.emit("Failed to save FIT file", "error")
             return
-        self._screen.show_alert(f"Saved: {dest_path.name}", "success")
+        self._strava_alert_signal.emit(f"Saved: {dest_path.name}", "success")
 
     @staticmethod
     def _fresh_value(value: object, received_at: float | None, now: float) -> object | None:
