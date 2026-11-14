@@ -76,16 +76,14 @@ only help install size and startup time.
    checklist: pair a trainer, set FTP, pick a workout.
 5. **Error banners vanish after 5 s** and dismiss by mouse click only
    (`ui/workout_screen.py:642-656`). Keep errors until dismissed.
-6. **Devices tab feedback is thin:** no scan progress, no empty state, raw device IDs
-   in messages, and Unpair is unconfirmed.
-7. **Hard to read from the bike.** Tile values are only 1–4 pt above default, there is
+6. **Hard to read from the bike.** Tile values are only 1–4 pt above default, there is
    no fullscreen mode, and the charts have no zone shading or legend.
-8. **Dark mode is partial.** Banners, builder hints and the summary dialog hard-code
+7. **Dark mode is partial.** Banners, builder hints and the summary dialog hard-code
    colours, although `ui/theme.py` already has a theme-aware palette.
-9. **Window size is fixed at 1024×720 and not remembered**, and the summary dialog's
+8. **Window size is fixed at 1024×720 and not remembered**, and the summary dialog's
    760×760 minimum is taller than the main window.
-10. **After a ride, the banner shows only the file name.** Show the folder and add an
-    "Open folder" action.
+9. **After a ride, the banner shows only the file name.** Show the folder and add an
+   "Open folder" action.
 
 **Bigger bet: the UI framework**
 
