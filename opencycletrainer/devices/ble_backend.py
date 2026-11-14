@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
+import contextlib
 from dataclasses import replace
+from functools import partial
 import inspect
 import logging
+import sys
 import threading
 from typing import Any
 
@@ -14,6 +17,8 @@ _logger = logging.getLogger(__name__)
 from .device_manager import AsyncioRunner, DeviceManager, NotificationCallback, completed_future
 from .decoders.ftms import ResistanceLevelRange, decode_resistance_level_range
 from .types import (
+    BATTERY_LEVEL_CHARACTERISTIC_UUID,
+    CONNECT_SERVICE_UUIDS,
     CPS_CONTROL_POINT_CHARACTERISTIC_UUID,
     DeviceInfo,
     DeviceType,
@@ -26,19 +31,88 @@ from .types import (
 from opencycletrainer.storage.paired_devices import PairedDeviceStore
 
 PayloadNotificationCallback = Callable[[bytes], Awaitable[None] | None]
+BatteryReader = Callable[[str], Awaitable[int | None]]
 
 START_OFFSET_COMP_OPCODE = 0x0C
 
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_AUTOCONNECT_DISCOVERY_SECONDS = 12.0
+DEFAULT_RECONNECT_MAX_DELAY_SECONDS = 30.0
+DEFAULT_BATTERY_POLL_SECONDS = 300.0
+# BlueZ publishes a device's battery level a moment after the link comes up, so a first read
+# that finds nothing is retried soon before falling back to the normal poll interval.
+_BATTERY_EARLY_RETRY_SECONDS = (2.0, 10.0)
+_MAX_BATTERY_PERCENT = 100
+_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_CALIBRATION_RESPONSE_TIMEOUT_SECONDS = 8.0
+
+_BLUEZ_SERVICE = "org.bluez"
+_BLUEZ_DEVICE_INTERFACE = "org.bluez.Device1"
+_BLUEZ_BATTERY_INTERFACE = "org.bluez.Battery1"
+_USE_PLATFORM_BATTERY_READER = object()
+
+
+async def read_bluez_battery_percent(address: str) -> int | None:
+    """Return BlueZ's battery level for *address* (Linux only), or None if it has none.
+
+    BlueZ's battery plugin claims the standard Battery Service and hides it from GATT
+    clients, exposing the level as ``org.bluez.Battery1.Percentage`` on the device instead.
+    """
+    from dbus_fast import BusType, Message, MessageType
+    from dbus_fast.aio import MessageBus
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        reply = await bus.call(
+            Message(
+                destination=_BLUEZ_SERVICE,
+                path="/",
+                interface="org.freedesktop.DBus.ObjectManager",
+                member="GetManagedObjects",
+            )
+        )
+        if reply.message_type != MessageType.METHOD_RETURN:
+            return None
+        for interfaces in reply.body[0].values():
+            device = interfaces.get(_BLUEZ_DEVICE_INTERFACE)
+            battery = interfaces.get(_BLUEZ_BATTERY_INTERFACE)
+            if device is None or battery is None or "Percentage" not in battery:
+                continue
+            if str(device["Address"].value).upper() == address.upper():
+                return int(battery["Percentage"].value)
+        return None
+    finally:
+        bus.disconnect()
+
+
+def _platform_battery_reader() -> BatteryReader | None:
+    return read_bluez_battery_percent if sys.platform.startswith("linux") else None
+
+
 class BleakDeviceBackend(DeviceManager):
-    """Bleak-powered device manager with async scan/connect/notify plumbing."""
+    """Bleak-powered device manager with async scan/connect/notify plumbing.
+
+    Every connection attempt for a device runs through a single coordinator task, so
+    repeated Connect presses, autoconnect, scan-triggered reconnects and the dropout
+    reconnect loop join one attempt instead of racing. Only one connect is in flight on the
+    radio at a time, because BlueZ rejects overlapping LE connects with ``InProgress``.
+    Devices found by discovery are connected through their discovered handle, which lets
+    bleak skip the extra scan it otherwise runs inside every connect-by-address.
+    """
 
     def __init__(
         self,
         scan_timeout_seconds: float = 5.0,
         paired_device_store: PairedDeviceStore | None = None,
         reconnect_delay_seconds: float = 3.0,
-        max_reconnect_attempts: int = 10,
+        max_reconnect_attempts: int | None = None,
         device_connection_changed_callback: Callable[[str, bool], None] | None = None,
+        *,
+        autoconnect_discovery_seconds: float = DEFAULT_AUTOCONNECT_DISCOVERY_SECONDS,
+        connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        reconnect_max_delay_seconds: float = DEFAULT_RECONNECT_MAX_DELAY_SECONDS,
+        battery_poll_seconds: float = DEFAULT_BATTERY_POLL_SECONDS,
+        bluez_battery_reader: BatteryReader | None | object = _USE_PLATFORM_BATTERY_READER,
     ) -> None:
         self._scan_timeout_seconds = scan_timeout_seconds
         # WARNING: omitting paired_device_store uses the real user data file. Tests MUST
@@ -47,29 +121,48 @@ class BleakDeviceBackend(DeviceManager):
         self._paired_device_store = paired_device_store if paired_device_store is not None else PairedDeviceStore()
         self._reconnect_delay_seconds = reconnect_delay_seconds
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._reconnect_max_delay_seconds = reconnect_max_delay_seconds
+        self._autoconnect_discovery_seconds = autoconnect_discovery_seconds
+        self._connect_timeout_seconds = connect_timeout_seconds
+        self._battery_poll_seconds = battery_poll_seconds
+        self._bluez_battery_reader: BatteryReader | None = (
+            _platform_battery_reader()
+            if bluez_battery_reader is _USE_PLATFORM_BATTERY_READER
+            else bluez_battery_reader  # type: ignore[assignment]
+        )
         self.device_connection_changed_callback = device_connection_changed_callback
+        self.devices_changed_callback: Callable[[], None] | None = None
         self._runner = AsyncioRunner()
         self._lock = threading.Lock()
         self._devices: dict[str, DeviceInfo] = {}
         self._paired_ids: set[str] = set()
         self._clients: dict[str, Any] = {}
         self._subscribed_uuids: dict[str, set[str]] = {}
+        self._ble_devices: dict[str, Any] = {}
+        self._connecting_ids: set[str] = set()
         self._reconnecting_ids: set[str] = set()
         self._intentional_disconnects: set[str] = set()
+        # The task dicts below are only touched on the asyncio loop thread.
+        self._connect_tasks: dict[str, asyncio.Task[None]] = {}
+        self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
+        self._battery_tasks: dict[str, asyncio.Task[None]] = {}
+        self._scan_task: asyncio.Task[list[DeviceInfo]] | None = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._connect_lock = asyncio.Lock()
         self._load_paired_ids_from_store()
 
     def scan(self) -> Future[list[DeviceInfo]]:
-        return self._runner.submit(self._scan_async())
+        return self._runner.submit(self._scan_once_async())
 
     def get_paired_devices(self) -> list[DeviceInfo]:
         with self._lock:
-            paired = [device for device in self._devices.values() if device.paired]
-            return sorted(paired, key=lambda device: device.name.lower())
+            paired = [self._with_activity(device) for device in self._devices.values() if device.paired]
+        return sorted(paired, key=lambda device: device.name.lower())
 
     def get_available_devices(self) -> list[DeviceInfo]:
         with self._lock:
-            available = [device for device in self._devices.values() if not device.paired]
-            return sorted(available, key=lambda device: device.name.lower())
+            available = [self._with_activity(device) for device in self._devices.values() if not device.paired]
+        return sorted(available, key=lambda device: device.name.lower())
 
     def pair_device(self, device_id: str) -> Future[None]:
         with self._lock:
@@ -77,13 +170,14 @@ class BleakDeviceBackend(DeviceManager):
             self._paired_ids.add(device_id)
             self._devices[device_id] = replace(device, paired=True)
         self._persist_paired_ids()
+        self._notify_devices_changed()
         return completed_future(None)
 
     def unpair_device(self, device_id: str) -> Future[None]:
         return self._runner.submit(self._unpair_async(device_id))
 
     def connect_device(self, device_id: str) -> Future[None]:
-        return self._runner.submit(self._connect_async(device_id))
+        return self._runner.submit(self._ensure_connected(device_id))
 
     def autoconnect_paired_devices(self) -> Future[list[str]]:
         return self._runner.submit(self._autoconnect_paired_async())
@@ -169,159 +263,278 @@ class BleakDeviceBackend(DeviceManager):
 
     def shutdown(self) -> None:
         try:
-            self._runner.submit(self._disconnect_all_async()).result(timeout=5.0)
+            self._runner.submit(self._disconnect_all_async()).result(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         except Exception:
             pass
         self._runner.shutdown()
 
+    # ── Discovery ─────────────────────────────────────────────────────────────
+
+    async def _scan_once_async(self) -> list[DeviceInfo]:
+        """Run a scan, or join the one already running."""
+        task = self._scan_task
+        if task is None or task.done():
+            task = asyncio.get_running_loop().create_task(self._scan_async())
+            self._scan_task = task
+        return await asyncio.shield(task)
+
     async def _scan_async(self) -> list[DeviceInfo]:
-        _, scanner = self._load_bleak_classes()
-        discovered = await scanner.discover(timeout=self._scan_timeout_seconds, return_adv=True)
-        scanned_devices: list[DeviceInfo] = []
+        seen = await self._discover(self._scan_timeout_seconds)
+        with self._lock:
+            reconnect_ids = [
+                device_id for device_id in seen
+                if device_id in self._paired_ids and device_id not in self._clients
+            ]
+            scanned = [self._with_activity(self._devices[device_id]) for device_id in seen if device_id in self._devices]
+        for device_id in reconnect_ids:
+            self._spawn(self._try_connect(device_id))
+        return sorted(scanned, key=lambda device: device.name.lower())
 
-        if isinstance(discovered, dict):
-            iterable = discovered.values()
-        else:
-            iterable = ((device, None) for device in discovered)
+    async def _discover(
+        self,
+        duration_seconds: float,
+        stop_when: Callable[[set[str]], bool] | None = None,
+    ) -> set[str]:
+        """Listen for advertisements for up to *duration_seconds*; return the ids seen.
 
-        for entry in iterable:
-            ble_device, advertisement = entry
-            service_uuids = self._extract_service_uuids(ble_device, advertisement)
-            device_type = infer_device_type(service_uuids)
+        Devices are recorded (and listeners notified) as each advertisement arrives, so
+        results appear while the scan is still running. Stops early once *stop_when*
+        returns True for the ids seen so far.
+        """
+        _, scanner_cls = self._load_bleak_classes()
+        seen: set[str] = set()
+        stop = asyncio.Event()
+
+        def _on_detect(ble_device: Any, advertisement: Any) -> None:
+            device_id = self._record_advertisement(ble_device, advertisement)
+            if device_id is None:
+                return
+            seen.add(device_id)
+            if stop_when is not None and stop_when(seen):
+                stop.set()
+
+        scanner = scanner_cls(detection_callback=_on_detect)
+        await scanner.start()
+        try:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=max(0.0, duration_seconds))
+        finally:
+            await scanner.stop()
+        return seen
+
+    def _record_advertisement(self, ble_device: Any, advertisement: Any) -> str | None:
+        """Store what an advertisement says about a device; return its id if it is relevant."""
+        device_id = getattr(ble_device, "address", None) or getattr(ble_device, "name", None)
+        if not device_id:
+            return None
+        device_type = infer_device_type(self._extract_service_uuids(ble_device, advertisement))
+        rssi = getattr(advertisement, "rssi", None)
+        if rssi is None:
+            rssi = getattr(ble_device, "rssi", None)
+
+        with self._lock:
+            existing = self._devices.get(device_id)
             if device_type is None:
-                continue
-
-            device_id = getattr(ble_device, "address", None) or getattr(ble_device, "name", None)
-            if not device_id:
-                continue
-
-            name = getattr(ble_device, "name", None) or "Unknown Device"
-            rssi = getattr(advertisement, "rssi", None)
-            if rssi is None:
-                rssi = getattr(ble_device, "rssi", None)
-
-            with self._lock:
-                existing = self._devices.get(device_id)
-                is_connected = device_id in self._clients
-                is_paired = device_id in self._paired_ids
-                info = DeviceInfo(
-                    device_id=device_id,
-                    name=name,
-                    device_type=device_type,
-                    address=getattr(ble_device, "address", None),
-                    rssi=rssi,
-                    paired=is_paired,
-                    connected=is_connected,
-                    battery_percent=existing.battery_percent if existing else None,
-                    supports_calibration=(
-                        existing.supports_calibration
-                        if existing
-                        else device_type is DeviceType.POWER_METER
-                    ),
-                )
-                self._devices[device_id] = info
-                scanned_devices.append(info)
-
-        for device_id in self._paired_ids:
-            if device_id not in self._clients:
-                try:
-                    await self._connect_async(device_id)
-                except Exception as exc:
-                    _logger.warning("Failed to reconnect paired device '%s': %s", device_id, exc)
-
-        return sorted(scanned_devices, key=lambda device: device.name.lower())
+                # Some packets (e.g. scan responses on Windows) omit service UUIDs; still
+                # refresh the handle for a device we already know.
+                if existing is None:
+                    return None
+                device_type = existing.device_type
+            name = getattr(ble_device, "name", None) or (existing.name if existing else "Unknown Device")
+            info = DeviceInfo(
+                device_id=device_id,
+                name=name,
+                device_type=device_type,
+                address=getattr(ble_device, "address", None),
+                rssi=rssi,
+                paired=device_id in self._paired_ids,
+                connected=device_id in self._clients,
+                battery_percent=existing.battery_percent if existing else None,
+                supports_calibration=(
+                    existing.supports_calibration
+                    if existing
+                    else device_type is DeviceType.POWER_METER
+                ),
+            )
+            changed = existing is None or (existing.name, existing.device_type, existing.address) != (
+                info.name, info.device_type, info.address
+            )
+            self._devices[device_id] = info
+            self._ble_devices[device_id] = ble_device
+        if changed:
+            self._notify_devices_changed()
+        return device_id
 
     async def _autoconnect_paired_async(self) -> list[str]:
-        """Connect to every paired device not already connected, returning the ids that
-        connected.
+        """Connect every paired device that is not yet connected; return the ids that connected.
 
-        Fast path: connect directly by address, skipping the scan delay (works on Windows
-        and whenever the device is already known to the OS BLE stack). On Linux/macOS a
-        device can be unreachable by address until it has been discovered, so when any
-        paired device remains missing we fall back to a single scan — which itself retries
-        the paired connections — and re-check before giving up."""
-        with self._lock:
-            paired_ids = [device_id for device_id in self._paired_ids if device_id not in self._clients]
-        connected = await self._connect_paired_ids(paired_ids)
-
-        remaining = [device_id for device_id in paired_ids if device_id not in connected]
-        if remaining:
-            try:
-                await self._scan_async()
-            except Exception as exc:
-                _logger.warning("Autoconnect scan fallback failed: %s", exc)
-            with self._lock:
-                for device_id in remaining:
-                    if device_id in self._clients and device_id not in connected:
-                        connected.append(device_id)
-        return connected
-
-    async def _connect_paired_ids(self, device_ids: list[str]) -> list[str]:
-        """Attempt a direct connect to each id, returning those that succeed. Failures are
-        logged and skipped so one unreachable device does not block the others."""
+        Each device is connected as soon as its advertisement is seen, so devices that are
+        switched off never hold up the others. Paired devices still unseen when the
+        discovery window closes get one direct connect attempt by address, which reaches
+        devices the OS keeps connected (those stop advertising)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._autoconnect_discovery_seconds
         connected: list[str] = []
-        for device_id in device_ids:
+        attempted: set[str] = set()
+        while True:
+            pending = self._unconnected_paired_ids() - attempted
+            remaining = deadline - loop.time()
+            if not pending or remaining <= 0:
+                break
             try:
-                await self._connect_async(device_id)
+                seen = await self._discover(remaining, stop_when=lambda ids, wanted=pending: bool(ids & wanted))
             except Exception as exc:
-                _logger.warning("Autoconnect failed for paired device '%s': %s", device_id, exc)
-                continue
-            connected.append(device_id)
+                _logger.warning("Autoconnect discovery failed: %s", exc)
+                break
+            ready = sorted(seen & pending)
+            if not ready:
+                break
+            for device_id in ready:
+                attempted.add(device_id)
+                if await self._try_connect(device_id):
+                    connected.append(device_id)
+
+        for device_id in sorted(self._unconnected_paired_ids() - attempted):
+            if await self._try_connect(device_id):
+                connected.append(device_id)
         return connected
 
-    async def _unpair_async(self, device_id: str) -> None:
-        if device_id in self._clients:
-            await self._disconnect_async(device_id)
+    def _unconnected_paired_ids(self) -> set[str]:
         with self._lock:
-            device = self._get_device(device_id)
-            self._paired_ids.discard(device_id)
-            self._devices[device_id] = replace(device, paired=False, connected=False)
-        self._persist_paired_ids()
+            return {device_id for device_id in self._paired_ids if device_id not in self._clients}
 
-    async def _connect_async(self, device_id: str) -> None:
+    # ── Connection lifecycle ──────────────────────────────────────────────────
+
+    async def _try_connect(self, device_id: str) -> bool:
+        """Connect *device_id*, logging rather than raising on failure; return success."""
+        try:
+            await self._ensure_connected(device_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.warning("Could not connect to paired device '%s': %s", device_id, exc)
+            return False
+        return True
+
+    async def _ensure_connected(self, device_id: str) -> None:
+        """Connect *device_id*, joining the attempt already in progress if there is one."""
+        with self._lock:
+            self._get_device(device_id)
+            client = self._clients.get(device_id)
+        if client is not None and getattr(client, "is_connected", False):
+            return
+        task = self._connect_tasks.get(device_id)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(self._connect_once(device_id))
+            self._connect_tasks[device_id] = task
+            with self._lock:
+                self._connecting_ids.add(device_id)
+            task.add_done_callback(partial(self._on_connect_task_done, device_id))
+            self._notify_devices_changed()
+        await asyncio.shield(task)
+
+    def _on_connect_task_done(self, device_id: str, task: asyncio.Task[None]) -> None:
+        if self._connect_tasks.get(device_id) is task:
+            del self._connect_tasks[device_id]
+            with self._lock:
+                self._connecting_ids.discard(device_id)
+        if not task.cancelled() and task.exception() is not None:
+            _logger.info("Connect attempt for '%s' failed: %r", device_id, task.exception())
+        self._notify_devices_changed()
+
+    async def _connect_once(self, device_id: str) -> None:
         client_cls, _ = self._load_bleak_classes()
         with self._lock:
             device = self._get_device(device_id)
-            address = device.address or device.device_id
-            existing_client = self._clients.get(device_id)
-        if existing_client is not None and getattr(existing_client, "is_connected", False):
-            return
+            ble_device = self._ble_devices.get(device_id)
+            self._intentional_disconnects.discard(device_id)
+        target = ble_device if ble_device is not None else (device.address or device.device_id)
+        client_ref: dict[str, Any] = {}
 
         def _on_disconnect(_: Any) -> None:
-            intentional = device_id in self._intentional_disconnects
-            with self._lock:
-                self._intentional_disconnects.discard(device_id)
-                self._clients.pop(device_id, None)
-                self._subscribed_uuids.pop(device_id, None)
-                if device_id in self._devices:
-                    dev = self._devices[device_id]
-                    self._devices[device_id] = replace(dev, connected=False)
-            _logger.info("Device '%s' disconnected (intentional=%s)", device_id, intentional)
-            cb = self.device_connection_changed_callback
-            if cb is not None:
-                try:
-                    cb(device_id, False)
-                except Exception:
-                    pass
-            if not intentional:
-                with self._lock:
-                    still_paired = device_id in self._paired_ids
-                if still_paired:
-                    self._runner.submit(self._reconnect_loop_async(device_id))
+            self._handle_disconnect(device_id, client_ref.get("client"))
 
-        client = client_cls(address, disconnected_callback=_on_disconnect)
-        await client.connect()
+        async with self._connect_lock:
+            client = client_cls(
+                target,
+                disconnected_callback=_on_disconnect,
+                timeout=self._connect_timeout_seconds,
+                services=list(CONNECT_SERVICE_UUIDS),
+            )
+            client_ref["client"] = client
+            try:
+                await client.connect()
+            except asyncio.CancelledError:
+                with contextlib.suppress(Exception):
+                    await client.disconnect()
+                raise
+            except Exception:
+                if ble_device is not None:
+                    # The discovered handle may be stale; the next attempt goes by address.
+                    with self._lock:
+                        if self._ble_devices.get(device_id) is ble_device:
+                            del self._ble_devices[device_id]
+                raise
 
         with self._lock:
             refreshed = self._get_device(device_id)
             self._clients[device_id] = client
             self._devices[device_id] = replace(refreshed, connected=True)
+        self._start_battery_monitor(device_id, client)
+        self._notify_devices_changed()
+
+    def _handle_disconnect(self, device_id: str, client: Any) -> None:
+        """React to bleak reporting that *client*'s link dropped (may run on any thread)."""
+        with self._lock:
+            if client is not None and self._clients.get(device_id) is not client:
+                return
+            intentional = device_id in self._intentional_disconnects
+            self._intentional_disconnects.discard(device_id)
+            self._clients.pop(device_id, None)
+            self._subscribed_uuids.pop(device_id, None)
+            if device_id in self._devices:
+                self._devices[device_id] = replace(self._devices[device_id], connected=False)
+            still_paired = device_id in self._paired_ids
+        _logger.info("Device '%s' disconnected (intentional=%s)", device_id, intentional)
+        self._fire_connection_changed(device_id, False)
+        self._submit_quietly(self._cancel_battery_monitor_async(device_id))
+        if not intentional and still_paired:
+            self._submit_quietly(self._reconnect_loop_async(device_id))
+        self._notify_devices_changed()
+
+    def _submit_quietly(self, coroutine: Awaitable[Any]) -> None:
+        """Schedule *coroutine* on the BLE loop from any thread; drop it after shutdown."""
+        try:
+            self._runner.submit(coroutine)
+        except RuntimeError:
+            close = getattr(coroutine, "close", None)
+            if close is not None:
+                close()
+
+    def _spawn(self, coroutine: Awaitable[Any]) -> None:
+        """Start a fire-and-forget task on the running loop, keeping it referenced until done."""
+        task = asyncio.get_running_loop().create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _unpair_async(self, device_id: str) -> None:
+        await self._disconnect_async(device_id)
+        with self._lock:
+            device = self._get_device(device_id)
+            self._paired_ids.discard(device_id)
+            self._devices[device_id] = replace(device, paired=False, connected=False)
+        self._persist_paired_ids()
+        self._notify_devices_changed()
 
     async def _disconnect_async(self, device_id: str) -> None:
+        """Disconnect *device_id*, cancelling any connect or reconnect still in progress."""
         with self._lock:
             client = self._clients.get(device_id)
             uuids_to_unsub = list(self._subscribed_uuids.pop(device_id, set()))
             self._intentional_disconnects.add(device_id)
+        await self._cancel_task(self._reconnect_tasks.pop(device_id, None))
+        await self._cancel_task(self._connect_tasks.get(device_id))
+        await self._cancel_battery_monitor_async(device_id)
         if client is not None:
             for uuid in uuids_to_unsub:
                 try:
@@ -331,48 +544,161 @@ class BleakDeviceBackend(DeviceManager):
             await client.disconnect()
         with self._lock:
             self._clients.pop(device_id, None)
+            self._connecting_ids.discard(device_id)
+            self._reconnecting_ids.discard(device_id)
             device = self._get_device(device_id)
             self._devices[device_id] = replace(device, connected=False)
+        self._notify_devices_changed()
 
     async def _disconnect_all_async(self) -> None:
         with self._lock:
-            device_ids = list(self._clients.keys())
+            device_ids = set(self._clients) | self._connecting_ids | self._reconnecting_ids
         for device_id in device_ids:
-            await self._disconnect_async(device_id)
+            with contextlib.suppress(Exception):
+                await self._disconnect_async(device_id)
+        await self._cancel_task(self._scan_task)
+        for task in list(self._background_tasks):
+            await self._cancel_task(task)
 
     async def _reconnect_loop_async(self, device_id: str) -> None:
-        """Retry connecting a paired device that dropped unexpectedly.
+        """Keep reconnecting a paired device that dropped unexpectedly, with backoff.
 
-        Runs in the background asyncio loop. Stops when the device reconnects,
-        is unpaired, or the maximum number of attempts is exhausted.
+        Stops when the device reconnects, is unpaired or disconnected on purpose, or the
+        optional attempt limit is reached. With no limit it keeps trying, so a sensor that
+        comes back minutes later (fresh battery, rider returns) reconnects by itself.
         """
         with self._lock:
             if device_id in self._reconnecting_ids:
                 return
             self._reconnecting_ids.add(device_id)
+        current = asyncio.current_task()
+        if current is not None:
+            self._reconnect_tasks[device_id] = current
+        self._notify_devices_changed()
+        attempt = 0
         try:
-            for _ in range(self._max_reconnect_attempts):
-                await asyncio.sleep(self._reconnect_delay_seconds)
+            while self._max_reconnect_attempts is None or attempt < self._max_reconnect_attempts:
+                delay = min(
+                    self._reconnect_delay_seconds * (2 ** attempt),
+                    max(self._reconnect_delay_seconds, self._reconnect_max_delay_seconds),
+                )
+                attempt += 1
+                await asyncio.sleep(delay)
                 with self._lock:
                     still_paired = device_id in self._paired_ids
                     already_connected = device_id in self._clients
                 if not still_paired or already_connected:
                     return
                 try:
-                    await self._connect_async(device_id)
-                    _logger.info("Device '%s' reconnected successfully", device_id)
-                    cb = self.device_connection_changed_callback
-                    if cb is not None:
-                        try:
-                            cb(device_id, True)
-                        except Exception:
-                            pass
-                    return
+                    await self._ensure_connected(device_id)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
-                    _logger.warning("Reconnect attempt failed for '%s': %s", device_id, exc)
+                    _logger.warning("Reconnect attempt %d failed for '%s': %s", attempt, device_id, exc)
+                    continue
+                _logger.info("Device '%s' reconnected successfully", device_id)
+                self._fire_connection_changed(device_id, True)
+                return
         finally:
             with self._lock:
                 self._reconnecting_ids.discard(device_id)
+            if self._reconnect_tasks.get(device_id) is current:
+                del self._reconnect_tasks[device_id]
+            self._notify_devices_changed()
+
+    @staticmethod
+    async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    # ── Battery ───────────────────────────────────────────────────────────────
+
+    def _start_battery_monitor(self, device_id: str, client: Any) -> None:
+        previous = self._battery_tasks.pop(device_id, None)
+        if previous is not None:
+            previous.cancel()
+        self._battery_tasks[device_id] = asyncio.get_running_loop().create_task(
+            self._battery_monitor_async(device_id, client)
+        )
+
+    async def _cancel_battery_monitor_async(self, device_id: str) -> None:
+        await self._cancel_task(self._battery_tasks.pop(device_id, None))
+
+    async def _battery_monitor_async(self, device_id: str, client: Any) -> None:
+        """Read the battery level now and then periodically while *client* stays connected."""
+        early_retries = iter(_BATTERY_EARLY_RETRY_SECONDS)
+        while getattr(client, "is_connected", False):
+            percent = await self._read_battery_percent(device_id, client)
+            if percent is not None:
+                self._set_battery_percent(device_id, percent)
+                delay = self._battery_poll_seconds
+            else:
+                delay = next(early_retries, self._battery_poll_seconds)
+            await asyncio.sleep(delay)
+
+    async def _read_battery_percent(self, device_id: str, client: Any) -> int | None:
+        """Read the standard Battery Level characteristic, falling back to BlueZ's copy."""
+        try:
+            payload = await client.read_gatt_char(BATTERY_LEVEL_CHARACTERISTIC_UUID)
+            if payload:
+                return min(int(payload[0]), _MAX_BATTERY_PERCENT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.debug("No GATT battery level for '%s': %s", device_id, exc)
+        reader = self._bluez_battery_reader
+        if reader is None:
+            return None
+        with self._lock:
+            device = self._devices.get(device_id)
+        address = (device.address if device is not None else None) or device_id
+        try:
+            percent = await reader(address)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.debug("No BlueZ battery level for '%s': %s", device_id, exc)
+            return None
+        return min(int(percent), _MAX_BATTERY_PERCENT) if percent is not None else None
+
+    def _set_battery_percent(self, device_id: str, percent: int) -> None:
+        with self._lock:
+            device = self._devices.get(device_id)
+            if device is None or device.battery_percent == percent:
+                return
+            self._devices[device_id] = replace(device, battery_percent=percent)
+        self._notify_devices_changed()
+
+    # ── Notifications to listeners ────────────────────────────────────────────
+
+    def _with_activity(self, device: DeviceInfo) -> DeviceInfo:
+        """Return *device* with its in-progress flags filled in (caller holds the lock)."""
+        connecting = device.device_id in self._connecting_ids
+        reconnecting = device.device_id in self._reconnecting_ids
+        if not connecting and not reconnecting:
+            return device
+        return replace(device, connecting=connecting, reconnecting=reconnecting)
+
+    def _notify_devices_changed(self) -> None:
+        callback = self.devices_changed_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            _logger.exception("devices_changed_callback raised")
+
+    def _fire_connection_changed(self, device_id: str, connected: bool) -> None:
+        callback = self.device_connection_changed_callback
+        if callback is None:
+            return
+        try:
+            callback(device_id, connected)
+        except Exception:
+            _logger.exception("device_connection_changed_callback raised")
 
     async def _calibrate_async(self, device_id: str) -> int | None:
         with self._lock:
@@ -409,7 +735,7 @@ class BleakDeviceBackend(DeviceManager):
 
             if indication_subscribed:
                 try:
-                    await asyncio.wait_for(indication_event.wait(), timeout=8.0)
+                    await asyncio.wait_for(indication_event.wait(), timeout=_CALIBRATION_RESPONSE_TIMEOUT_SECONDS)
                 except asyncio.TimeoutError:
                     return None
 

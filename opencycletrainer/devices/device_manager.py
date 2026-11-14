@@ -63,6 +63,16 @@ class AsyncioRunner:
 
 
 class DeviceManager(ABC):
+    """Contract the Devices screen and workout controller use to talk to sensors.
+
+    Backends that change device state on their own (scan results arriving, connect
+    attempts starting or finishing, battery updates, dropouts) call
+    ``devices_changed_callback`` so the UI can refresh; it may be invoked from any thread.
+    """
+
+    devices_changed_callback: Callable[[], None] | None = None
+    device_connection_changed_callback: Callable[[str, bool], None] | None = None
+
     @abstractmethod
     def scan(self) -> Future[list[DeviceInfo]]:
         """Scan and return relevant devices."""

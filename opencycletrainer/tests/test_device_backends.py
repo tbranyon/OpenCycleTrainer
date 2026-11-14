@@ -66,8 +66,20 @@ class _FakeAdvertisement:
 
 
 class _FakeScanner:
+    """Fake BleakScanner: reports every device in ``advertisements()`` as soon as it starts."""
+
+    def __init__(self, detection_callback: Any = None, **kwargs: Any) -> None:
+        self._callback = detection_callback
+
+    async def start(self) -> None:
+        for ble_device, advertisement in self.advertisements().values():
+            self._callback(ble_device, advertisement)
+
+    async def stop(self) -> None:
+        pass
+
     @staticmethod
-    async def discover(timeout: float, return_adv: bool) -> dict[str, tuple[_FakeBLEDevice, _FakeAdvertisement]]:  # noqa: ARG004
+    def advertisements() -> dict[str, tuple[_FakeBLEDevice, _FakeAdvertisement]]:
         return {
             "trainer": (
                 _FakeBLEDevice(name="Trainer A", address="AA:BB:CC:01", metadata={}),
@@ -85,8 +97,8 @@ class _FakeScanner:
 
 
 class _FakeClient:
-    def __init__(self, address: str, disconnected_callback: Any = None) -> None:
-        self.address = address
+    def __init__(self, address: Any, disconnected_callback: Any = None, **kwargs: Any) -> None:
+        self.address = getattr(address, "address", address)
         self.disconnected_callback = disconnected_callback
         self.is_connected = False
         self.notifications: dict[str, Any] = {}
@@ -94,8 +106,9 @@ class _FakeClient:
         self.stop_notify_calls: list[str] = []
         self.read_responses: dict[str, bytes] = {}
         self.read_call_count: int = 0
+        self.reads_by_uuid: dict[str, int] = {}
 
-    async def connect(self) -> None:
+    async def connect(self, **kwargs: Any) -> None:
         self.is_connected = True
 
     async def disconnect(self) -> None:
@@ -118,7 +131,20 @@ class _FakeClient:
 
     async def read_gatt_char(self, uuid: str) -> bytearray:
         self.read_call_count += 1
+        self.reads_by_uuid[uuid] = self.reads_by_uuid.get(uuid, 0) + 1
         return bytearray(self.read_responses.get(uuid, b""))
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> bool:
+    """Poll *predicate* until it holds; background connects finish shortly after a scan."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 def test_bleak_backend_scan_connect_and_subscribe_plumbing(monkeypatch, tmp_path):
@@ -307,7 +333,7 @@ def test_bleak_backend_scan_auto_reconnects_paired_device(monkeypatch, tmp_path)
 
     try:
         backend.scan().result(timeout=2.0)
-        assert "AA:BB:CC:01" in backend._clients
+        assert _wait_until(lambda: "AA:BB:CC:01" in backend._clients)
         assert backend._clients["AA:BB:CC:01"].is_connected
     finally:
         backend.shutdown()
@@ -326,8 +352,8 @@ def test_bleak_backend_scan_does_not_reconnect_already_connected_device(monkeypa
 
     try:
         backend.scan().result(timeout=2.0)
+        assert _wait_until(lambda: "AA:BB:CC:01" in backend._clients)
         first_client = backend._clients.get("AA:BB:CC:01")
-        assert first_client is not None
 
         # Second scan should not replace an already-connected client
         backend.scan().result(timeout=2.0)
@@ -407,8 +433,9 @@ def test_bleak_ftms_transport_resistance_range_cached_after_first_read(monkeypat
         transport.read_resistance_level_range()
         transport.read_resistance_level_range()
 
-        # Only one actual BLE read should have occurred
-        assert client.read_call_count == 1
+        # Only one actual BLE read of the range should have occurred (the backend also
+        # reads Battery Level on connect, so count this characteristic only).
+        assert client.reads_by_uuid[FTMS_RESISTANCE_LEVEL_RANGE_CHARACTERISTIC_UUID] == 1
     finally:
         backend.shutdown()
 

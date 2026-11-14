@@ -63,8 +63,8 @@ def test_mock_backend_autoconnect_connects_only_disconnected_paired_devices():
     assert paired["t1"].connected is True
 
 
-def test_bleak_backend_autoconnect_connects_stored_paired_devices_without_scan(monkeypatch, tmp_path):
-    """Autoconnect must reach paired devices loaded from the store without first scanning."""
+def test_bleak_backend_autoconnect_connects_stored_paired_devices(monkeypatch, tmp_path):
+    """Autoconnect must reach paired devices loaded from the store, with no manual scan first."""
     store = PairedDeviceStore(path=tmp_path / "paired.json")
     store.save([{"device_id": "AA:BB:CC:01", "name": "Trainer A", "device_type": "trainer"}])
 
@@ -76,7 +76,7 @@ def test_bleak_backend_autoconnect_connects_stored_paired_devices_without_scan(m
     )
 
     try:
-        connected = backend.autoconnect_paired_devices().result(timeout=1.0)
+        connected = backend.autoconnect_paired_devices().result(timeout=2.0)
         assert connected == ["AA:BB:CC:01"]
         assert "AA:BB:CC:01" in backend._clients
         assert backend._clients["AA:BB:CC:01"].is_connected
@@ -84,29 +84,32 @@ def test_bleak_backend_autoconnect_connects_stored_paired_devices_without_scan(m
         backend.shutdown()
 
 
-def test_bleak_backend_autoconnect_falls_back_to_scan_when_not_reachable(monkeypatch, tmp_path):
+def test_bleak_backend_autoconnect_reaches_device_only_reachable_after_discovery(monkeypatch, tmp_path):
     """On Linux/macOS a paired device may be unreachable by address until it has been
-    discovered. Autoconnect must fall back to a single scan and still connect it."""
+    discovered. Autoconnect discovers first, so it still connects."""
     from opencycletrainer.devices.types import FTMS_SERVICE_UUID
 
     discovered: set[str] = set()
 
     class _CacheGatedClient(_FakeClient):
-        async def connect(self) -> None:
+        async def connect(self, **kwargs) -> None:
             if self.address not in discovered:
                 raise RuntimeError(f"Device with address {self.address} was not found")
             self.is_connected = True
 
     class _CachePopulatingScanner:
-        @staticmethod
-        async def discover(timeout, return_adv):  # noqa: ARG004
+        def __init__(self, detection_callback=None, **kwargs) -> None:
+            self._callback = detection_callback
+
+        async def start(self) -> None:
             discovered.add("AA:BB:CC:01")
-            return {
-                "trainer": (
-                    _FakeBLEDevice(name="Trainer A", address="AA:BB:CC:01", metadata={}),
-                    _FakeAdvertisement(service_uuids=[FTMS_SERVICE_UUID], rssi=-52),
-                ),
-            }
+            self._callback(
+                _FakeBLEDevice(name="Trainer A", address="AA:BB:CC:01", metadata={}),
+                _FakeAdvertisement(service_uuids=[FTMS_SERVICE_UUID], rssi=-52),
+            )
+
+        async def stop(self) -> None:
+            pass
 
     store = PairedDeviceStore(path=tmp_path / "paired.json")
     store.save([{"device_id": "AA:BB:CC:01", "name": "Trainer A", "device_type": "trainer"}])
@@ -126,35 +129,6 @@ def test_bleak_backend_autoconnect_falls_back_to_scan_when_not_reachable(monkeyp
         backend.shutdown()
 
 
-def test_bleak_backend_autoconnect_does_not_scan_when_direct_connect_succeeds(monkeypatch, tmp_path):
-    """The fast path must not pay the scan cost when a direct connect already works."""
-    store = PairedDeviceStore(path=tmp_path / "paired.json")
-    store.save([{"device_id": "AA:BB:CC:01", "name": "Trainer A", "device_type": "trainer"}])
-
-    backend = BleakDeviceBackend(scan_timeout_seconds=0.1, paired_device_store=store)
-    monkeypatch.setattr(
-        BleakDeviceBackend,
-        "_load_bleak_classes",
-        staticmethod(lambda: (_FakeClient, _FakeScanner)),
-    )
-
-    scan_calls: list[int] = []
-    original_scan = backend._scan_async
-
-    async def _counting_scan():
-        scan_calls.append(1)
-        return await original_scan()
-
-    monkeypatch.setattr(backend, "_scan_async", _counting_scan)
-
-    try:
-        connected = backend.autoconnect_paired_devices().result(timeout=2.0)
-        assert connected == ["AA:BB:CC:01"]
-        assert scan_calls == []
-    finally:
-        backend.shutdown()
-
-
 def test_bleak_backend_autoconnect_skips_already_connected_devices(monkeypatch, tmp_path):
     store = PairedDeviceStore(path=tmp_path / "paired.json")
     store.save([{"device_id": "AA:BB:CC:01", "name": "Trainer A", "device_type": "trainer"}])
@@ -167,10 +141,10 @@ def test_bleak_backend_autoconnect_skips_already_connected_devices(monkeypatch, 
     )
 
     try:
-        backend.autoconnect_paired_devices().result(timeout=1.0)
+        backend.autoconnect_paired_devices().result(timeout=2.0)
         first_client = backend._clients["AA:BB:CC:01"]
 
-        connected = backend.autoconnect_paired_devices().result(timeout=1.0)
+        connected = backend.autoconnect_paired_devices().result(timeout=2.0)
         assert connected == []
         assert backend._clients["AA:BB:CC:01"] is first_client
     finally:

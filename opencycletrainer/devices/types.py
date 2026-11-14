@@ -28,6 +28,10 @@ FTMS_SERVICE_UUID = "00001826-0000-1000-8000-00805f9b34fb"
 CPS_SERVICE_UUID = "00001818-0000-1000-8000-00805f9b34fb"
 HRS_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
 CSC_SERVICE_UUID = "00001816-0000-1000-8000-00805f9b34fb"
+BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
+DEVICE_INFORMATION_SERVICE_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
+
+BATTERY_LEVEL_CHARACTERISTIC_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
 CPS_MEASUREMENT_CHARACTERISTIC_UUID = "00002a63-0000-1000-8000-00805f9b34fb"
 CPS_FEATURE_CHARACTERISTIC_UUID = "00002a65-0000-1000-8000-00805f9b34fb"
@@ -49,6 +53,17 @@ RELEVANT_SERVICE_UUIDS = {
     HRS_SERVICE_UUID,
     CSC_SERVICE_UUID,
 }
+
+# Services the app reads from; passed to the OS as a discovery filter to shorten connects
+# on platforms that support filtered service discovery.
+CONNECT_SERVICE_UUIDS = (
+    FTMS_SERVICE_UUID,
+    CPS_SERVICE_UUID,
+    HRS_SERVICE_UUID,
+    CSC_SERVICE_UUID,
+    BATTERY_SERVICE_UUID,
+    DEVICE_INFORMATION_SERVICE_UUID,
+)
 
 NOTIFICATION_CHARACTERISTIC_UUIDS = (
     FTMS_INDOOR_BIKE_DATA_CHARACTERISTIC_UUID,
@@ -72,6 +87,8 @@ SHORT_UUID_TO_FULL = {
     "2a37": HRS_MEASUREMENT_CHARACTERISTIC_UUID,
     "2a38": HRS_BODY_SENSOR_LOCATION_CHARACTERISTIC_UUID,
     "2a5b": CSC_MEASUREMENT_CHARACTERISTIC_UUID,
+    "180f": BATTERY_SERVICE_UUID,
+    "2a19": BATTERY_LEVEL_CHARACTERISTIC_UUID,
 }
 
 
@@ -86,10 +103,18 @@ class DeviceInfo:
     connected: bool = False
     battery_percent: int | None = None
     supports_calibration: bool = False
+    connecting: bool = False
+    reconnecting: bool = False
 
     @property
     def connection_status(self) -> str:
-        return "Connected" if self.connected else "Disconnected"
+        if self.connected:
+            return "Connected"
+        if self.reconnecting:
+            return "Reconnecting…"
+        if self.connecting:
+            return "Connecting…"
+        return "Disconnected"
 
 
 def normalize_uuid(uuid: str) -> str:
