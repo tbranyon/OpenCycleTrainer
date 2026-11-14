@@ -11,15 +11,19 @@ beats merged, and ectopic/long/short beats replaced by a natural cubic-spline
 interpolation through the surrounding normal beats.
 
 numpy only — no scipy. All computation is float64 on the beat-indexed RR series.
+Rolling statistics and the decision tree are vectorized; each window still sees exactly
+the same values as the per-beat definition, so results are bit-identical to it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+import itertools
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 # Gross physiological plausibility bounds (ms). ~30–200 bpm. Beats strictly
 # outside this range are impossible and corrected regardless of local statistics.
@@ -60,6 +64,10 @@ class BeatClass(Enum):
     SHORT = "short"
 
 
+# Beats replaced by spline interpolation through the surrounding normal beats.
+_SPLINE_CORRECTED = frozenset({BeatClass.ECTOPIC, BeatClass.LONG, BeatClass.SHORT})
+
+
 @dataclass(frozen=True)
 class ArtifactCorrection:
     """Result of correcting an RR window.
@@ -80,14 +88,38 @@ class ArtifactCorrection:
     max_correction_run: int
 
 
-def _rolling_median(values: np.ndarray, window: int) -> np.ndarray:
-    """Centered rolling median; the window shrinks (is clipped) at the edges."""
+def _centered_rolling(
+    values: np.ndarray,
+    window: int,
+    reduce_windows: Callable[[np.ndarray], np.ndarray],
+    reduce_one: Callable[[np.ndarray], float],
+) -> np.ndarray:
+    """Apply a centered rolling statistic whose window is clipped at the edges.
+
+    Full-width windows are reduced in one vectorized call; only the clipped windows at
+    each end (``window // 2`` per side) are reduced one at a time.
+    """
     n = values.shape[0]
     half = window // 2
     out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        out[i] = np.median(values[max(0, i - half):min(n, i + half + 1)])
+    if n >= window:
+        out[half:n - half] = reduce_windows(sliding_window_view(values, window))
+        edges = itertools.chain(range(half), range(n - half, n))
+    else:
+        edges = range(n)
+    for i in edges:
+        out[i] = reduce_one(values[max(0, i - half):min(n, i + half + 1)])
     return out
+
+
+def _rolling_median(values: np.ndarray, window: int) -> np.ndarray:
+    """Centered rolling median; the window shrinks (is clipped) at the edges."""
+    return _centered_rolling(
+        values,
+        window,
+        lambda windows: np.median(windows, axis=1),
+        np.median,
+    )
 
 
 def _rolling_quartile_threshold(signal: np.ndarray, window: int, alpha: float) -> np.ndarray:
@@ -97,15 +129,16 @@ def _rolling_quartile_threshold(signal: np.ndarray, window: int, alpha: float) -
     a robust dispersion estimate that ignores the artifact spikes themselves
     (they sit in the extreme tail, beyond the quartiles).
     """
-    magnitude = np.abs(signal)
-    n = magnitude.shape[0]
-    half = window // 2
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        segment = magnitude[max(0, i - half):min(n, i + half + 1)]
+
+    def _many(windows: np.ndarray) -> np.ndarray:
+        q1, q3 = np.quantile(windows, (0.25, 0.75), axis=1)
+        return alpha * ((q3 - q1) / 2.0)
+
+    def _one(segment: np.ndarray) -> float:
         q1, q3 = np.quantile(segment, (0.25, 0.75))
-        out[i] = alpha * ((q3 - q1) / 2.0)
-    return out
+        return alpha * ((q3 - q1) / 2.0)
+
+    return _centered_rolling(np.abs(signal), window, _many, _one)
 
 
 def _normalise(signal: np.ndarray, threshold: np.ndarray) -> np.ndarray:
@@ -124,12 +157,8 @@ def _subspace_inner(drr: np.ndarray) -> np.ndarray:
     the origin while symmetric noise stays near it.
     """
     padded = np.pad(drr, 1, mode="reflect")
-    n = drr.shape[0]
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        left, right = padded[i], padded[i + 2]
-        out[i] = max(left, right) if drr[i] > 0.0 else min(left, right)
-    return out
+    left, right = padded[:-2], padded[2:]
+    return np.where(drr > 0.0, np.maximum(left, right), np.minimum(left, right))
 
 
 def _subspace_forward(drr: np.ndarray) -> np.ndarray:
@@ -139,19 +168,13 @@ def _subspace_forward(drr: np.ndarray) -> np.ndarray:
     taking the opposite-signed extreme of the following two steps exposes that.
     """
     padded = np.pad(drr, (0, 2), mode="reflect")
-    n = drr.shape[0]
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        nxt1, nxt2 = padded[i + 1], padded[i + 2]
-        out[i] = min(nxt1, nxt2) if drr[i] >= 0.0 else max(nxt1, nxt2)
-    return out
+    nxt1, nxt2 = padded[1:-1], padded[2:]
+    return np.where(drr >= 0.0, np.minimum(nxt1, nxt2), np.maximum(nxt1, nxt2))
 
 
 def _apply_gross_gate(rr: np.ndarray, medrr: np.ndarray, labels: list[BeatClass]) -> None:
     """Force a classification on any beat outside the plausibility bounds."""
-    for i in range(rr.shape[0]):
-        if RR_MIN_MS <= rr[i] <= RR_MAX_MS:
-            continue
+    for i in np.flatnonzero((rr < RR_MIN_MS) | (rr > RR_MAX_MS)):
         ratio = rr[i] / medrr[i] if medrr[i] > 0.0 else (2.0 if rr[i] > RR_MAX_MS else 0.5)
         if ratio >= _GROSS_MISSED_RATIO:
             labels[i] = BeatClass.MISSED
@@ -168,11 +191,21 @@ def classify_beats(rr: Sequence[float], alpha: float = ALPHA) -> tuple[BeatClass
     the adaptive thresholds; larger values relax correction (see the paper's
     note on cleaner data), defaulting to the published 5.2.
     """
-    rr = np.asarray(rr, dtype=np.float64)
+    labels, _ = _classify_with_median(np.asarray(rr, dtype=np.float64), alpha)
+    return tuple(labels)
+
+
+def _classify_with_median(rr: np.ndarray, alpha: float) -> tuple[list[BeatClass], np.ndarray]:
+    """Return per-beat labels plus the rolling median used to derive them.
+
+    The decision tree is evaluated for all beats at once: every rule depends only on
+    that beat's own statistics, never on another beat's label, so the masks below apply
+    the same rules, in the same priority order, as the per-beat definition.
+    """
     n = rr.shape[0]
     labels = [BeatClass.NORMAL] * n
     if n == 0:
-        return tuple(labels)
+        return labels, np.empty(0, dtype=np.float64)
 
     medrr = _rolling_median(rr, MEDIAN_WINDOW)
 
@@ -192,34 +225,34 @@ def classify_beats(rr: Sequence[float], alpha: float = ALPHA) -> tuple[BeatClass
         s12 = _subspace_inner(drr_n)
         s22 = _subspace_forward(drr_n)
 
-        for i in range(n):
-            d = drr_n[i]
-            if d > DRR_UNIT and s12[i] < -ECTOPIC_C1 * d - ECTOPIC_C2:
-                labels[i] = BeatClass.ECTOPIC
-                continue
-            if d < -DRR_UNIT and s12[i] > -ECTOPIC_C1 * d + ECTOPIC_C2:
-                labels[i] = BeatClass.ECTOPIC
-                continue
-            if abs(d) <= DRR_UNIT and abs(mrr_n[i]) <= MRR_UNIT:
-                continue
+        d = drr_n
+        ectopic = ((d > DRR_UNIT) & (s12 < -ECTOPIC_C1 * d - ECTOPIC_C2)) | (
+            (d < -DRR_UNIT) & (s12 > -ECTOPIC_C1 * d + ECTOPIC_C2)
+        )
+        quiet = (np.abs(d) <= DRR_UNIT) & (np.abs(mrr_n) <= MRR_UNIT)
+        long_step = (d > DRR_UNIT) & (s22 < -DRR_UNIT)
+        short_step = (d < -DRR_UNIT) & (s22 > DRR_UNIT)
+        big_deviation = np.abs(mrr_n) > MRR_UNIT
+        candidate = ~ectopic & ~quiet & (long_step | short_step | big_deviation)
 
-            long_step = d > DRR_UNIT and s22[i] < -DRR_UNIT
-            short_step = d < -DRR_UNIT and s22[i] > DRR_UNIT
-            big_deviation = abs(mrr_n[i]) > MRR_UNIT
-            if not (long_step or short_step or big_deviation):
-                continue
+        is_missed = np.abs(rr / 2.0 - medrr) < th2
+        next_rr = np.append(rr[1:], np.nan)  # the last beat has no successor to merge with
+        is_extra = np.abs(rr + next_rr - medrr) < th2
+        extra = candidate & short_step & is_extra
+        missed = candidate & ~extra & long_step & is_missed
+        other = candidate & ~extra & ~missed
 
-            is_missed = abs(rr[i] / 2.0 - medrr[i]) < th2[i]
-            is_extra = i + 1 < n and abs(rr[i] + rr[i + 1] - medrr[i]) < th2[i]
-            if short_step and is_extra:
-                labels[i] = BeatClass.EXTRA
-            elif long_step and is_missed:
-                labels[i] = BeatClass.MISSED
-            else:
-                labels[i] = BeatClass.LONG if deviation[i] > 0.0 else BeatClass.SHORT
+        for i in np.flatnonzero(ectopic):
+            labels[i] = BeatClass.ECTOPIC
+        for i in np.flatnonzero(extra):
+            labels[i] = BeatClass.EXTRA
+        for i in np.flatnonzero(missed):
+            labels[i] = BeatClass.MISSED
+        for i in np.flatnonzero(other):
+            labels[i] = BeatClass.LONG if deviation[i] > 0.0 else BeatClass.SHORT
 
     _apply_gross_gate(rr, medrr, labels)
-    return tuple(labels)
+    return labels, medrr
 
 
 class _NaturalCubicSpline:
@@ -293,13 +326,14 @@ def correct_artifacts(rr: Sequence[float], alpha: float = ALPHA) -> ArtifactCorr
     """
     rr = np.asarray(rr, dtype=np.float64)
     n = rr.shape[0]
-    labels = classify_beats(rr, alpha=alpha)
-    medrr = _rolling_median(rr, MEDIAN_WINDOW) if n else np.empty(0)
+    labels, medrr = _classify_with_median(rr, alpha)
 
     normal_idx = [i for i, label in enumerate(labels) if label == BeatClass.NORMAL]
+    # The spline is only needed to replace ectopic/long/short beats; most windows have none.
+    needs_spline = any(label in _SPLINE_CORRECTED for label in labels)
     spline = (
         _NaturalCubicSpline(np.asarray(normal_idx, dtype=np.float64), rr[normal_idx])
-        if len(normal_idx) >= 2
+        if needs_spline and len(normal_idx) >= 2
         else None
     )
 

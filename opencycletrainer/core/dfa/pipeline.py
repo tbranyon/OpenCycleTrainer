@@ -209,14 +209,15 @@ class DfaPipeline:
             self._buffer.append((float(now), float(rr)))
         self._trim_buffer()
 
-    def maybe_recompute(self, now: float) -> DfaRecord | None:
-        """Recompute if the 5 s output cadence has elapsed; else return ``None``.
+    def maybe_recompute(self, now: float, *, force: bool = False) -> DfaRecord | None:
+        """Recompute if the 5 s output cadence has elapsed (or *force*); else return ``None``.
 
         The first call always recomputes. Updates ``latest_record`` only when
         it actually recomputes.
         """
         if (
-            self._last_recompute_at is not None
+            not force
+            and self._last_recompute_at is not None
             and now - self._last_recompute_at < RECOMPUTE_INTERVAL_SECONDS
         ):
             return None

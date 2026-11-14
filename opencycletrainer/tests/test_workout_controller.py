@@ -3122,10 +3122,11 @@ def test_receive_rr_intervals_feeds_dfa_pipeline_and_produces_record():
     def _monotonic() -> float:
         return monotonic_now
 
-    screen = WorkoutScreen(settings=AppSettings())
+    settings = AppSettings(tile_selections=["dfa_a1"])
+    screen = WorkoutScreen(settings=settings)
     controller = WorkoutSessionController(
         screen=screen,
-        settings=AppSettings(),
+        settings=settings,
         recorder=_FakeRecorder(),
         monotonic_clock=_monotonic,
     )
@@ -3160,10 +3161,11 @@ def test_dfa_recompute_lands_alpha1_sample_in_chart_history():
     def _monotonic() -> float:
         return monotonic_now
 
-    screen = WorkoutScreen(settings=AppSettings())
+    settings = AppSettings(tile_selections=["dfa_a1"])
+    screen = WorkoutScreen(settings=settings)
     controller = WorkoutSessionController(
         screen=screen,
-        settings=AppSettings(),
+        settings=settings,
         recorder=_FakeRecorder(),
         monotonic_clock=_monotonic,
     )
@@ -3199,10 +3201,11 @@ def test_dfa_recompute_lands_alpha1_sample_in_chart_history():
 def test_dfa_pipeline_resets_on_workout_start():
     """Starting a workout should clear any DFA pipeline state left over from before."""
     app = _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
+    settings = AppSettings(tile_selections=["dfa_a1"])
+    screen = WorkoutScreen(settings=settings)
     controller = WorkoutSessionController(
         screen=screen,
-        settings=AppSettings(),
+        settings=settings,
         recorder=_FakeRecorder(),
         monotonic_clock=lambda: 0.0,
     )
@@ -3219,6 +3222,67 @@ def test_dfa_pipeline_resets_on_workout_start():
     app.processEvents()
     assert controller.latest_dfa_record() is None
 
+    controller.shutdown()
+
+
+def _dfa_controller(tile_selected: bool):
+    """Controller mid-ride with a full RR window buffered; returns (app, controller, clock)."""
+    app = _get_or_create_qapp()
+    clock = [0.0]
+    settings = AppSettings(tile_selections=["dfa_a1"] if tile_selected else [])
+    screen = WorkoutScreen(settings=settings)
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=settings,
+        recorder=_FakeRecorder(),
+        monotonic_clock=lambda: clock[0],
+    )
+    controller._load_workout_from_file(Path(__file__).parent / "data" / "ramp.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    controller.receive_rr_intervals_ms(tuple(_clean_rr_series(160)))
+    return app, controller, clock
+
+
+def test_dfa_not_computed_when_tile_not_selected():
+    _, controller, clock = _dfa_controller(tile_selected=False)
+
+    clock[0] = 1.0
+    controller.process_tick(clock[0])
+
+    assert controller.latest_dfa_record() is None
+    assert controller._chart_history.alpha1_series == []
+    controller.shutdown()
+
+
+def test_selecting_dfa_tile_mid_ride_shows_alpha1_without_refilling_the_window():
+    _, controller, clock = _dfa_controller(tile_selected=False)
+    clock[0] = 1.0
+    controller.process_tick(clock[0])
+    assert controller.latest_dfa_record() is None
+
+    controller.apply_settings(AppSettings(tile_selections=["dfa_a1"]))
+    clock[0] = 2.0
+    controller.process_tick(clock[0])
+
+    record = controller.latest_dfa_record()
+    assert record is not None
+    assert record.alpha1 is not None
+    controller.shutdown()
+
+
+def test_deselecting_dfa_tile_stops_reporting_alpha1():
+    _, controller, clock = _dfa_controller(tile_selected=True)
+    clock[0] = 1.0
+    controller.process_tick(clock[0])
+    assert controller.latest_dfa_record() is not None
+
+    controller.apply_settings(AppSettings(tile_selections=[]))
+    clock[0] = 7.0
+    controller.process_tick(clock[0])
+
+    assert controller.latest_dfa_record() is None
+    assert len(controller._chart_history.alpha1_series) == 1
     controller.shutdown()
 
 

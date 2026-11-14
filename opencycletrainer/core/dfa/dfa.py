@@ -8,6 +8,7 @@ float64 and operates on the beat-indexed RR series (never time-resampled).
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+import math
 
 import numpy as np
 
@@ -23,32 +24,83 @@ DFA_SCALE_MAX = 16
 _MIN_DETREND_LENGTH = 3
 
 
-def _second_difference_operator(n: int) -> np.ndarray:
-    """Return the (n-2)×n second-order difference operator D2 (rows ``[1, -2, 1]``)."""
-    d2 = np.zeros((n - 2, n), dtype=np.float64)
-    rows = np.arange(n - 2)
-    d2[rows, rows] = 1.0
-    d2[rows, rows + 1] = -2.0
-    d2[rows, rows + 2] = 1.0
-    return d2
+def _smoothness_priors_bands(n: int, lam: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the three distinct bands of ``A = I + λ² · D2ᵀD2`` for a length-``n`` series.
+
+    ``D2`` is the (n-2)×n second-difference operator with rows ``[1, -2, 1]``, so
+    ``D2ᵀD2`` is pentadiagonal: its main diagonal is ``1, 5, 6, …, 6, 5, 1``, its first
+    off-diagonal ``-2, -4, …, -4, -2`` and its second off-diagonal all ones (each entry
+    sums the products of the operator rows overlapping that position).
+    """
+    rows = n - 2
+    main = np.zeros(n, dtype=np.float64)
+    main[:rows] += 1.0
+    main[1:rows + 1] += 4.0
+    main[2:] += 1.0
+    first = np.zeros(n - 1, dtype=np.float64)
+    first[:rows] -= 2.0
+    first[1:] -= 2.0
+    second = np.ones(rows, dtype=np.float64)
+    lam_sq = lam ** 2
+    return 1.0 + lam_sq * main, lam_sq * first, lam_sq * second
+
+
+def _solve_pentadiagonal_spd(
+    main: np.ndarray, first: np.ndarray, second: np.ndarray, rhs: np.ndarray
+) -> np.ndarray:
+    """Solve ``A x = rhs`` for symmetric positive-definite pentadiagonal ``A`` in O(n).
+
+    ``A`` is given by its main, first and second (super/sub) diagonals. Uses a banded
+    Cholesky factorisation ``A = L Lᵀ``; plain Python floats keep it free of BLAS, whose
+    thread start-up can cost far more than the arithmetic at these sizes.
+    """
+    n = main.shape[0]
+    a0, a1, a2 = main.tolist(), first.tolist(), second.tolist()
+    b = rhs.tolist()
+    diag = [0.0] * n   # L[i, i]
+    sub1 = [0.0] * n   # L[i, i-1]
+    sub2 = [0.0] * n   # L[i, i-2]
+    for i in range(n):
+        l2 = a2[i - 2] / diag[i - 2] if i >= 2 else 0.0
+        l1 = (a1[i - 1] - l2 * sub1[i - 1]) / diag[i - 1] if i >= 1 else 0.0
+        sub2[i] = l2
+        sub1[i] = l1
+        diag[i] = math.sqrt(a0[i] - l1 * l1 - l2 * l2)
+
+    y = [0.0] * n
+    for i in range(n):
+        acc = b[i]
+        if i >= 1:
+            acc -= sub1[i] * y[i - 1]
+        if i >= 2:
+            acc -= sub2[i] * y[i - 2]
+        y[i] = acc / diag[i]
+
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        acc = y[i]
+        if i + 1 < n:
+            acc -= sub1[i + 1] * x[i + 1]
+        if i + 2 < n:
+            acc -= sub2[i + 2] * x[i + 2]
+        x[i] = acc / diag[i]
+    return np.asarray(x, dtype=np.float64)
 
 
 def detrend_smoothness_priors(z: Sequence[float], lam: float = DEFAULT_LAMBDA) -> np.ndarray:
     """Return the stationary RR series after smoothness-priors detrending.
 
     Solves ``A · z_trend = z`` with ``A = I + λ² · D2ᵀD2`` (symmetric positive-
-    definite, pentadiagonal) and returns ``z − z_trend``. The system is solved, not
-    inverted; at the window sizes seen here (N ≈ 150–400) a dense float64 solve is
-    exact and sub-millisecond.
+    definite, pentadiagonal) and returns ``z − z_trend``. The system is solved from its
+    bands in O(n) rather than as a dense matrix.
     """
     z = np.asarray(z, dtype=np.float64)
     n = z.shape[0]
     if n < _MIN_DETREND_LENGTH:
         return z - z.mean() if n else z.copy()
 
-    d2 = _second_difference_operator(n)
-    a = np.eye(n, dtype=np.float64) + (lam ** 2) * (d2.T @ d2)
-    z_trend = np.linalg.solve(a, z)
+    main, first, second = _smoothness_priors_bands(n, lam)
+    z_trend = _solve_pentadiagonal_spd(main, first, second, z)
     return z - z_trend
 
 

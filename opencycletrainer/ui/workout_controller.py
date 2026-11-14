@@ -41,6 +41,7 @@ from .mode_state import (
 from .pause_state import PauseState
 from .recorder_integration import RecorderIntegration, SensorSnapshot
 from .tile_computation import TileComputation
+from .tile_config import DFA_TILE_KEY
 from .trainer_connection import TrainerConnection
 from .workout_screen import MODE_OPTIONS, PauseDialog, WorkoutScreen
 from .workout_summary_dialog import IntervalResult, WorkoutSummary, WorkoutSummaryDialog, compute_tss
@@ -110,6 +111,7 @@ class WorkoutSessionController(QObject):
         self._last_snapshot: WorkoutEngineSnapshot | None = None
 
         self._power_history = PowerHistory()
+        self._dfa_was_active = False
         self._dfa_pipeline = DfaPipeline(
             power_source=lambda now: self._power_history.windowed_avg(now, DFA_WINDOW_SECONDS)
         )
@@ -255,10 +257,7 @@ class WorkoutSessionController(QObject):
             if stopped_for is not None and stopped_for > _PEDALING_STOPPED_PAUSE_SECONDS:
                 self._pause_workout()
                 return self._last_snapshot
-        # The pipeline enforces its own 5 s recompute cadence internally, so
-        # driving it from this 1 Hz tick (rather than a second QTimer) is
-        # equivalent and avoids an extra Qt object (see DFA spec [0d]).
-        dfa_record = self._dfa_pipeline.maybe_recompute(now)
+        dfa_record = self._update_dfa(now)
         if dfa_record is not None and self._recorder_integration.recorder_active:
             self._chart_history.record_dfa_alpha1(dfa_record.alpha1, now)
         snapshot = self._engine.tick(now, pedaling=self._pedaling.is_pedaling)
@@ -931,8 +930,32 @@ class WorkoutSessionController(QObject):
         self._dfa_pipeline.ingest_rr(rr_intervals_ms, float(self._monotonic_clock()))
 
     def latest_dfa_record(self) -> DfaRecord | None:
-        """Return the most recently computed DFA α1 record, if any."""
+        """Return the most recently computed DFA α1 record, or None while DFA is off.
+
+        DFA is on only while its tile is selected (DFA spec [0e]); returning None when
+        it is off keeps a stale α1 out of the tile, the chart and the recorded FIT file.
+        """
+        if not self._dfa_active():
+            return None
         return self._dfa_pipeline.latest_record
+
+    def _dfa_active(self) -> bool:
+        return DFA_TILE_KEY in self._settings.tile_selections
+
+    def _update_dfa(self, now: float) -> DfaRecord | None:
+        """Recompute DFA α1 on its 5 s cadence while the tile is selected; else skip it.
+
+        RR beats keep flowing into the pipeline's 120 s buffer either way (that is only an
+        append), so selecting the tile mid-ride shows a value at once, without waiting for
+        the window to refill. The pipeline enforces its own cadence, so driving it from
+        this tick avoids an extra Qt timer (DFA spec [0d]).
+        """
+        if not self._dfa_active():
+            self._dfa_was_active = False
+            return None
+        just_enabled = not self._dfa_was_active
+        self._dfa_was_active = True
+        return self._dfa_pipeline.maybe_recompute(now, force=just_enabled)
 
     def receive_cadence_rpm(
         self, rpm: float | None, source: CadenceSource = CadenceSource.TRAINER

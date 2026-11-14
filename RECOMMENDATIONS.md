@@ -9,21 +9,18 @@ Each list is ordered by value for effort.
 No measured bottleneck is caused by Python itself: the load is a few sensors at 1–4 Hz.
 The problems are work repeated on the UI thread.
 
-1. **DFA α1 recomputes on the UI thread even when its tile is hidden**, using per-beat
-   Python loops (`core/dfa/artifact.py:83-108`). Vectorize the rolling median and
-   quantile, then move the recompute to a worker.
-2. **Finishing a ride encodes the FIT file on the UI thread and computes metrics twice**
+1. **Finishing a ride encodes the FIT file on the UI thread and computes metrics twice**
    (`core/recorder.py:222-270`). Reuse the summary metrics and export on the executor
    Strava upload already uses.
-3. **Startup probes the OS keyring three times, uncached** (`ui/main_window.py:61-68`).
+2. **Startup probes the OS keyring three times, uncached** (`ui/main_window.py:61-68`).
    Probe once per process.
-4. **`matplotlib` is declared and bundled but never imported.** Removing it from
+3. **`matplotlib` is declared and bundled but never imported.** Removing it from
    `pyproject.toml` and the Flatpak manifest shrinks every installer.
 
 **Bigger bet:** add a headless benchmark that replays a simulated three-hour ride
-through the mock backend and times each tick. It makes item 1 measurable and guards
-against regressions. A rewrite in Rust or C++ would not fix any item above; it would
-only help install size and startup time.
+through the mock backend and times each tick, so per-tick costs that grow with ride
+length (like the ones already fixed) are caught before release. A rewrite in Rust or
+C++ would not fix any item above; it would only help install size and startup time.
 
 ## 2. Functionality
 

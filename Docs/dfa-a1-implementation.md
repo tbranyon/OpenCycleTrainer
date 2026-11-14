@@ -119,8 +119,10 @@ RR, multi-RR, and RR-with-energy-expended offset cases.
 - **scipy is NOT a dependency** and should not be added for this. The scipy sketches in [3]
   and [5c] are illustrative only. Implement the banded (pentadiagonal) Cholesky solve and the
   log-log linear regression with **numpy alone** — both are a few lines and keep the
-  dependency surface small. `numpy.linalg.solve` on the dense `A` (N≲400) is also acceptable
-  and sub-millisecond; prefer it if a banded solver adds complexity without measurable gain.
+  dependency surface small. Avoid `numpy.linalg.solve` on the dense `A`: it is sub-millisecond
+  with single-threaded BLAS, but multithreaded OpenBLAS (the numpy wheel default) was measured
+  at 270–450 ms per solve at N=150–400 on the GUI thread, from thread start-up alone. The
+  implementation uses a pure-Python banded Cholesky (~0.2 ms at N=400).
 
 ### 0d. Threading
 
@@ -140,8 +142,10 @@ thread it.
 ### 0e. "Enabled" semantics & versioning
 
 Per product decision: the feature is **active whenever the `dfa_a1` tile is selected** in
-`tile_selections`. Selecting the tile turns on RR ingest, the 5 s pipeline, the chart
-overlay, and recording; deselecting it tears all of that down. No separate enable checkbox
+`tile_selections`. Selecting the tile turns on the 5 s pipeline, the chart overlay, and
+recording; deselecting it turns them off. RR ingest into the 120 s buffer continues either
+way (it is only an append), so selecting the tile mid-ride shows α1 immediately instead of
+after the window refills. No separate enable checkbox
 in Settings for the first iteration. This is a **new feature → bump MINOR** (0.2.0 → 0.3.0)
 when implemented, updating both `pyproject.toml` and `opencycletrainer/__init__.py`.
 
@@ -226,8 +230,8 @@ z_stat  = z - z_trend                # detrended (stationary) RR series  ← fee
 Implementation notes:
 - **Solve the system; do not invert** `A` explicitly (more stable, faster).
 - `A` is symmetric positive-definite → use **Cholesky** (`LLT`). Exact and fast.
-- `A` is **banded (pentadiagonal)** → a banded Cholesky is O(N). Even a dense solve at
-  N≈400 is sub-millisecond, so dense float64 is acceptable if simpler.
+- `A` is **banded (pentadiagonal)** → a banded Cholesky is O(N). Prefer it to a dense solve,
+  whose cost depends on the BLAS threading configuration (see Dependencies above).
 - λ = 500. (λ tunes the cutoff; 500 is the protocol default — keep configurable.)
 - Build `D2` as a sparse/banded matrix; never materialize dense `D2ᵀD2` if using a banded path.
 
