@@ -568,8 +568,14 @@ class WorkoutSessionController(QObject):
             self._ftms_bridge_manager.submit_action(
                 lambda bridge: bridge.set_erg_jog_offset_watts(jog_watts)
             )
-        # TODO: Resistance jog needs to send an update to the FTMS bridge when
-        # bridge.set_resistance_level() is implemented.
+        elif active_mode == "Resistance" and snapshot.state in _RIDING_STATES:
+            # Interval-driven updates only send resistance at interval changes, so push the
+            # jogged level now. While paused the trainer keeps its pause setpoint and the
+            # new level is applied on resume.
+            level = self._mode_state.resistance_target_percent()
+            self._ftms_bridge_manager.submit_action(
+                lambda bridge: bridge.apply_manual_resistance_level(level)
+            )
 
         # Force an immediate update of the trainer target
         if self._last_snapshot:

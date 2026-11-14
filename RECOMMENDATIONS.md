@@ -16,25 +16,21 @@ C++ would not have fixed any of them; it would only help install size and startu
 
 ## 2. Functionality
 
-1. **Resistance jog is delayed in structured workouts.** During a steady interval the
-   new level is not sent until the next interval change, ramp tick or resume; free ride
-   sends it at once (`ui/workout_controller.py:574`,
-   `core/control/ftms_control.py:454-465`).
-2. **Crash recovery.** Samples are already streamed to `*.samples.jsonl` during the
+1. **Crash recovery.** Samples are already streamed to `*.samples.jsonl` during the
    ride, but nothing looks for orphaned files at startup. Offer to finalize them into a
    FIT file.
-3. **ERG stall protection.** There is no "spiral of death" handling: when cadence
+2. **ERG stall protection.** There is no "spiral of death" handling: when cadence
    collapses under ERG, ease the target and ramp back in.
-4. **Record distance and left/right balance in the FIT file.** Balance is decoded
+3. **Record distance and left/right balance in the FIT file.** Balance is decoded
    (`core/sensors.py:46`) and then dropped; distance can be integrated from speed.
-5. **Pull today's planned workout from intervals.icu.** Authentication already exists,
+4. **Pull today's planned workout from intervals.icu.** Authentication already exists,
    and this removes the manual file shuffle for anyone following a plan.
-6. **FTP ramp test** that proposes a new FTP. FTP is manual only today, and it drives
+5. **FTP ramp test** that proposes a new FTP. FTP is manual only today, and it drives
    every percentage-based workout.
-7. **Finish or remove half-built pieces:** `display_units` is stored but never read,
+6. **Finish or remove half-built pieces:** `display_units` is stored but never read,
    and `core/control/hybrid_mode.py` is unused; the live Hybrid mode runs a separate
    copy of that logic in `ui/mode_state.py`.
-8. **Import `.erg` workouts** (close to the existing MRC parser), plus favourites and a
+7. **Import `.erg` workouts** (close to the existing MRC parser), plus favourites and a
    ride-history browser.
 
 **Bigger bets**

@@ -1098,6 +1098,55 @@ def test_trainer_bridge_dispatches_erg_and_resistance_commands_when_target_is_co
     controller.shutdown()
 
 
+def _resistance_workout_with_trainer(app):
+    """Controller riding step_only.mrc in Resistance mode with a fake FTMS trainer attached."""
+    transport = _FakeFTMSTransport()
+    screen = WorkoutScreen(settings=AppSettings())
+    controller = WorkoutSessionController(
+        screen=screen,
+        settings=AppSettings(),
+        recorder=_FakeRecorder(),
+        ftms_transport_factory=lambda backend, trainer_id: transport,
+        monotonic_clock=lambda: 0.0,
+    )
+    controller.set_trainer_control_target(backend="bleak", trainer_device_id="trainer-1")
+    controller._load_workout_from_file(Path(__file__).parent / "data" / "step_only.mrc")
+    screen.start_button.click()
+    app.processEvents()
+    screen.mode_selector.setCurrentText("Resistance")
+    app.processEvents()
+    assert _wait_until(app, lambda: struct.pack("<Bh", 0x04, 33) in transport.writes)
+    return controller, screen, transport
+
+
+def test_workout_resistance_jog_reaches_the_trainer_mid_interval():
+    """A resistance jog during a steady interval must be sent now, not at the next interval."""
+    app = _get_or_create_qapp()
+    controller, screen, transport = _resistance_workout_with_trainer(app)
+
+    screen.jog_requested.emit(10)
+
+    assert _wait_until(
+        app, lambda: struct.pack("<Bh", 0x04, 43) in transport.writes
+    ), "Expected the jogged resistance level (43%) to be sent immediately"
+    controller.shutdown()
+
+
+def test_workout_resistance_jog_while_paused_does_not_load_the_trainer():
+    """While paused the trainer stays at the pause setpoint; the jog applies on resume."""
+    app = _get_or_create_qapp()
+    controller, screen, transport = _resistance_workout_with_trainer(app)
+    controller._pause_workout()
+    assert _wait_until(app, lambda: transport.writes[-1] == struct.pack("<Bh", 0x04, 0))
+
+    screen.jog_requested.emit(10)
+    _wait_until(app, lambda: False, timeout_seconds=0.2)
+
+    assert struct.pack("<Bh", 0x04, 43) not in transport.writes
+    assert controller._mode_state.resistance_target_percent() == 43.0
+    controller.shutdown()
+
+
 def test_cadence_tile_shows_dash_when_no_cadence():
     app = _get_or_create_qapp()
     monotonic_now = 0.0

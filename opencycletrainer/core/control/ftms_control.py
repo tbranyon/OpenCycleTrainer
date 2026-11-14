@@ -392,9 +392,12 @@ class WorkoutEngineFTMSBridge:
         self._send_erg_target(self._apply_opentrueup_target(jogged_target))
 
     def apply_manual_resistance_level(self, level: float) -> None:
-        """Apply a Free Ride resistance level outside interval-derived setpoints."""
+        """Apply a manual resistance level now, outside interval-derived setpoints."""
         self._current_erg_target_base_watts = None
-        self._send_resistance_level(level)
+        try:
+            self._send_resistance_level(level)
+        except FTMSControlError:
+            self._report_error("Error communicating with trainer")
 
     def on_engine_snapshot(
         self,

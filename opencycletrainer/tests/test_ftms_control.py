@@ -763,3 +763,13 @@ def test_bridge_set_opentrueup_routes_power_samples_to_new_controller():
     assert replacement.power_samples == [
         {"timestamp": 1.0, "trainer_power_watts": 200, "bike_power_watts": 210}
     ]
+
+
+def test_manual_resistance_write_failure_is_reported_not_raised():
+    stub_control = _StubControl(mode=ControlMode.RESISTANCE, fail_on_apply=True)
+    alerts: list[str] = []
+    bridge = WorkoutEngineFTMSBridge(stub_control, mode=ControlMode.RESISTANCE, alert_callback=alerts.append)
+
+    bridge.apply_manual_resistance_level(43.0)
+
+    assert alerts == ["Error communicating with trainer"]
