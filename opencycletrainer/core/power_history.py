@@ -5,6 +5,7 @@ from collections import deque
 from opencycletrainer.core.sensors import PowerSource
 
 _POWER_SOURCE_STALENESS_SECONDS = 3.0
+_NP_ROLLING_WINDOW_SECONDS = 30
 
 # Log-spaced durations (seconds) used to build the power-duration curve.
 _CURVE_DURATION_CANDIDATES = (
@@ -25,6 +26,7 @@ class PowerHistory:
         self._workout_power_count = 0
         self._workout_actual_kj = 0.0
         self._last_actual_power_tick: float | None = None
+        self._np = _IncrementalNormalizedPower()
 
     def record(
         self,
@@ -43,6 +45,7 @@ class PowerHistory:
             return False
 
         self._samples.append((now, int(watts)))
+        self._np.add(now, int(watts))
         self._workout_power_sum += float(watts)
         self._workout_power_count += 1
         if self._last_actual_power_tick is not None:
@@ -99,28 +102,15 @@ class PowerHistory:
         return round(sum(in_window) / len(in_window))
 
     def compute_normalized_power(self) -> int | None:
-        """Return normalized power (30 s rolling 4th-power mean), or None if insufficient data."""
-        samples = list(self._samples)
-        if len(samples) < 2:
-            return None
-        start_t = samples[0][0]
-        end_t = samples[-1][0]
-        if end_t - start_t < 30.0:
-            return None
-        n_bins = int(end_t - start_t) + 1
-        bins: list[list[int]] = [[] for _ in range(n_bins)]
-        for t, w in samples:
-            idx = min(int(t - start_t), n_bins - 1)
-            bins[idx].append(w)
-        one_sec = [sum(b) / len(b) if b else 0.0 for b in bins]
-        if len(one_sec) < 30:
-            return None
-        window_sum = sum(one_sec[:30])
-        fourth_powers = [(window_sum / 30.0) ** 4]
-        for i in range(30, len(one_sec)):
-            window_sum += one_sec[i] - one_sec[i - 30]
-            fourth_powers.append((window_sum / 30.0) ** 4)
-        return int(round((sum(fourth_powers) / len(fourth_powers)) ** 0.25))
+        """Return normalized power (30 s rolling 4th-power mean), or None if insufficient data.
+
+        Maintained incrementally as samples arrive, so each call costs O(new seconds)
+        rather than O(ride length).
+        """
+        result = self._np.value()
+        if result is _IncrementalNormalizedPower.NEEDS_FULL_RECOMPUTE:
+            return _normalized_power_from_samples(self._samples)
+        return result
 
     def workout_avg_watts(self) -> int | None:
         """Return the mean watts since the last reset, or None if no samples."""
@@ -149,6 +139,7 @@ class PowerHistory:
         self._workout_power_count = 0
         self._workout_actual_kj = 0.0
         self._last_actual_power_tick = None
+        self._np = _IncrementalNormalizedPower()
 
     def as_series(self) -> list[tuple[float, int]]:
         """Return all samples as a list of (monotonic_timestamp, watts) tuples."""
@@ -209,6 +200,114 @@ class PowerHistory:
             avg = round(weighted_sum / total_weight) if total_weight > 0 else samples[i][1]
             result.append((t, avg))
         return result
+
+
+def _normalized_power_from_samples(samples: list[tuple[float, int]]) -> int | None:
+    """Compute NP from the full sample history in one pass.
+
+    Bins samples into one-second buckets from the first sample (empty buckets count as
+    0 W), takes the 30 s rolling mean, and returns the fourth root of the mean fourth power.
+    """
+    if len(samples) < 2:
+        return None
+    start_t = samples[0][0]
+    end_t = samples[-1][0]
+    if end_t - start_t < _NP_ROLLING_WINDOW_SECONDS:
+        return None
+    n_bins = int(end_t - start_t) + 1
+    bins: list[list[int]] = [[] for _ in range(n_bins)]
+    for t, w in samples:
+        idx = min(int(t - start_t), n_bins - 1)
+        bins[idx].append(w)
+    one_sec = [sum(b) / len(b) if b else 0.0 for b in bins]
+    if len(one_sec) < _NP_ROLLING_WINDOW_SECONDS:
+        return None
+    window_sum = sum(one_sec[:_NP_ROLLING_WINDOW_SECONDS])
+    fourth_powers = [(window_sum / _NP_ROLLING_WINDOW_SECONDS) ** 4]
+    for i in range(_NP_ROLLING_WINDOW_SECONDS, len(one_sec)):
+        window_sum += one_sec[i] - one_sec[i - _NP_ROLLING_WINDOW_SECONDS]
+        fourth_powers.append((window_sum / _NP_ROLLING_WINDOW_SECONDS) ** 4)
+    return int(round((sum(fourth_powers) / len(fourth_powers)) ** 0.25))
+
+
+class _IncrementalNormalizedPower:
+    """Running state for normalized power, producing the same result as a full recompute.
+
+    One-second bins behind the newest one can no longer change (timestamps only move
+    forward), so the rolling windows ending in them are folded into running sums once.
+    Each query then only adds the window ending in the newest, still-filling bin. The
+    arithmetic runs in the same order as :func:`_normalized_power_from_samples`, so
+    results are identical rather than merely close.
+    """
+
+    NEEDS_FULL_RECOMPUTE = object()
+
+    def __init__(self) -> None:
+        self._start_t: float | None = None
+        self._end_t: float | None = None
+        self._bin_sums: list[int] = []
+        self._bin_counts: list[int] = []
+        self._out_of_order = False
+        # Windows ending at bins [WINDOW - 1, _folded_upto) are folded into these sums.
+        self._folded_upto = 0
+        self._window_sum = 0.0
+        self._fourth_power_sum = 0.0
+        self._fourth_power_count = 0
+
+    def add(self, t: float, watts: int) -> None:
+        """Add one accepted power sample."""
+        if self._start_t is None:
+            self._start_t = t
+        if self._end_t is not None and t < self._end_t:
+            self._out_of_order = True
+        self._end_t = t if self._end_t is None else max(self._end_t, t)
+        if self._out_of_order:
+            return
+        idx = int(t - self._start_t)
+        while len(self._bin_sums) <= idx:
+            self._bin_sums.append(0)
+            self._bin_counts.append(0)
+        self._bin_sums[idx] += watts
+        self._bin_counts[idx] += 1
+
+    def value(self) -> int | None | object:
+        """Return NP, None when there is too little data, or NEEDS_FULL_RECOMPUTE."""
+        if self._out_of_order:
+            return self.NEEDS_FULL_RECOMPUTE
+        if self._start_t is None or self._end_t is None or self._end_t == self._start_t:
+            return None
+        if self._end_t - self._start_t < _NP_ROLLING_WINDOW_SECONDS:
+            return None
+        last = len(self._bin_sums) - 1
+        if last + 1 < _NP_ROLLING_WINDOW_SECONDS:
+            return None
+        self._fold_windows_before(last)
+        window_sum = self._advance_window_sum(self._window_sum, last)
+        fourth_sum = self._fourth_power_sum + (window_sum / _NP_ROLLING_WINDOW_SECONDS) ** 4
+        count = self._fourth_power_count + 1
+        return int(round((fourth_sum / count) ** 0.25))
+
+    def _bin_mean(self, idx: int) -> float:
+        count = self._bin_counts[idx]
+        return self._bin_sums[idx] / count if count else 0.0
+
+    def _advance_window_sum(self, previous_sum: float, end_idx: int) -> float:
+        """Return the rolling sum for the window ending at *end_idx*, given the previous one."""
+        if end_idx == _NP_ROLLING_WINDOW_SECONDS - 1:
+            return sum(self._bin_mean(i) for i in range(_NP_ROLLING_WINDOW_SECONDS))
+        return previous_sum + (
+            self._bin_mean(end_idx) - self._bin_mean(end_idx - _NP_ROLLING_WINDOW_SECONDS)
+        )
+
+    def _fold_windows_before(self, last: int) -> None:
+        """Fold every completed window (ending before the newest bin) into the running sums."""
+        end_idx = max(self._folded_upto, _NP_ROLLING_WINDOW_SECONDS - 1)
+        while end_idx < last:
+            self._window_sum = self._advance_window_sum(self._window_sum, end_idx)
+            self._fourth_power_sum += (self._window_sum / _NP_ROLLING_WINDOW_SECONDS) ** 4
+            self._fourth_power_count += 1
+            end_idx += 1
+        self._folded_upto = max(self._folded_upto, end_idx)
 
 
 def compute_power_duration_curve(samples: list[tuple[float, int]]) -> list[tuple[int, int]]:

@@ -361,3 +361,82 @@ class TestSmoothedSeriesStartIndex:
     def test_start_index_past_end_returns_empty(self):
         ph = self._irregular_history()
         assert ph.smoothed_series(start_index=100) == []
+
+
+def _reference_normalized_power(samples: list[tuple[float, int]]) -> int | None:
+    """Straightforward full-history NP (30 s rolling mean of 1 s bins, fourth-power mean)."""
+    if len(samples) < 2:
+        return None
+    start_t, end_t = samples[0][0], samples[-1][0]
+    if end_t - start_t < 30.0:
+        return None
+    n_bins = int(end_t - start_t) + 1
+    bins: list[list[int]] = [[] for _ in range(n_bins)]
+    for t, w in samples:
+        bins[min(int(t - start_t), n_bins - 1)].append(w)
+    one_sec = [sum(b) / len(b) if b else 0.0 for b in bins]
+    if len(one_sec) < 30:
+        return None
+    window_sum = sum(one_sec[:30])
+    fourth_powers = [(window_sum / 30.0) ** 4]
+    for i in range(30, len(one_sec)):
+        window_sum += one_sec[i] - one_sec[i - 30]
+        fourth_powers.append((window_sum / 30.0) ** 4)
+    return int(round((sum(fourth_powers) / len(fourth_powers)) ** 0.25))
+
+
+class TestNormalizedPowerDuringRide:
+    """NP queried repeatedly while samples arrive must match a full recomputation."""
+
+    def _irregular_samples(self) -> list[tuple[float, int]]:
+        samples = []
+        t = 3.7
+        for i in range(400):
+            # 4 Hz with jitter, a few multi-second dropouts, and varied power.
+            t += 0.25 + (0.05 if i % 3 == 0 else 0.0)
+            if i in (90, 250):
+                t += 6.4
+            samples.append((t, 120 + (i * 53) % 260))
+        return samples
+
+    def test_matches_full_recomputation_after_every_sample(self):
+        ph = PowerHistory()
+        recorded: list[tuple[float, int]] = []
+        for t, w in self._irregular_samples():
+            ph.record(w, now=t, recording_active=True)
+            recorded.append((t, w))
+            assert ph.compute_normalized_power() == _reference_normalized_power(recorded)
+
+    def test_matches_full_recomputation_when_queried_occasionally(self):
+        ph = PowerHistory()
+        recorded: list[tuple[float, int]] = []
+        for i, (t, w) in enumerate(self._irregular_samples()):
+            ph.record(w, now=t, recording_active=True)
+            recorded.append((t, w))
+            if i % 37 == 0:
+                assert ph.compute_normalized_power() == _reference_normalized_power(recorded)
+        assert ph.compute_normalized_power() == _reference_normalized_power(recorded)
+
+    def test_reset_starts_a_fresh_calculation(self):
+        ph = PowerHistory()
+        for i in range(120):
+            ph.record(400, now=float(i), recording_active=True)
+        assert ph.compute_normalized_power() is not None
+
+        ph.reset()
+        recorded = []
+        for i in range(60):
+            ph.record(150, now=1000.0 + i, recording_active=True)
+            recorded.append((1000.0 + i, 150))
+        assert ph.compute_normalized_power() == _reference_normalized_power(recorded)
+
+    def test_out_of_order_sample_still_matches_full_recomputation(self):
+        ph = PowerHistory()
+        recorded = []
+        for i in range(80):
+            ph.record(200 + i, now=float(i), recording_active=True)
+            recorded.append((float(i), 200 + i))
+        ph.compute_normalized_power()
+        ph.record(500, now=40.5, recording_active=True)
+        recorded.append((40.5, 500))
+        assert ph.compute_normalized_power() == _reference_normalized_power(recorded)

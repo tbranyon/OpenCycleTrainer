@@ -231,7 +231,13 @@ class KJMetricTile(MetricTile):
         self.layout().addWidget(self._source_combo)
 
     def set_available_sources(self, source_keys: list[str]) -> None:
-        """Rebuild the combo with the given source keys, preserving current selection."""
+        """Rebuild the combo with the given source keys, preserving current selection.
+
+        Called every tick, so it returns early when the source list has not changed.
+        """
+        existing_keys = [self._source_combo.itemData(i) for i in range(self._source_combo.count())]
+        if existing_keys == list(source_keys):
+            return
         current_key = self._source_combo.currentData()
         self._source_combo.blockSignals(True)
         self._source_combo.clear()
@@ -412,9 +418,10 @@ class DfaMetricTile(MetricTile):
     def _apply_quality_color(self, quality: SignalQuality) -> None:
         role = _QUALITY_ROLE_BY_SIGNAL[quality]
         color = resolve_status_color(role, self._theme_mode)
-        self.quality_dot.setStyleSheet(
-            f"background-color: {color}; border-radius: {self._DOT_DIAMETER // 2}px;"
-        )
+        sheet = f"background-color: {color}; border-radius: {self._DOT_DIAMETER // 2}px;"
+        # Records arrive every tick; re-applying an identical sheet still re-polishes the widget.
+        if sheet != self.quality_dot.styleSheet():
+            self.quality_dot.setStyleSheet(sheet)
 
     def _reposition_dot(self) -> None:
         x = max(0, self.width() - self._DOT_DIAMETER - self._DOT_MARGIN)

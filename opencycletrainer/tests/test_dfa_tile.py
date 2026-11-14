@@ -235,3 +235,22 @@ def test_screen_update_charts_forwards_alpha1_series_to_widget():
     screen.chart_widget.update_charts = _capture
     screen.update_charts(5.0, 0, [], [], [(3.0, 0.82)])
     assert captured["alpha1_series"] == [(3.0, 0.82)]
+
+
+# --- Redundant per-tick restyling ---
+
+def test_quality_dot_not_restyled_when_quality_unchanged():
+    _get_or_create_qapp()
+    tile = DfaMetricTile(title="DFA α1", key="dfa_a1")
+    tile.set_dfa_record(_make_record(quality=SignalQuality.GOOD))
+    restyles: list[str] = []
+    original = tile.quality_dot.setStyleSheet
+    tile.quality_dot.setStyleSheet = lambda sheet: (restyles.append(sheet), original(sheet))
+
+    for _ in range(5):
+        tile.set_dfa_record(_make_record(quality=SignalQuality.GOOD))
+    assert restyles == []
+
+    tile.set_dfa_record(_make_record(quality=SignalQuality.POOR))
+    assert len(restyles) == 1
+    assert resolve_status_color("danger", THEME_MODE_LIGHT) in tile.quality_dot.styleSheet()

@@ -180,3 +180,28 @@ class TestAsDeque:
         assert len(d) == 2
         assert d[0] == (10.0, 80.0)
         assert d[1] == (11.0, 90.0)
+
+
+class TestRetention:
+    def test_history_stays_bounded_over_a_long_ride(self):
+        ch = CadenceHistory()
+        for i in range(4 * 3600):
+            ch.record(90.0, CadenceSource.TRAINER, now=i / 4)
+        assert len(ch.as_deque()) <= 4 * 4
+
+    def test_windowed_avg_unchanged_after_long_history(self):
+        ch = CadenceHistory()
+        for i in range(4 * 600):
+            ch.record(80.0, CadenceSource.TRAINER, now=i / 4)
+        ch.record(100.0, CadenceSource.TRAINER, now=600.0)
+        ch.record(110.0, CadenceSource.TRAINER, now=600.25)
+        # 1 s window at 600.25 covers 599.25-600.25: three 80s, then 100 and 110
+        assert ch.windowed_avg(600.25) == round((80 * 3 + 100 + 110) / 5)
+
+    def test_dropout_hold_still_returns_last_value_within_three_seconds(self):
+        ch = CadenceHistory()
+        for i in range(400):
+            ch.record(85.0, CadenceSource.TRAINER, now=i / 4)
+        ch.record(92.0, CadenceSource.TRAINER, now=100.0)
+        assert ch.windowed_avg(102.5) == 92
+        assert ch.windowed_avg(103.5) is None

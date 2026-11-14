@@ -9,7 +9,11 @@ _DROPOUT_HOLD_SECONDS = 3.0
 
 
 class CadenceHistory:
-    """Rolling cadence sample store with multi-source priority tracking."""
+    """Rolling cadence sample store with multi-source priority tracking.
+
+    Only samples within the dropout-hold window of the newest reading are kept, since
+    no query looks further back; this keeps memory and per-query cost constant.
+    """
 
     def __init__(self, staleness_seconds: float = 3.0) -> None:
         self._staleness_seconds = staleness_seconds
@@ -30,6 +34,9 @@ class CadenceHistory:
             return
         self._last_rpm = rpm
         self._samples.append((now, rpm))
+        retention_cutoff = now - _DROPOUT_HOLD_SECONDS
+        while self._samples and self._samples[0][0] < retention_cutoff:
+            self._samples.popleft()
 
     def last_rpm(self) -> float | None:
         """Return the most recently accepted cadence reading, or None."""
