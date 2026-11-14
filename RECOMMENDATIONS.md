@@ -6,21 +6,13 @@ Each list is ordered by value for effort.
 
 ## 1. Performance
 
-No measured bottleneck is caused by Python itself: the load is a few sensors at 1–4 Hz.
-The problems are work repeated on the UI thread.
-
-1. **Finishing a ride encodes the FIT file on the UI thread and computes metrics twice**
-   (`core/recorder.py:222-270`). Reuse the summary metrics and export on the executor
-   Strava upload already uses.
-2. **Startup probes the OS keyring three times, uncached** (`ui/main_window.py:61-68`).
-   Probe once per process.
-3. **`matplotlib` is declared and bundled but never imported.** Removing it from
-   `pyproject.toml` and the Flatpak manifest shrinks every installer.
+All of the performance items from the original review are done. No bottleneck found was
+caused by Python itself; each was work repeated on, or blocking, the UI thread.
 
 **Bigger bet:** add a headless benchmark that replays a simulated three-hour ride
 through the mock backend and times each tick, so per-tick costs that grow with ride
 length (like the ones already fixed) are caught before release. A rewrite in Rust or
-C++ would not fix any item above; it would only help install size and startup time.
+C++ would not have fixed any of them; it would only help install size and startup time.
 
 ## 2. Functionality
 
