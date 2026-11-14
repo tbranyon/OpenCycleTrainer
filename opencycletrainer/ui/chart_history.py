@@ -14,7 +14,9 @@ class ChartHistory:
     """Owns the chart-update timer, HR history, and skip-event list.
 
     Computes the elapsed-time cursor position and pushes updated power/HR series
-    to the screen on each timer tick.
+    to the screen on each timer tick. Chart-time series are cached and extended with
+    only the samples that arrived since the previous tick, so per-tick cost does not
+    grow with ride length; the cache is rebuilt when a skip or pause shifts the timeline.
     """
 
     def __init__(
@@ -36,6 +38,11 @@ class ChartHistory:
         self._alpha1_history: list[tuple[float, float]] = []
         self._skip_events: list[tuple[float, float, float]] = []
         self._pause_events: list[tuple[float, float]] = []  # (end_mono, duration)
+
+        self._power_points: list[tuple[float, int]] = []
+        self._hr_points: list[tuple[float, int]] = []
+        self._alpha1_points: list[tuple[float, float]] = []
+        self._points_timeline_key: tuple[float, int, int] | None = None
 
         if _timer_factory is not None:
             self._chart_timer = _timer_factory()
@@ -61,10 +68,8 @@ class ChartHistory:
     @property
     def alpha1_series(self) -> list[tuple[float, float]]:
         """α1 samples as (elapsed_seconds, value), skip/pause-adjusted like the other traces."""
-        return [
-            (self._adjusted_time(mono), value)
-            for mono, value in self._alpha1_history
-        ]
+        self._sync_points()
+        return list(self._alpha1_points)
 
     @property
     def skip_events(self) -> list[tuple[float, float, float]]:
@@ -88,6 +93,7 @@ class ChartHistory:
         self._alpha1_history = []
         self._skip_events = []
         self._pause_events = []
+        self._clear_points()
 
     def record_hr(self, bpm: int, now: float) -> None:
         """Append an HR sample. No-op if the chart has not been started."""
@@ -136,6 +142,41 @@ class ChartHistory:
         )
         return (sample_mono - self._chart_start_monotonic) + skip_offset - pause_offset
 
+    def _clear_points(self) -> None:
+        self._power_points = []
+        self._hr_points = []
+        self._alpha1_points = []
+        self._points_timeline_key = None
+
+    def _sync_points(self) -> None:
+        """Bring the cached chart-time series up to date with the raw histories.
+
+        Already-converted points keep their positions unless the timeline itself
+        changed (a new start time, skip or pause), in which case every point is
+        converted again.
+        """
+        if self._chart_start_monotonic is None:
+            return
+        timeline_key = (
+            self._chart_start_monotonic,
+            len(self._skip_events),
+            len(self._pause_events),
+        )
+        if timeline_key != self._points_timeline_key:
+            self._clear_points()
+            self._points_timeline_key = timeline_key
+
+        new_power = self._power_history.smoothed_series(start_index=len(self._power_points))
+        self._power_points.extend((self._adjusted_time(mono), watts) for mono, watts in new_power)
+        self._hr_points.extend(
+            (self._adjusted_time(mono), bpm)
+            for mono, bpm in self._hr_history[len(self._hr_points):]
+        )
+        self._alpha1_points.extend(
+            (self._adjusted_time(mono), value)
+            for mono, value in self._alpha1_history[len(self._alpha1_points):]
+        )
+
     def on_tick(self, snapshot: Any, workout: Any, is_free_ride: bool, erg_target_watts: int | None = None) -> None:
         """Recompute elapsed time and push updated series to the screen."""
         if self._chart_start_monotonic is None:
@@ -146,21 +187,14 @@ class ChartHistory:
         paused = self._pause_state.total_paused_plus_current(now)
         elapsed = (now - self._chart_start_monotonic) + skip_offset - paused
 
-        power_series = [
-            (self._adjusted_time(mono), watts)
-            for mono, watts in self._power_history.smoothed_series()
-        ]
-
-        hr_series = [
-            (self._adjusted_time(mono), bpm)
-            for mono, bpm in self._hr_history
-        ]
+        self._sync_points()
+        power_series = list(self._power_points)
+        hr_series = list(self._hr_points)
+        alpha1_series = list(self._alpha1_points)
 
         interval_index = (
             snapshot.current_interval_index if snapshot is not None else None
         )
-
-        alpha1_series = self.alpha1_series
 
         if is_free_ride:
             self._screen.update_free_ride_charts(

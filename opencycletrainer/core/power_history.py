@@ -18,7 +18,7 @@ class PowerHistory:
 
     def __init__(self, staleness_seconds: float = _POWER_SOURCE_STALENESS_SECONDS) -> None:
         self._staleness_seconds = float(staleness_seconds)
-        self._samples: deque[tuple[float, int]] = deque()
+        self._samples: list[tuple[float, int]] = []
         self._live_samples: deque[tuple[float, int]] = deque()
         self._source_last_times: dict[PowerSource, float] = {}
         self._workout_power_sum = 0.0
@@ -154,21 +154,35 @@ class PowerHistory:
         """Return all samples as a list of (monotonic_timestamp, watts) tuples."""
         return list(self._samples)
 
-    def smoothed_series(self, window_seconds: float = 1.0) -> list[tuple[float, int]]:
+    def smoothed_series(
+        self,
+        window_seconds: float = 1.0,
+        start_index: int = 0,
+    ) -> list[tuple[float, int]]:
         """Return samples with each point replaced by the trailing time-weighted average.
 
         For each sample at time T, averages all samples in [T - window_seconds, T],
         weighted by the duration each value was "held" between consecutive samples.
 
+        Only samples from *start_index* onward are returned, so callers that already
+        hold the earlier points can fetch just the new tail. A point's value depends
+        only on earlier samples, so the tail matches the same slice of the full series.
+
         Uses a sliding window pointer — O(n) — since timestamps are monotonically
         non-decreasing and the window start only ever advances forward.
         """
-        samples = list(self._samples)
-        if not samples:
+        samples = self._samples
+        start = max(0, int(start_index))
+        if start >= len(samples):
             return []
         result: list[tuple[float, int]] = []
-        win_left = 0  # first index with timestamp >= current window_start
-        for i, (t, _) in enumerate(samples):
+        # Rewind from the tail to the first sample inside the first returned point's window.
+        win_left = start
+        first_window_start = samples[start][0] - window_seconds
+        while win_left > 0 and samples[win_left - 1][0] >= first_window_start:
+            win_left -= 1
+        for i in range(start, len(samples)):
+            t = samples[i][0]
             window_start = t - window_seconds
             while win_left < i and samples[win_left][0] < window_start:
                 win_left += 1

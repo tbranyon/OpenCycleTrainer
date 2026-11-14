@@ -343,3 +343,21 @@ class TestComputePowerDurationCurve:
         samples = [(float(i), 100) for i in range(10)] + [(float(i), 300) for i in range(10, 20)]
         curve = dict(compute_power_duration_curve(samples))
         assert curve[20] == 200
+
+
+class TestSmoothedSeriesStartIndex:
+    def _irregular_history(self) -> PowerHistory:
+        ph = PowerHistory()
+        for i, (t, w) in enumerate([(0.0, 100), (0.3, 400), (1.1, 250), (1.2, 90), (2.9, 310), (3.0, 180)]):
+            ph.record(w, now=t, recording_active=False)
+        return ph
+
+    def test_start_index_returns_tail_of_full_series(self):
+        ph = self._irregular_history()
+        full = ph.smoothed_series()
+        for start in range(len(full) + 1):
+            assert ph.smoothed_series(start_index=start) == full[start:]
+
+    def test_start_index_past_end_returns_empty(self):
+        ph = self._irregular_history()
+        assert ph.smoothed_series(start_index=100) == []

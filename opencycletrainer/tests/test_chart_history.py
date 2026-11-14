@@ -33,12 +33,16 @@ class _FakeTimer:
 class _FakePowerHistory:
     def __init__(self, series: list[tuple[float, int]] | None = None) -> None:
         self._series = series or []
+        self.requested_start_indexes: list[int] = []
 
     def as_series(self) -> list[tuple[float, int]]:
         return list(self._series)
 
-    def smoothed_series(self, window_seconds: float = 1.0) -> list[tuple[float, int]]:
-        return list(self._series)
+    def smoothed_series(
+        self, window_seconds: float = 1.0, start_index: int = 0
+    ) -> list[tuple[float, int]]:
+        self.requested_start_indexes.append(start_index)
+        return list(self._series[start_index:])
 
 
 class _FakePauseState:
@@ -492,3 +496,158 @@ class TestOnTickHrSeries:
         ch.start(0.0)
         ch.on_tick(_FakeSnapshot(), None, False)
         assert screen.chart_calls[-1]["hr_series"] == []
+
+
+# ── on_tick() — incremental series ────────────────────────────────────────────
+
+
+def _flat(series):
+    """Flatten (x, y) points so pytest.approx can compare whole series."""
+    return [value for point in series for value in point]
+
+
+def _real_history(clock_fn):
+    """ChartHistory wired to a real PowerHistory, for checking series against a fresh rebuild."""
+    from opencycletrainer.core.power_history import PowerHistory
+
+    power_history = PowerHistory()
+    screen = _FakeScreen()
+    ch = ChartHistory(
+        screen,
+        clock_fn,
+        power_history,
+        _FakePauseState(),
+        _timer_factory=_FakeTimer,
+    )
+    return ch, power_history, screen
+
+
+def _fresh_series(power_history, chart_start, *, hr, alpha1, skips, pauses, now):
+    """Series a brand-new ChartHistory produces from the same data in a single tick."""
+    screen = _FakeScreen()
+    ch = ChartHistory(screen, lambda: now, power_history, _FakePauseState(), _timer_factory=_FakeTimer)
+    ch.start(chart_start)
+    for bpm, t in hr:
+        ch.record_hr(bpm, t)
+    for value, t in alpha1:
+        ch.record_dfa_alpha1(value, t)
+    for skip in skips:
+        ch.record_skip(*skip)
+    for pause in pauses:
+        ch.record_pause(*pause)
+    ch.on_tick(_FakeSnapshot(), None, False)
+    return screen.chart_calls[-1]
+
+
+def _record_power(power_history, start: float, count: int, step: float = 0.4) -> None:
+    for i in range(count):
+        power_history.record(150 + 7 * i, start + i * step, True)
+
+
+class TestOnTickIncremental:
+    def test_series_built_across_ticks_matches_fresh_rebuild(self):
+        now = [0.0]
+        ch, ph, screen = _real_history(lambda: now[0])
+        ch.start(0.0)
+        hr, alpha1 = [], []
+        for tick in range(1, 6):
+            _record_power(ph, tick - 1.0, 3)
+            hr.append((130 + tick, tick - 0.5))
+            ch.record_hr(*hr[-1])
+            alpha1.append((0.7 + tick / 100, tick - 0.2))
+            ch.record_dfa_alpha1(*alpha1[-1])
+            now[0] = float(tick)
+            ch.on_tick(_FakeSnapshot(), None, False)
+
+        expected = _fresh_series(ph, 0.0, hr=hr, alpha1=alpha1, skips=[], pauses=[], now=now[0])
+        actual = screen.chart_calls[-1]
+        for key in ("power_series", "hr_series", "alpha1_series"):
+            assert _flat(actual[key]) == pytest.approx(_flat(expected[key]))
+
+    def test_pause_recorded_mid_ride_matches_fresh_rebuild(self):
+        now = [0.0]
+        ch, ph, screen = _real_history(lambda: now[0])
+        ch.start(0.0)
+        hr = []
+        _record_power(ph, 0.0, 5)
+        hr.append((140, 1.0))
+        ch.record_hr(*hr[-1])
+        now[0] = 2.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        ch.record_pause(12.0, 10.0)
+        _record_power(ph, 12.0, 5)
+        hr.append((150, 13.0))
+        ch.record_hr(*hr[-1])
+        now[0] = 14.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        expected = _fresh_series(ph, 0.0, hr=hr, alpha1=[], skips=[], pauses=[(12.0, 10.0)], now=14.0)
+        actual = screen.chart_calls[-1]
+        assert _flat(actual["power_series"]) == pytest.approx(_flat(expected["power_series"]))
+        assert _flat(actual["hr_series"]) == pytest.approx(_flat(expected["hr_series"]))
+
+    def test_skip_recorded_mid_ride_matches_fresh_rebuild(self):
+        now = [0.0]
+        ch, ph, screen = _real_history(lambda: now[0])
+        ch.start(0.0)
+        _record_power(ph, 0.0, 5)
+        now[0] = 2.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        ch.record_skip(2.5, 2.5, 30.0)
+        _record_power(ph, 2.5, 5)
+        now[0] = 5.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        expected = _fresh_series(ph, 0.0, hr=[], alpha1=[], skips=[(2.5, 2.5, 30.0)], pauses=[], now=5.0)
+        assert _flat(screen.chart_calls[-1]["power_series"]) == pytest.approx(_flat(expected["power_series"]))
+
+    def test_reset_starts_a_new_series(self):
+        now = [0.0]
+        ch, ph, screen = _real_history(lambda: now[0])
+        ch.start(0.0)
+        _record_power(ph, 0.0, 5)
+        ch.record_hr(140, 1.0)
+        now[0] = 2.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        ch.reset()
+        ph.reset()
+        ch.start(100.0)
+        ph.record(300, 101.0, True)
+        ch.record_hr(120, 101.0)
+        now[0] = 102.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        assert _flat(screen.chart_calls[-1]["power_series"]) == pytest.approx(_flat([(1.0, 300)]))
+        assert _flat(screen.chart_calls[-1]["hr_series"]) == pytest.approx(_flat([(1.0, 120)]))
+
+    def test_tick_requests_only_samples_added_since_previous_tick(self):
+        series = [(1.0, 200), (2.0, 210)]
+        ch, _, screen, _ = _make(clock_fn=lambda: 5.0, power_series=series)
+        power_history = ch._power_history
+        ch.start(0.0)
+        ch.on_tick(_FakeSnapshot(), None, False)
+        series.extend([(3.0, 220), (4.0, 230)])
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        assert power_history.requested_start_indexes == [0, 2]
+        assert [w for _, w in screen.chart_calls[-1]["power_series"]] == [200, 210, 220, 230]
+
+    def test_earlier_screen_updates_are_not_changed_by_later_ticks(self):
+        now = [0.0]
+        ch, ph, screen = _real_history(lambda: now[0])
+        ch.start(0.0)
+        ph.record(200, 1.0, True)
+        ch.record_hr(140, 1.0)
+        now[0] = 1.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+        ph.record(210, 2.0, True)
+        ch.record_hr(141, 2.0)
+        now[0] = 2.0
+        ch.on_tick(_FakeSnapshot(), None, False)
+
+        first = screen.chart_calls[0]
+        assert len(first["power_series"]) == 1
+        assert len(first["hr_series"]) == 1
