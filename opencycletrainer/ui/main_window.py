@@ -5,6 +5,7 @@ from typing import Any
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMessageBox
 from PySide6.QtWidgets import QTabWidget
 
 from opencycletrainer.core.sensors import CadenceSource, SensorSample
@@ -27,6 +28,7 @@ from opencycletrainer.integrations.intervalsicu.key_store import get_api_key
 from opencycletrainer.storage.settings import AppSettings, save_settings
 from opencycletrainer.devices.device_manager import DeviceManager
 from .devices_screen import DevicesScreen
+from .ftp_sync import IntervalsIcuFtpSync
 from .settings_screen import SettingsScreen
 from .theme import apply_application_theme
 from .toast import ToastOverlay
@@ -79,6 +81,17 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.settings_screen.settings_applied.connect(self._on_settings_applied)
+        self.ftp_sync = IntervalsIcuFtpSync(
+            api_key_getter=self.settings_screen.connected_intervals_icu_api_key,
+            local_ftp_getter=lambda: self._settings.ftp,
+            apply_local_ftp=self.settings_screen.set_ftp,
+            confirm=self._confirm,
+            notify=lambda text: self._toast_overlay.show_message(text),
+            declined_ftp_getter=lambda: self._settings.intervals_icu_declined_ftp,
+            remember_declined_ftp=self.settings_screen.set_intervals_icu_declined_ftp,
+            parent=self,
+        )
+        self.settings_screen.ftp_edited.connect(self.ftp_sync.on_local_ftp_edited)
         self.workout_screen.tile_order_changed.connect(self._on_tile_order_changed)
         self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
         self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
@@ -132,6 +145,15 @@ class MainWindow(QMainWindow):
     def start_autoconnect(self) -> None:
         """Kick off unattended reconnection to previously paired devices."""
         self.devices_screen.start_autoconnect()
+
+    def check_intervals_icu_ftp(self) -> None:
+        """Offer the FTP from intervals.icu if it differs from the app's. No-op when not connected."""
+        self.ftp_sync.check_on_startup()
+
+    def _confirm(self, title: str, text: str) -> bool:
+        """Ask a yes/no question and return True for yes."""
+        answer = QMessageBox.question(self, title, text)
+        return answer == QMessageBox.StandardButton.Yes
 
     def _on_device_connected(self, device_name: object) -> None:
         if isinstance(device_name, str):
@@ -222,6 +244,7 @@ class MainWindow(QMainWindow):
         self.workout_screen.apply_color_theme(self._effective_theme_mode)
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
+        self.ftp_sync.shutdown()
         self.workout_controller.shutdown()
         self.devices_screen.backend.shutdown()
         super().closeEvent(event)

@@ -331,3 +331,19 @@ def test_last_workout_dir_nonexistent_path_returns_none():
     loaded = load_settings(settings_file)
 
     assert loaded.last_workout_dir is None
+
+
+def test_declined_intervals_icu_ftp_defaults_to_none_and_round_trips():
+    settings_file = _settings_file()
+    assert AppSettings().intervals_icu_declined_ftp is None
+
+    save_settings(AppSettings(intervals_icu_declined_ftp=270), settings_file)
+
+    assert load_settings(settings_file).intervals_icu_declined_ftp == 270
+
+
+def test_declined_intervals_icu_ftp_missing_key_defaults_to_none():
+    settings_file = _settings_file()
+    settings_file.write_text('{"ftp": 250}', encoding="utf-8")
+
+    assert load_settings(settings_file).intervals_icu_declined_ftp is None

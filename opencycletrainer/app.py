@@ -35,4 +35,5 @@ def main() -> int:
     window = MainWindow(settings=settings, settings_path=get_settings_file_path())
     window.show()
     window.start_autoconnect()
+    window.check_intervals_icu_ftp()
     return app.exec()

@@ -48,6 +48,13 @@ def _restore_dir(value: str | None) -> Path | None:
     return path if path.exists() else None
 
 
+def _restore_optional_int(value: object) -> int | None:
+    """Return the stored value as an int, or None when it is missing or not a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _resolve_jog_persistence_mode(data: dict[str, Any]) -> JogPersistenceMode:
     """Resolve the jog persistence mode, migrating the legacy boolean if needed.
 
@@ -83,6 +90,8 @@ class AppSettings:
     strava_athlete_name: str = ""
     intervals_icu_auto_sync_enabled: bool = False
     intervals_icu_athlete_name: str = ""
+    # intervals.icu FTP the rider chose not to adopt; not offered again until it changes.
+    intervals_icu_declined_ftp: int | None = None
     show_interval_plot: bool = True
     erg_jog_persistence_mode: JogPersistenceMode = DEFAULT_JOG_PERSISTENCE_MODE
 
@@ -103,6 +112,7 @@ class AppSettings:
             "strava_athlete_name": self.strava_athlete_name,
             "intervals_icu_auto_sync_enabled": self.intervals_icu_auto_sync_enabled,
             "intervals_icu_athlete_name": self.intervals_icu_athlete_name,
+            "intervals_icu_declined_ftp": self.intervals_icu_declined_ftp,
             "show_interval_plot": self.show_interval_plot,
             "erg_jog_persistence_mode": self.erg_jog_persistence_mode.value,
         }
@@ -141,6 +151,7 @@ class AppSettings:
             strava_athlete_name=str(data.get("strava_athlete_name", "")),
             intervals_icu_auto_sync_enabled=bool(data.get("intervals_icu_auto_sync_enabled", False)),
             intervals_icu_athlete_name=str(data.get("intervals_icu_athlete_name", "")),
+            intervals_icu_declined_ftp=_restore_optional_int(data.get("intervals_icu_declined_ftp")),
             show_interval_plot=bool(data.get("show_interval_plot", True)),
             erg_jog_persistence_mode=erg_jog_persistence_mode,
         )

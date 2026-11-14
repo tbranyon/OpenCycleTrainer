@@ -545,3 +545,74 @@ def test_settings_screen_shows_version_label():
     screen = SettingsScreen(settings_path=settings_path)
 
     assert __version__ in screen.version_label.text()
+
+
+# ── FTP sync hooks ────────────────────────────────────────────────────────────
+
+
+def _ftp_screen(**kwargs) -> tuple[SettingsScreen, Path]:
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(ftp=250), settings_path)
+    return SettingsScreen(settings_path=settings_path, **kwargs), settings_path
+
+
+def test_finishing_an_ftp_edit_is_announced_with_the_new_value():
+    screen, _ = _ftp_screen(intervals_icu_api_key=None)
+    edited: list[int] = []
+    screen.ftp_edited.connect(edited.append)
+
+    screen.ftp_spinbox.setValue(265)
+    assert edited == []  # still typing: nothing announced yet
+    screen.ftp_spinbox.editingFinished.emit()
+
+    assert edited == [265]
+
+
+def test_set_ftp_saves_and_applies_without_announcing_an_edit():
+    screen, settings_path = _ftp_screen(intervals_icu_api_key=None)
+    edited: list[int] = []
+    applied: list[AppSettings] = []
+    screen.ftp_edited.connect(edited.append)
+    screen.settings_applied.connect(applied.append)
+
+    screen.set_ftp(270)
+
+    assert screen.ftp_spinbox.value() == 270
+    assert load_settings(settings_path).ftp == 270
+    assert applied[-1].ftp == 270
+    assert edited == []
+
+
+def test_declined_intervals_icu_ftp_is_saved_and_survives_other_edits():
+    screen, settings_path = _ftp_screen(intervals_icu_api_key=None)
+
+    screen.set_intervals_icu_declined_ftp(270)
+    screen.lead_time_spinbox.setValue(9)
+
+    assert load_settings(settings_path).intervals_icu_declined_ftp == 270
+
+
+def test_api_key_is_offered_only_while_connected():
+    connected, _ = _ftp_screen(intervals_icu_connected=True, intervals_icu_api_key="secret")
+    assert connected.connected_intervals_icu_api_key() == "secret"
+
+    connected.intervals_icu_api_key_edit.setText("half-typed replacement")
+    assert connected.connected_intervals_icu_api_key() == "secret"
+
+    with patch("opencycletrainer.ui.settings_screen.clear_api_key"):
+        connected.disconnect_intervals_icu()
+    assert connected.connected_intervals_icu_api_key() is None
+
+    not_connected, _ = _ftp_screen(intervals_icu_connected=False, intervals_icu_api_key=None)
+    assert not_connected.connected_intervals_icu_api_key() is None
+
+
+def test_connecting_makes_the_validated_key_available():
+    screen, _ = _ftp_screen(intervals_icu_connected=False, intervals_icu_api_key=None)
+    screen.intervals_icu_api_key_edit.setText("fresh-key")
+
+    with patch("opencycletrainer.ui.settings_screen.save_api_key"):
+        screen._on_intervals_icu_connect_result("ok:Jane")
+
+    assert screen.connected_intervals_icu_api_key() == "fresh-key"

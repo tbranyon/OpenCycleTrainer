@@ -194,3 +194,59 @@ def test_main_window_routes_power_samples_by_characteristic_uuid(qapp):
         assert bike_values == [220]
     finally:
         _close_window(window, qapp)
+
+
+def _ftp_window(tmp_path, monkeypatch, *, answer: bool) -> tuple[MainWindow, list]:
+    """A main window connected to a fake intervals.icu that reports an FTP of 270 W."""
+    from opencycletrainer.integrations.intervalsicu.ftp_service import RemoteFtp
+    from opencycletrainer.ui import main_window as main_window_module
+
+    monkeypatch.setattr(main_window_module, "get_api_key", lambda: "secret")
+    monkeypatch.setattr(main_window_module, "get_tokens", lambda: None)
+    settings_path = tmp_path / "settings.json"
+    save_settings(AppSettings(ftp=250), settings_path)
+    window = MainWindow(
+        settings=load_settings(settings_path), settings_path=settings_path, backend=MockDeviceBackend(),
+    )
+    pushes: list = []
+    sync = window.ftp_sync
+    sync._fetch_fn = lambda api_key: RemoteFtp(watts=270, settings_id=22, indoor=False)
+    sync._push_fn = lambda api_key, remote, watts: pushes.append((api_key, watts))
+    sync._run_async = lambda job: job()
+    sync._confirm = lambda title, text: answer
+    return window, pushes
+
+
+def test_startup_ftp_check_applies_the_intervals_icu_ftp_everywhere(qapp, tmp_path, monkeypatch):
+    window, pushes = _ftp_window(tmp_path, monkeypatch, answer=True)
+    try:
+        window.check_intervals_icu_ftp()
+
+        assert window.settings_screen.ftp_spinbox.value() == 270
+        assert window._settings.ftp == 270
+        assert load_settings(tmp_path / "settings.json").ftp == 270
+        assert pushes == []
+    finally:
+        window.close()
+
+
+def test_declining_the_startup_ftp_is_remembered_in_settings(qapp, tmp_path, monkeypatch):
+    window, _ = _ftp_window(tmp_path, monkeypatch, answer=False)
+    try:
+        window.check_intervals_icu_ftp()
+
+        saved = load_settings(tmp_path / "settings.json")
+        assert (saved.ftp, saved.intervals_icu_declined_ftp) == (250, 270)
+    finally:
+        window.close()
+
+
+def test_editing_ftp_in_settings_offers_to_update_intervals_icu(qapp, tmp_path, monkeypatch):
+    window, pushes = _ftp_window(tmp_path, monkeypatch, answer=True)
+    try:
+        window.settings_screen.ftp_spinbox.setValue(265)
+        window.settings_screen.ftp_spinbox.editingFinished.emit()
+
+        assert pushes == [("secret", 265)]
+    finally:
+        window.close()

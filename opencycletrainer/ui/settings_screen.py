@@ -161,6 +161,7 @@ _READ_API_KEY_FROM_STORE = object()
 
 class SettingsScreen(QWidget):
     settings_applied = Signal(object)
+    ftp_edited = Signal(int)  # the rider finished typing a new FTP
     _sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
     _intervals_icu_sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
     _intervals_icu_connect_signal = Signal(str)  # "ok:{name}" | "error:{msg}"
@@ -187,6 +188,7 @@ class SettingsScreen(QWidget):
         self._tile_checkboxes: dict[str, QCheckBox] = {}
         self._strava_connected = strava_connected
         self._intervals_icu_connected = intervals_icu_connected
+        self._intervals_icu_api_key: str | None = None
         self._oauth_thread: QThread | None = None
         self._sync_now_signal.connect(self._on_sync_now_result)
         self._intervals_icu_sync_now_signal.connect(self._on_intervals_icu_sync_now_result)
@@ -359,6 +361,7 @@ class SettingsScreen(QWidget):
         )
         if existing_key:
             self.intervals_icu_api_key_edit.setText(existing_key)
+            self._intervals_icu_api_key = existing_key
         intervals_icu_layout.addRow("API Key", self.intervals_icu_api_key_edit)
 
         self.intervals_icu_connect_button = QPushButton("Connect", intervals_icu_group)
@@ -422,6 +425,19 @@ class SettingsScreen(QWidget):
             erg_jog_persistence_mode=JogPersistenceMode(str(self.erg_jog_persistence_mode_combo.currentData())),
         )
 
+    def set_ftp(self, watts: int) -> None:
+        """Set FTP from code (not typed by the rider); saved and applied like any edit."""
+        self.ftp_spinbox.setValue(int(watts))
+
+    def set_intervals_icu_declined_ftp(self, watts: int | None) -> None:
+        """Remember the intervals.icu FTP the rider chose not to adopt."""
+        self._settings = replace(self._settings, intervals_icu_declined_ftp=watts)
+        self._autosave()
+
+    def connected_intervals_icu_api_key(self) -> str | None:
+        """Return the validated intervals.icu API key, or None when not connected."""
+        return self._intervals_icu_api_key if self._intervals_icu_connected else None
+
     def set_tile_selected(self, tile_key: str, selected: bool) -> None:
         checkbox = self._tile_checkboxes.get(tile_key)
         if checkbox is None:
@@ -449,6 +465,9 @@ class SettingsScreen(QWidget):
     def _connect_autosave_signals(self) -> None:
         """Wire every editable widget to _autosave so changes persist on the fly."""
         self.ftp_spinbox.valueChanged.connect(self._autosave)
+        self.ftp_spinbox.editingFinished.connect(
+            lambda: self.ftp_edited.emit(self.ftp_spinbox.value())
+        )
         self.lead_time_spinbox.valueChanged.connect(self._autosave)
         self.lead_time_increasing_only_checkbox.toggled.connect(self._autosave)
         self.windowed_power_window_spinbox.valueChanged.connect(self._autosave)
@@ -642,7 +661,8 @@ class SettingsScreen(QWidget):
     def _on_intervals_icu_connect_result(self, result: str) -> None:
         if result.startswith("ok:"):
             athlete_name = result[len("ok:"):]
-            save_api_key(self.intervals_icu_api_key_edit.text().strip())
+            self._intervals_icu_api_key = self.intervals_icu_api_key_edit.text().strip()
+            save_api_key(self._intervals_icu_api_key)
             self._settings = replace(self._settings, intervals_icu_athlete_name=athlete_name)
             save_settings(self._settings, self._settings_path)
             self._apply_intervals_icu_connected_state(True, athlete_name)
@@ -656,11 +676,13 @@ class SettingsScreen(QWidget):
     def disconnect_intervals_icu(self) -> None:
         """Clear the stored API key and update the UI to the disconnected state."""
         clear_api_key()
+        self._intervals_icu_api_key = None
         self.intervals_icu_api_key_edit.clear()
         self._settings = replace(
             self._settings,
             intervals_icu_athlete_name="",
             intervals_icu_auto_sync_enabled=False,
+            intervals_icu_declined_ftp=None,
         )
         save_settings(self._settings, self._settings_path)
         self._apply_intervals_icu_connected_state(False, "")
