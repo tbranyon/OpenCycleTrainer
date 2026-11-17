@@ -17,9 +17,12 @@ from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.cadence_history import CadenceHistory
+from opencycletrainer.core.course_model import Course
+from opencycletrainer.core.course_ride import CourseRide
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaPipeline, DfaRecord
 from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
 from opencycletrainer.core.fit_exporter import FitExporter, FitExportSample
+from opencycletrainer.core.gpx_parser import GPXParseError, parse_gpx_file
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.pedaling_detector import PedalingDetector
 from opencycletrainer.core.power_history import PowerHistory
@@ -27,6 +30,7 @@ from opencycletrainer.core.recorder import WorkoutRecorder
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+from opencycletrainer.core.zwo_parser import ZWOParseError, parse_zwo_file
 from opencycletrainer.storage.filenames import build_activity_filename
 from opencycletrainer.storage.paths import get_workout_data_root, get_workout_fit_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
@@ -37,10 +41,12 @@ from .opentrueup_state import OpenTrueUpState
 from .mode_state import (
     DEFAULT_FREE_RIDE_ERG_TARGET_WATTS,
     DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT,
+    MODE_SIMULATION,
     ModeState,
 )
 from .pause_state import PauseState
 from .recorder_integration import RecorderIntegration, SensorSnapshot
+from .ride_format import format_distance_km, format_grade_percent
 from .tile_computation import TileComputation
 from .tile_config import DFA_TILE_KEY
 from .trainer_connection import TrainerConnection
@@ -52,6 +58,19 @@ _SENSOR_STALE_SECONDS = 3.0
 _PEDALING_STOPPED_PAUSE_SECONDS = 3.0
 _AUTO_START_PEDALING_SECONDS = 3.0
 _RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
+
+_COURSE_FILE_SUFFIX = ".gpx"
+_ZWO_FILE_SUFFIX = ".zwo"
+_LOAD_FILE_FILTER = (
+    "Workouts and Courses (*.mrc *.zwo *.gpx);;Workout Files (*.mrc *.zwo);;GPX Courses (*.gpx)"
+)
+_OPEN_ENDED_RIDE_SECONDS = 86400
+"""Nominal length of a ride with no planned end (a free ride or a course)."""
+
+# A rider who stops pedaling on a descent is coasting, not stopping, so the ride is not
+# auto-paused while the road drops at least this steeply and the bike is still rolling.
+_COASTING_MAX_GRADE_PERCENT = -1.0
+_COASTING_MIN_SPEED_MPS = 1.0
 
 
 class WorkoutSessionController(QObject):
@@ -108,6 +127,12 @@ class WorkoutSessionController(QObject):
         )
         self._workout: Workout | None = None
         self._mode_state = ModeState(self._screen.mode_selector.currentText())
+        self._mode_state.set_simulation_difficulty_percent(
+            self._settings.simulation_difficulty_percent
+        )
+        self._course_ride: CourseRide | None = None
+        self._last_course_tick_monotonic: float | None = None
+        self._mode_before_course: str | None = None
         self._interval_extra_seconds: dict[int, int] = {}
         self._last_snapshot: WorkoutEngineSnapshot | None = None
 
@@ -173,6 +198,8 @@ class WorkoutSessionController(QObject):
             self._ftms_energy_tracker,
             balance_source=lambda: self._last_pedal_balance_left_pct,
             dfa_source=self.latest_dfa_record,
+            speed_source=self._current_speed_mps,
+            distance_source=self._course_distance_m,
         )
 
         self._timer = QTimer(self)
@@ -197,6 +224,11 @@ class WorkoutSessionController(QObject):
     @property
     def last_snapshot(self) -> WorkoutEngineSnapshot | None:
         return self._last_snapshot
+
+    @property
+    def course_ride(self) -> CourseRide | None:
+        """The course being ridden (or loaded and ready), or None outside a course ride."""
+        return self._course_ride
 
     def set_trainer_control_target(
         self,
@@ -239,6 +271,9 @@ class WorkoutSessionController(QObject):
         elif was_enabled and not now_enabled:
             self._opentrueup_state.disable()
         self._ftms_bridge_manager.apply_settings(settings)
+        self._mode_state.set_simulation_difficulty_percent(settings.simulation_difficulty_percent)
+        if self._course_ride is not None:
+            self._course_ride.set_total_mass_kg(settings.total_mass_kg)
         if was_enabled != now_enabled:
             self._ftms_bridge_manager.set_opentrueup(self._opentrueup_state.controller)
 
@@ -255,19 +290,68 @@ class WorkoutSessionController(QObject):
         self._update_pedaling(now)
         if self._engine.state in _RIDING_STATES:
             stopped_for = self._pedaling.seconds_since_pedaling(now)
-            if stopped_for is not None and stopped_for > _PEDALING_STOPPED_PAUSE_SECONDS:
+            if (
+                stopped_for is not None
+                and stopped_for > _PEDALING_STOPPED_PAUSE_SECONDS
+                and not self._is_coasting()
+            ):
                 self._pause_workout()
                 return self._last_snapshot
         dfa_record = self._update_dfa(now)
         if dfa_record is not None and self._recorder_integration.recorder_active:
             self._chart_history.record_dfa_alpha1(dfa_record.alpha1, now)
         snapshot = self._engine.tick(now, pedaling=self._pedaling.is_pedaling)
+        self._advance_course(snapshot, now)
         self._handle_snapshot(snapshot, now_monotonic=now)
         if snapshot.state == EngineState.FINISHED:
             self._timer.stop()
             recorder_summary = self._recorder_integration.prepare_summary()
             self._show_workout_summary(recorder_summary)
+        elif self._course_ride is not None and self._course_ride.finished:
+            self._stop_workout()
+            return self._last_snapshot
         return snapshot
+
+    def _advance_course(self, snapshot: WorkoutEngineSnapshot, now: float) -> None:
+        """Move the rider along the course for the time since the last tick.
+
+        The bike only moves while the engine is running; paused or ramping back in, it
+        stands still.
+        """
+        ride = self._course_ride
+        if ride is None:
+            return
+        last_tick = self._last_course_tick_monotonic
+        self._last_course_tick_monotonic = now
+        if snapshot.state != EngineState.RUNNING:
+            ride.halt()
+            return
+        if last_tick is None:
+            return
+        sample = self._effective_power_sample(now)
+        ride.advance(now - last_tick, sample[0] if sample is not None else 0)
+        self._mode_state.set_course_grade(ride.grade_percent)
+
+    def _is_coasting(self) -> bool:
+        """True while a course rider is rolling down a descent without pedaling."""
+        ride = self._course_ride
+        return (
+            ride is not None
+            and ride.grade_percent <= _COASTING_MAX_GRADE_PERCENT
+            and ride.speed_mps >= _COASTING_MIN_SPEED_MPS
+        )
+
+    def _current_speed_mps(self) -> float | None:
+        """Speed to show and record: the virtual speed on a course, else the sensor's."""
+        if self._course_ride is not None:
+            return self._course_ride.speed_mps
+        return self._fresh_value(
+            self._last_speed_mps, self._last_speed_received_at, float(self._monotonic_clock())
+        )
+
+    def _course_distance_m(self) -> float | None:
+        """Distance ridden along the course, or None outside a course ride."""
+        return self._course_ride.distance_m if self._course_ride is not None else None
 
     def _wire_screen_actions(self) -> None:
         self._screen.start_button.clicked.connect(self._start_workout)
@@ -286,10 +370,7 @@ class WorkoutSessionController(QObject):
 
     def _set_no_workout_state(self) -> None:
         self._workout = None
-        if self._mode_state.is_free_ride:
-            self._mode_state.set_free_ride(False, None)
-            self._screen.set_free_ride_mode(False)
-            self._screen.set_interval_plot_visible(True)
+        self._leave_open_ended_ride()
         self._screen.set_workout_name(None)
         self._screen.set_session_state("idle")
         self._screen.set_mandatory_metrics(
@@ -307,9 +388,9 @@ class WorkoutSessionController(QObject):
         start_dir = str(self._settings.last_workout_dir or Path.home())
         file_path_str, _ = QFileDialog.getOpenFileName(
             self._screen,
-            "Load Workout File",
+            "Load Workout or Course File",
             start_dir,
-            "MRC Files (*.mrc)",
+            _LOAD_FILE_FILTER,
         )
         if not file_path_str:
             return
@@ -318,11 +399,18 @@ class WorkoutSessionController(QObject):
         self._load_workout_from_file(file_path)
 
     def _load_workout_from_file(self, path: Path) -> None:
+        """Load a workout (.mrc, .zwo) or a course (.gpx), chosen by the file's extension."""
         self._screen.clear_alert()
+        if path.suffix.lower() == _COURSE_FILE_SUFFIX:
+            self._load_course_from_file(path)
+            return
         ftp = max(1, int(self._settings.ftp))
         try:
-            workout = parse_mrc_file(path, ftp_watts=ftp)
-        except MRCParseError as exc:
+            if path.suffix.lower() == _ZWO_FILE_SUFFIX:
+                workout = parse_zwo_file(path, ftp_watts=ftp)
+            else:
+                workout = parse_mrc_file(path, ftp_watts=ftp)
+        except (MRCParseError, ZWOParseError) as exc:
             self._screen.show_alert(f"Could not load '{path.name}' — file format may be invalid")
             return
         except (IOError, OSError) as exc:
@@ -330,10 +418,12 @@ class WorkoutSessionController(QObject):
             return
 
         self._clear_completed_recording()
+        self._leave_open_ended_ride()
         self._workout = workout
         self._interval_extra_seconds = {}
         self._mode_state._manual_resistance_offset_percent = DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT
         self._mode_state.reset_jog()
+        self._mode_state.reset_grade_offset()
         self._chart_history.stop()
         # Loading arms auto-start, so any pedaling before the load does not count.
         self._pedaling.reset()
@@ -343,6 +433,72 @@ class WorkoutSessionController(QObject):
         self._handle_snapshot(snapshot, now_monotonic=None)
         self._settings.last_workout_dir = path.parent
         save_settings(self._settings, self._settings_path)
+
+    def _load_course_from_file(self, path: Path) -> None:
+        """Parse a GPX file and ready a ride along it."""
+        try:
+            course = parse_gpx_file(path)
+        except GPXParseError as exc:
+            self._screen.show_alert(f"Could not load '{path.name}' — {exc}")
+            return
+        except (OSError, UnicodeDecodeError):
+            self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
+            return
+
+        self._clear_completed_recording()
+        self._load_course(course)
+        self._settings.last_workout_dir = path.parent
+        save_settings(self._settings, self._settings_path)
+
+    def _load_course(self, course: Course) -> None:
+        """Ready an open-ended ride along *course*, with the trainer simulating its grade.
+
+        The ride reuses free-ride behaviour (no planned targets, optional ERG target) and
+        ends when the rider reaches the end of the course.
+        """
+        self._leave_open_ended_ride()
+        self._course_ride = CourseRide(course, total_mass_kg=self._settings.total_mass_kg)
+        self._last_course_tick_monotonic = None
+        self._interval_extra_seconds = {}
+        self._mode_state.set_free_ride(True, DEFAULT_FREE_RIDE_ERG_TARGET_WATTS)
+        self._mode_state.reset_jog()
+        self._mode_state.reset_grade_offset()
+        self._mode_state.set_course_grade(self._course_ride.grade_percent)
+        self._chart_history.stop()
+        # Loading arms auto-start, so any pedaling before the load does not count.
+        self._pedaling.reset()
+
+        self._workout = _open_ended_workout(course.name, max(1, int(self._settings.ftp)))
+        snapshot = self._engine.load_workout(self._workout)
+        self._mode_before_course = self._mode_state.selected_mode
+        self._mode_state.select_mode(MODE_SIMULATION)
+        self._screen.set_mode_state(MODE_SIMULATION)
+        self._screen.set_free_ride_mode(True)
+        self._screen.set_course_mode(True)
+        self._screen.load_course_chart(course)
+        self._screen.set_workout_name(course.name)
+        self._handle_snapshot(snapshot, now_monotonic=None)
+
+    def _leave_open_ended_ride(self) -> None:
+        """Return mode state and screen from a free ride or course ride to planned-workout use."""
+        was_course = self._course_ride is not None
+        was_free_ride = self._mode_state.is_free_ride
+        self._course_ride = None
+        self._last_course_tick_monotonic = None
+        if was_free_ride:
+            self._mode_state.set_free_ride(False, None)
+            self._screen.set_free_ride_mode(False)
+        if not was_course:
+            if was_free_ride:
+                self._screen.set_interval_plot_visible(True)
+            return
+        self._mode_state.set_course_grade(None)
+        self._mode_state.reset_grade_offset()
+        self._screen.set_course_mode(False)
+        previous_mode, self._mode_before_course = self._mode_before_course, None
+        if previous_mode is not None and self._mode_state.selected_mode == MODE_SIMULATION:
+            self._mode_state.select_mode(previous_mode)
+            self._screen.set_mode_state(previous_mode)
 
     def _start_workout(self) -> None:
         if self._engine.workout is None:
@@ -381,7 +537,12 @@ class WorkoutSessionController(QObject):
 
         self._engine.start()
         self._chart_history.start(now)
-        if self._workout is not None:
+        if self._course_ride is not None:
+            self._course_ride.reset()
+            self._last_course_tick_monotonic = None
+            self._mode_state.set_course_grade(self._course_ride.grade_percent)
+            self._screen.load_course_chart(self._course_ride.course)
+        elif self._workout is not None:
             self._screen.load_workout_chart(self._workout, int(self._settings.ftp))
         snapshot = self._engine.tick(now)
         self._timer.start()
@@ -410,16 +571,7 @@ class WorkoutSessionController(QObject):
         self._pedaling.reset()
         self._pause_state.reset()
 
-        ftp = max(1, int(self._settings.ftp))
-        interval = WorkoutInterval(
-            start_offset_seconds=0,
-            duration_seconds=86400,
-            start_percent_ftp=0.0,
-            end_percent_ftp=0.0,
-            start_target_watts=0,
-            end_target_watts=0,
-        )
-        synthetic = Workout(name="Free Ride", ftp_watts=ftp, intervals=(interval,))
+        synthetic = _open_ended_workout("Free Ride", max(1, int(self._settings.ftp)))
         self._workout = synthetic
         self._engine.load_workout(synthetic)
 
@@ -523,10 +675,7 @@ class WorkoutSessionController(QObject):
         snapshot = self._engine.stop()
         self._timer.stop()
         self._chart_history.stop()
-        if self._mode_state.is_free_ride:
-            self._mode_state.set_free_ride(False, None)
-            self._screen.set_free_ride_mode(False)
-            self._screen.set_interval_plot_visible(True)
+        self._leave_open_ended_ride()
         self._handle_snapshot(snapshot, now_monotonic=None)
         recorder_summary = self._recorder_integration.prepare_summary()
         self._show_workout_summary(recorder_summary)
@@ -610,9 +759,15 @@ class WorkoutSessionController(QObject):
             value, show_percent = self._mode_state.resistance_display()
             self._screen.set_resistance_level(value, show_percent=show_percent)
             self._screen.set_jog_offset(None)
+            self._screen.set_simulation_grade(None)
+        elif active_mode == MODE_SIMULATION:
+            self._screen.set_resistance_level(None)
+            self._screen.set_jog_offset(None)
+            self._screen.set_simulation_grade(self._mode_state.simulation_grade_percent())
         else:
             self._screen.set_resistance_level(None)
             self._screen.set_jog_offset(int(round(self._mode_state.erg_jog_watts)))
+            self._screen.set_simulation_grade(None)
 
         current_index = snapshot.current_interval_index
         if current_index != self._active_interval_index:
@@ -634,6 +789,10 @@ class WorkoutSessionController(QObject):
         if self._mode_state.is_free_ride:
             remaining_text = "\u2014"
             interval_remaining_text = "\u2014"
+            if self._course_ride is not None:
+                remaining_text = format_distance_km(self._course_ride.remaining_m)
+                interval_remaining_text = format_grade_percent(self._course_ride.grade_percent)
+                self._screen.update_course_position(self._course_ride.distance_m)
             if self._mode_state.active_control_mode(snapshot, self._workout) == "ERG" and self._mode_state.free_ride_erg_target is not None:
                 target_watts = self._mode_state.free_ride_erg_target + int(round(self._mode_state.erg_jog_watts))
                 target_str = str(target_watts)
@@ -672,9 +831,7 @@ class WorkoutSessionController(QObject):
                     ),
                     last_hr_bpm=self._fresh_value(self._last_hr_bpm, self._last_hr_received_at, now),
                     last_cadence_rpm=self._cadence_hist.fresh_rpm(now),
-                    last_speed_mps=self._fresh_value(
-                        self._last_speed_mps, self._last_speed_received_at, now
-                    ),
+                    last_speed_mps=self._current_speed_mps(),
                     dfa_alpha1=dfa_record.alpha1 if dfa_record is not None else None,
                     dfa_quality=dfa_record.quality.value if dfa_record is not None else None,
                 ),
@@ -1119,3 +1276,16 @@ def _format_hh_mm_ss(total_seconds: int) -> str:
     minutes = (seconds % 3600) // 60
     secs = seconds % 60
     return f"{hours:02}:{minutes:02}:{secs:02}"
+
+
+def _open_ended_workout(name: str, ftp_watts: int) -> Workout:
+    """Build the single target-free interval that backs a free ride or a course ride."""
+    interval = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=_OPEN_ENDED_RIDE_SECONDS,
+        start_percent_ftp=0.0,
+        end_percent_ftp=0.0,
+        start_target_watts=0,
+        end_target_watts=0,
+    )
+    return Workout(name=name, ftp_watts=ftp_watts, intervals=(interval,))

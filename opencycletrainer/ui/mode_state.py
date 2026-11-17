@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from opencycletrainer.core.control.ftms_control import MAX_SIMULATION_GRADE_PERCENT
 from opencycletrainer.core.workout_engine import WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
 
@@ -7,9 +8,15 @@ RECOVERY_THRESHOLD_PERCENT = 56.0
 DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT = 33.0
 DEFAULT_FREE_RIDE_ERG_TARGET_WATTS = 100
 
+MODE_SIMULATION = "Simulation"
+GRADE_JOG_STEP_PERCENT = 0.5
+"""Grade change per unit of jog: the small jog keys move 0.5 %, the large ones 2.5 %."""
+
+_PERCENT = 100.0
+
 
 class ModeState:
-    """Owns mode selection, ERG jog offset, and resistance offset state."""
+    """Owns mode selection, ERG jog offset, resistance offset, and simulated grade state."""
 
     def __init__(
         self,
@@ -22,6 +29,9 @@ class ModeState:
         self._is_free_ride = False
         self._free_ride_erg_target_watts: int | None = None
         self._trainer_resistance_step_count: int | None = None
+        self._manual_grade_offset_percent = 0.0
+        self._course_grade_percent: float | None = None
+        self._simulation_difficulty = 1.0
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -42,12 +52,24 @@ class ModeState:
         """Current ERG jog offset in watts, for use in FTMS bridge dispatch."""
         return self._manual_erg_jog_watts
 
+    @property
+    def grade_offset_percent(self) -> float:
+        """Grade the rider has added by hand in Simulation mode."""
+        return self._manual_grade_offset_percent
+
+    @property
+    def course_grade_percent(self) -> float | None:
+        """True grade of the course under the rider, or None when not riding a course."""
+        return self._course_grade_percent
+
     # ── Mode logic ────────────────────────────────────────────────────────────
 
     def active_control_mode(
         self, snapshot: WorkoutEngineSnapshot, workout: Workout | None
     ) -> str:
         """Return the effective control mode given current state and workout position."""
+        if self._selected_mode == MODE_SIMULATION:
+            return MODE_SIMULATION
         if workout is not None:
             index = snapshot.current_interval_index
             if index is not None and 0 <= index < len(workout.intervals):
@@ -129,6 +151,11 @@ class ModeState:
         """Return the FTMS-safe resistance target percentage for manual mode."""
         return max(0.0, min(100.0, self._manual_resistance_offset_percent))
 
+    def simulation_grade_percent(self) -> float:
+        """Return the grade to simulate: the course grade scaled by difficulty, plus the manual offset."""
+        course_grade = (self._course_grade_percent or 0.0) * self._simulation_difficulty
+        return _limit_grade(course_grade + self._manual_grade_offset_percent)
+
     # ── Mutations ─────────────────────────────────────────────────────────────
 
     def select_mode(self, mode: str) -> None:
@@ -149,10 +176,26 @@ class ModeState:
         elif active_mode == "Resistance":
             updated = self._manual_resistance_offset_percent + float(delta_percent)
             self._manual_resistance_offset_percent = max(-100.0, min(100.0, updated))
+        elif active_mode == MODE_SIMULATION:
+            self._manual_grade_offset_percent = _limit_grade(
+                self._manual_grade_offset_percent + delta_percent * GRADE_JOG_STEP_PERCENT
+            )
 
     def reset_jog(self) -> None:
         """Reset the ERG jog offset to zero (called on interval boundary)."""
         self._manual_erg_jog_watts = 0.0
+
+    def reset_grade_offset(self) -> None:
+        """Clear the manual grade offset (called when a new workout or course is loaded)."""
+        self._manual_grade_offset_percent = 0.0
+
+    def set_course_grade(self, grade_percent: float | None) -> None:
+        """Set the true grade of the course under the rider; None when no course is ridden."""
+        self._course_grade_percent = None if grade_percent is None else float(grade_percent)
+
+    def set_simulation_difficulty_percent(self, percent: float) -> None:
+        """Set how much of the course grade the trainer simulates (0-100 %)."""
+        self._simulation_difficulty = max(0.0, min(_PERCENT, float(percent))) / _PERCENT
 
     def set_free_ride(self, enabled: bool, erg_target: int | None) -> None:
         """Enable or disable free-ride mode and set an optional ERG target."""
@@ -168,3 +211,8 @@ class ModeState:
     def set_trainer_resistance_step_count(self, n: int | None) -> None:
         """Update the number of discrete resistance steps reported by the trainer."""
         self._trainer_resistance_step_count = n
+
+
+def _limit_grade(grade_percent: float) -> float:
+    """Clamp a grade to the range a trainer is asked to simulate."""
+    return max(-MAX_SIMULATION_GRADE_PERCENT, min(MAX_SIMULATION_GRADE_PERCENT, grade_percent))

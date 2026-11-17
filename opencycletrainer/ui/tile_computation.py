@@ -4,6 +4,9 @@ from collections.abc import Callable
 
 from opencycletrainer.core.dfa.pipeline import DfaRecord
 
+from .ride_format import format_distance_km, format_speed_kmh
+from .tile_config import DISTANCE_TILE_KEY, SPEED_TILE_KEY
+
 
 class TileComputation:
     """Stateless tile value computation; holds read-only references to sub-objects."""
@@ -19,6 +22,8 @@ class TileComputation:
         ftms_energy=None,
         balance_source: Callable[[], float | None] | None = None,
         dfa_source: Callable[[], DfaRecord | None] | None = None,
+        speed_source: Callable[[], float | None] | None = None,
+        distance_source: Callable[[], float | None] | None = None,
     ) -> None:
         self._power_history = power_history
         self._cadence_history = cadence_history
@@ -29,6 +34,8 @@ class TileComputation:
         self._ftms_energy = ftms_energy
         self._balance_source = balance_source
         self._dfa_source = dfa_source
+        self._speed_source = speed_source
+        self._distance_source = distance_source
         self.kj_workout_source: str = "calculated"
 
     def compute(self, key: str, snapshot, settings) -> str:  # noqa: ARG002
@@ -92,6 +99,12 @@ class TileComputation:
             if record is None or record.alpha1 is None:
                 return "--"
             return f"{record.alpha1:.2f}"
+        if key == SPEED_TILE_KEY:
+            speed = self._speed_source() if self._speed_source is not None else None
+            return format_speed_kmh(speed) if speed is not None else "--"
+        if key == DISTANCE_TILE_KEY:
+            distance = self._distance_source() if self._distance_source is not None else None
+            return format_distance_km(distance) if distance is not None else "--"
         return "--"
 
     def available_kj_sources(self) -> list[str]:

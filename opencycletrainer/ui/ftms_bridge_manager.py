@@ -16,7 +16,15 @@ from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.devices.decoders.ftms import ResistanceLevelRange
 from opencycletrainer.storage.settings import DEFAULT_JOG_PERSISTENCE_MODE, JogPersistenceMode
 
+from .mode_state import MODE_SIMULATION
+
 _logger = logging.getLogger(__name__)
+
+_CONTROL_MODE_BY_NAME = {
+    "ERG": ControlMode.ERG,
+    "Resistance": ControlMode.RESISTANCE,
+    MODE_SIMULATION: ControlMode.SIMULATION,
+}
 
 
 class FTMSBridgeManager:
@@ -78,10 +86,8 @@ class FTMSBridgeManager:
             self._mode_state.set_trainer_resistance_step_count(None)
 
         snapshot = initial_snapshot if initial_snapshot is not None else self._engine.snapshot()
-        initial_mode = (
-            ControlMode.RESISTANCE
-            if self._mode_state.active_control_mode(snapshot, workout) == "Resistance"
-            else ControlMode.ERG
+        initial_mode = _CONTROL_MODE_BY_NAME.get(
+            self._mode_state.active_control_mode(snapshot, workout), ControlMode.ERG
         )
 
         try:
@@ -196,6 +202,11 @@ class FTMSBridgeManager:
         workout: Workout | None,
     ) -> None:
         active_mode = self._mode_state.active_control_mode(snapshot, workout)
+        if active_mode == MODE_SIMULATION:
+            bridge.set_mode_simulation()
+            bridge.apply_simulation_grade(snapshot, self._mode_state.simulation_grade_percent())
+            return
+
         if getattr(self._mode_state, "is_free_ride", False):
             if active_mode == "Resistance":
                 bridge.set_mode_resistance()

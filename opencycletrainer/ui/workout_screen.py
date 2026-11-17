@@ -20,15 +20,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaRecord, SignalQuality
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.settings import AppSettings, THEME_MODE_LIGHT, load_settings
 from .hotkeys import WorkoutHotkeys
+from .mode_state import MODE_SIMULATION
+from .ride_format import format_grade_percent
 from .theme import resolve_status_color
 from .tile_config import DFA_TILE_KEY, TILE_LABEL_BY_KEY, normalize_tile_selections
 from .workout_chart import WorkoutChartWidget
 
-MODE_OPTIONS = ("ERG", "Resistance", "Hybrid")
+MODE_OPTIONS = ("ERG", "Resistance", "Hybrid", MODE_SIMULATION)
+
+_INTERVAL_REMAINING_TILE_TITLE = "Interval Time/Work Remaining"
+_REMAINING_TILE_TITLE = "Time Remaining"
+_COURSE_GRADE_TILE_TITLE = "Grade"
+_COURSE_REMAINING_TILE_TITLE = "Distance Remaining"
 
 
 class PauseDialog(QDialog):
@@ -610,6 +618,14 @@ class WorkoutScreen(QWidget):
         self.jog_offset_label.setText(f"Jog: {int(watts):+d} W")
         self.jog_offset_label.setVisible(True)
 
+    def set_simulation_grade(self, grade_percent: float | None) -> None:
+        """Show the grade the trainer is simulating, or hide the label if None."""
+        if grade_percent is None:
+            self.simulation_grade_label.setVisible(False)
+            return
+        self.simulation_grade_label.setText(f"Grade: {format_grade_percent(grade_percent)}")
+        self.simulation_grade_label.setVisible(True)
+
     def set_opentrueup_offset_watts(self, offset_watts: int | None) -> None:
         if offset_watts is None:
             self.opentrueup_offset_value.setText("-- W")
@@ -678,12 +694,12 @@ class WorkoutScreen(QWidget):
         self.elapsed_time_tile = MetricTile(title="Time Elapsed", key="time_elapsed", parent=self)
         self.target_power_tile = MetricTile(title="Current / Target Power", key="target_power", parent=self)
         self.interval_remaining_tile = MetricTile(
-            title="Interval Time/Work Remaining",
+            title=_INTERVAL_REMAINING_TILE_TITLE,
             key="interval_remaining",
             prominent=True,
             parent=self,
         )
-        self.remaining_tile = MetricTile(title="Time Remaining", key="time_remaining", parent=self)
+        self.remaining_tile = MetricTile(title=_REMAINING_TILE_TITLE, key="time_remaining", parent=self)
 
         mandatory_row.addWidget(self.elapsed_time_tile, 2)
         mandatory_row.addWidget(self.target_power_tile, 2)
@@ -794,6 +810,28 @@ class WorkoutScreen(QWidget):
             elapsed_seconds, power_series, hr_series, erg_target_watts, alpha1_series
         )
 
+    def load_course_chart(self, course: Course) -> None:
+        """Show *course*'s elevation profile above an open-ended power chart."""
+        self.chart_widget.load_course(course)
+
+    def update_course_position(self, distance_m: float) -> None:
+        """Move the rider's marker along the course profile."""
+        self.chart_widget.set_course_position(distance_m)
+
+    def set_course_mode(self, active: bool) -> None:
+        """Turn the interval and time-remaining tiles into grade and distance-remaining tiles.
+
+        Leaving course mode also removes the course profile from the chart.
+        """
+        self.interval_remaining_tile.title_label.setText(
+            _COURSE_GRADE_TILE_TITLE if active else _INTERVAL_REMAINING_TILE_TITLE
+        )
+        self.remaining_tile.title_label.setText(
+            _COURSE_REMAINING_TILE_TITLE if active else _REMAINING_TILE_TITLE
+        )
+        if not active:
+            self.chart_widget.clear_course()
+
     def set_free_ride_mode(self, active: bool) -> None:
         """Enable or disable inline ERG target editing on the target power tile."""
         self.target_power_tile.editing_enabled = active
@@ -825,6 +863,7 @@ class WorkoutScreen(QWidget):
         if not visible:
             self.resistance_level_label.setVisible(False)
             self.jog_offset_label.setVisible(False)
+            self.simulation_grade_label.setVisible(False)
 
     def _build_mode_footer(self, root_layout: QVBoxLayout) -> None:
         mode_row = QHBoxLayout()
@@ -847,6 +886,11 @@ class WorkoutScreen(QWidget):
         self.jog_offset_label.setObjectName("jogOffsetLabel")
         self.jog_offset_label.setVisible(False)
         mode_row.addWidget(self.jog_offset_label)
+
+        self.simulation_grade_label = QLabel("Grade: 0.0 %", self)
+        self.simulation_grade_label.setObjectName("simulationGradeLabel")
+        self.simulation_grade_label.setVisible(False)
+        mode_row.addWidget(self.simulation_grade_label)
 
         mode_row.addSpacing(16)
         self.opentrueup_label = QLabel("OpenTrueUp Offset:", self)

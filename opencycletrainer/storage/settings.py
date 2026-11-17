@@ -55,6 +55,26 @@ def _restore_optional_int(value: object) -> int | None:
     return int(value)
 
 
+DEFAULT_RIDER_WEIGHT_KG = 75.0
+MIN_RIDER_WEIGHT_KG = 30.0
+MAX_RIDER_WEIGHT_KG = 200.0
+DEFAULT_BIKE_WEIGHT_KG = 9.0
+MIN_BIKE_WEIGHT_KG = 3.0
+MAX_BIKE_WEIGHT_KG = 30.0
+DEFAULT_SIMULATION_DIFFICULTY_PERCENT = 100
+MIN_SIMULATION_DIFFICULTY_PERCENT = 0
+MAX_SIMULATION_DIFFICULTY_PERCENT = 100
+
+
+def _clamped_float(raw: Any, default: float, minimum: float, maximum: float) -> float:
+    """Return *raw* as a float within [minimum, maximum], or *default* if it is not a number."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
 def _resolve_jog_persistence_mode(data: dict[str, Any]) -> JogPersistenceMode:
     """Resolve the jog persistence mode, migrating the legacy boolean if needed.
 
@@ -94,6 +114,15 @@ class AppSettings:
     intervals_icu_declined_ftp: int | None = None
     show_interval_plot: bool = True
     erg_jog_persistence_mode: JogPersistenceMode = DEFAULT_JOG_PERSISTENCE_MODE
+    rider_weight_kg: float = DEFAULT_RIDER_WEIGHT_KG
+    bike_weight_kg: float = DEFAULT_BIKE_WEIGHT_KG
+    # Share of a course's real grade the trainer is asked to simulate.
+    simulation_difficulty_percent: int = DEFAULT_SIMULATION_DIFFICULTY_PERCENT
+
+    @property
+    def total_mass_kg(self) -> float:
+        """Rider plus bike, the mass moved when simulating a ride."""
+        return self.rider_weight_kg + self.bike_weight_kg
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +144,9 @@ class AppSettings:
             "intervals_icu_declined_ftp": self.intervals_icu_declined_ftp,
             "show_interval_plot": self.show_interval_plot,
             "erg_jog_persistence_mode": self.erg_jog_persistence_mode.value,
+            "rider_weight_kg": self.rider_weight_kg,
+            "bike_weight_kg": self.bike_weight_kg,
+            "simulation_difficulty_percent": self.simulation_difficulty_percent,
         }
 
     @classmethod
@@ -154,6 +186,28 @@ class AppSettings:
             intervals_icu_declined_ftp=_restore_optional_int(data.get("intervals_icu_declined_ftp")),
             show_interval_plot=bool(data.get("show_interval_plot", True)),
             erg_jog_persistence_mode=erg_jog_persistence_mode,
+            rider_weight_kg=_clamped_float(
+                data.get("rider_weight_kg"),
+                DEFAULT_RIDER_WEIGHT_KG,
+                MIN_RIDER_WEIGHT_KG,
+                MAX_RIDER_WEIGHT_KG,
+            ),
+            bike_weight_kg=_clamped_float(
+                data.get("bike_weight_kg"),
+                DEFAULT_BIKE_WEIGHT_KG,
+                MIN_BIKE_WEIGHT_KG,
+                MAX_BIKE_WEIGHT_KG,
+            ),
+            simulation_difficulty_percent=int(
+                round(
+                    _clamped_float(
+                        data.get("simulation_difficulty_percent"),
+                        DEFAULT_SIMULATION_DIFFICULTY_PERCENT,
+                        MIN_SIMULATION_DIFFICULTY_PERCENT,
+                        MAX_SIMULATION_DIFFICULTY_PERCENT,
+                    )
+                )
+            ),
         )
 
 

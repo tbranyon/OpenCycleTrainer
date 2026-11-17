@@ -40,10 +40,19 @@ class _FakeScreen:
 
 
 class _FakeModeState:
-    def __init__(self, mode: str = "ERG", resistance_percent: float = 33.0) -> None:
+    def __init__(
+        self,
+        mode: str = "ERG",
+        resistance_percent: float = 33.0,
+        grade_percent: float = 0.0,
+    ) -> None:
         self._mode = mode
         self._resistance_percent = resistance_percent
+        self.grade_percent = grade_percent
         self.resistance_step_count: int | None = None
+
+    def simulation_grade_percent(self) -> float:
+        return self.grade_percent
 
     def active_control_mode(self, snapshot, workout) -> str:
         return self._mode
@@ -83,10 +92,13 @@ def _make_manager(
     mode: str = "ERG",
     resistance_range=None,
     resistance_percent: float = 33.0,
+    grade_percent: float = 0.0,
 ) -> tuple[FTMSBridgeManager, _FakeScreen, _FakeModeState, _FakeTransport]:
     transport = _FakeTransport(resistance_range=resistance_range)
     screen = _FakeScreen()
-    mode_state = _FakeModeState(mode=mode, resistance_percent=resistance_percent)
+    mode_state = _FakeModeState(
+        mode=mode, resistance_percent=resistance_percent, grade_percent=grade_percent
+    )
     opentrueup_state = _FakeOpenTrueUpState()
     engine = _FakeEngine()
     settings = _FakeSettings()
@@ -500,3 +512,93 @@ def test_failed_resistance_range_read_is_retried_on_next_configure():
     manager.configure("bleak", "trainer-1")
 
     assert sum(t.read_count for t in created) == 2
+
+
+# ── Tests: simulation mode ─────────────────────────────────────────────────────
+
+_SIMULATION_OPCODE = 0x11
+
+
+def _simulation_grades(transport: _FakeTransport) -> list[float]:
+    """Return the grades (%) of every simulation command written to *transport*."""
+    import struct
+
+    return [
+        struct.unpack("<BhhBB", write)[2] / 100.0
+        for write in transport.writes
+        if write[0] == _SIMULATION_OPCODE
+    ]
+
+
+def _running_snapshot_and_workout():
+    from opencycletrainer.core.workout_engine import WorkoutEngine
+    from opencycletrainer.core.workout_model import Workout, WorkoutInterval
+
+    interval = WorkoutInterval(
+        start_offset_seconds=0,
+        duration_seconds=600,
+        start_target_watts=200,
+        end_target_watts=200,
+        start_percent_ftp=80.0,
+        end_percent_ftp=80.0,
+    )
+    workout = Workout(name="Sim", ftp_watts=250, intervals=(interval,))
+    engine = WorkoutEngine()
+    engine.load_workout(workout)
+    engine.start()
+    return engine, engine.tick(0.0), workout
+
+
+def test_simulation_mode_sends_the_grade_while_riding():
+    manager, _, _, transport = _configured_manager(mode="Simulation", grade_percent=4.5)
+    _, snapshot, workout = _running_snapshot_and_workout()
+
+    manager.submit_snapshot(snapshot, workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_grades(transport)[-1] == 4.5
+    assert not [w for w in transport.writes if w[0] in (0x04, 0x05)]
+
+
+def test_simulation_mode_follows_grade_changes():
+    manager, _, mode_state, transport = _configured_manager(mode="Simulation", grade_percent=2.0)
+    _, snapshot, workout = _running_snapshot_and_workout()
+
+    manager.submit_snapshot(snapshot, workout)
+    mode_state.grade_percent = -3.0
+    manager.submit_snapshot(snapshot, workout)
+    manager.submit_snapshot(snapshot, workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_grades(transport)[-2:] == [2.0, -3.0]
+
+
+def test_simulation_mode_flattens_the_road_when_paused():
+    manager, _, _, transport = _configured_manager(mode="Simulation", grade_percent=6.0)
+    engine, snapshot, workout = _running_snapshot_and_workout()
+
+    manager.submit_snapshot(snapshot, workout)
+    manager.submit_snapshot(engine.pause(), workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_grades(transport)[-2:] == [6.0, 0.0]
+
+
+def test_simulation_mode_applies_in_free_ride():
+    manager, _, mode_state, transport = _configured_manager(mode="Simulation", grade_percent=3.0)
+    mode_state.is_free_ride = True
+    _, snapshot, workout = _running_snapshot_and_workout()
+
+    manager.submit_snapshot(snapshot, workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_grades(transport)[-1] == 3.0
+    assert not [w for w in transport.writes if w[0] in (0x04, 0x05)]
+
+
+def test_configure_starts_the_bridge_in_simulation_mode_when_selected():
+    from opencycletrainer.core.control.ftms_control import ControlMode
+
+    manager, _, _, _ = _configured_manager(mode="Simulation")
+
+    assert manager._ftms_bridge.mode is ControlMode.SIMULATION

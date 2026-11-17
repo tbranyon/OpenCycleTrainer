@@ -38,9 +38,6 @@ C++ would not have fixed any of them; it would only help install size and startu
 - **Closed-loop α1 control.** The app already computes DFA α1 live. Let ERG hold the
   rider at a chosen α1 (0.75 is the usual aerobic-threshold marker) with slow, bounded
   adjustments.
-- **Slope and simulation mode** via FTMS Indoor Bike Simulation, optionally following a
-  GPX route. The feature flag is already decoded (`devices/decoders/ftms.py:187`), but
-  intervals need a grade field and a new control path.
 - **Run the core as a local service** (BLE, engine, recorder) with the UI as a client.
   A UI crash would no longer end the ride, and a phone could act as a remote or second
   screen.

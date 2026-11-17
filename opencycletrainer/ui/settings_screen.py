@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -48,6 +49,12 @@ from opencycletrainer.storage.paths import get_workout_fit_dir
 from opencycletrainer.storage.settings import (
     AppSettings,
     JogPersistenceMode,
+    MAX_BIKE_WEIGHT_KG,
+    MAX_RIDER_WEIGHT_KG,
+    MAX_SIMULATION_DIFFICULTY_PERCENT,
+    MIN_BIKE_WEIGHT_KG,
+    MIN_RIDER_WEIGHT_KG,
+    MIN_SIMULATION_DIFFICULTY_PERCENT,
     THEME_MODE_DARK,
     THEME_MODE_LIGHT,
     THEME_MODE_SYSTEM,
@@ -62,6 +69,14 @@ OPENTRUEUP_TOOLTIP = (
     "and adjusts the ERG target accordingly so that ERG holds the desired power target "
     "according to your on-bike PM"
 )
+
+SIMULATION_DIFFICULTY_TOOLTIP = (
+    "How much of a course's real grade the trainer simulates. At 50% a 10% climb feels "
+    "like 5%; your speed on the course is still calculated from the real grade"
+)
+WEIGHT_DECIMALS = 1
+WEIGHT_STEP_KG = 0.5
+SIMULATION_DIFFICULTY_STEP_PERCENT = 5
 
 SPINBOX_MAX_WIDTH = 100
 COMBO_MAX_WIDTH = 180
@@ -304,6 +319,37 @@ class SettingsScreen(QWidget):
         root_layout.addWidget(tiles_group)
         self._update_selection_status()
 
+        simulation_group = QGroupBox("Grade Simulation", self)
+        simulation_layout = QFormLayout(simulation_group)
+
+        self.rider_weight_spinbox = QDoubleSpinBox(simulation_group)
+        self.rider_weight_spinbox.setRange(MIN_RIDER_WEIGHT_KG, MAX_RIDER_WEIGHT_KG)
+        self.rider_weight_spinbox.setDecimals(WEIGHT_DECIMALS)
+        self.rider_weight_spinbox.setSingleStep(WEIGHT_STEP_KG)
+        self.rider_weight_spinbox.setValue(self._settings.rider_weight_kg)
+        self.rider_weight_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
+        simulation_layout.addRow("Rider Weight (kg)", self.rider_weight_spinbox)
+
+        self.bike_weight_spinbox = QDoubleSpinBox(simulation_group)
+        self.bike_weight_spinbox.setRange(MIN_BIKE_WEIGHT_KG, MAX_BIKE_WEIGHT_KG)
+        self.bike_weight_spinbox.setDecimals(WEIGHT_DECIMALS)
+        self.bike_weight_spinbox.setSingleStep(WEIGHT_STEP_KG)
+        self.bike_weight_spinbox.setValue(self._settings.bike_weight_kg)
+        self.bike_weight_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
+        simulation_layout.addRow("Bike Weight (kg)", self.bike_weight_spinbox)
+
+        self.simulation_difficulty_spinbox = QSpinBox(simulation_group)
+        self.simulation_difficulty_spinbox.setRange(
+            MIN_SIMULATION_DIFFICULTY_PERCENT, MAX_SIMULATION_DIFFICULTY_PERCENT
+        )
+        self.simulation_difficulty_spinbox.setSingleStep(SIMULATION_DIFFICULTY_STEP_PERCENT)
+        self.simulation_difficulty_spinbox.setValue(self._settings.simulation_difficulty_percent)
+        self.simulation_difficulty_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
+        self.simulation_difficulty_spinbox.setToolTip(SIMULATION_DIFFICULTY_TOOLTIP)
+        simulation_layout.addRow("Trainer Difficulty (%)", self.simulation_difficulty_spinbox)
+
+        root_layout.addWidget(simulation_group)
+
         charts_group = QGroupBox("Charts", self)
         charts_layout = QFormLayout(charts_group)
         self.show_interval_plot_checkbox = ToggleSwitch("Show interval plot", charts_group)
@@ -423,6 +469,9 @@ class SettingsScreen(QWidget):
             intervals_icu_auto_sync_enabled=self.intervals_icu_auto_sync_checkbox.isChecked(),
             show_interval_plot=self.show_interval_plot_checkbox.isChecked(),
             erg_jog_persistence_mode=JogPersistenceMode(str(self.erg_jog_persistence_mode_combo.currentData())),
+            rider_weight_kg=round(self.rider_weight_spinbox.value(), WEIGHT_DECIMALS),
+            bike_weight_kg=round(self.bike_weight_spinbox.value(), WEIGHT_DECIMALS),
+            simulation_difficulty_percent=self.simulation_difficulty_spinbox.value(),
         )
 
     def set_ftp(self, watts: int) -> None:
@@ -478,6 +527,9 @@ class SettingsScreen(QWidget):
         self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
         self.intervals_icu_auto_sync_checkbox.toggled.connect(self._autosave)
         self.show_interval_plot_checkbox.toggled.connect(self._autosave)
+        self.rider_weight_spinbox.valueChanged.connect(self._autosave)
+        self.bike_weight_spinbox.valueChanged.connect(self._autosave)
+        self.simulation_difficulty_spinbox.valueChanged.connect(self._autosave)
 
     def _browse_workout_data_dir(self) -> None:
         start_dir_text = self.workout_data_dir_edit.text().strip()

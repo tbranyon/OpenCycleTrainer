@@ -4,7 +4,13 @@ import pytest
 
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
-from opencycletrainer.ui.mode_state import DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT, ModeState
+from opencycletrainer.core.control.ftms_control import MAX_SIMULATION_GRADE_PERCENT
+from opencycletrainer.ui.mode_state import (
+    DEFAULT_MANUAL_RESISTANCE_OFFSET_PERCENT,
+    GRADE_JOG_STEP_PERCENT,
+    MODE_SIMULATION,
+    ModeState,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -448,3 +454,99 @@ class TestSetTrainerResistanceStepCount:
         ms.set_trainer_resistance_step_count(None)
         _, show = ms.resistance_display()
         assert show is True
+
+
+# ── Simulation mode ───────────────────────────────────────────────────────────
+
+
+class TestSimulationMode:
+    def test_simulation_selected_returns_simulation(self):
+        ms = ModeState(MODE_SIMULATION)
+        assert ms.active_control_mode(_snapshot(), _simple_workout()) == MODE_SIMULATION
+
+    def test_simulation_without_a_workout_returns_simulation(self):
+        ms = ModeState(MODE_SIMULATION)
+        assert ms.active_control_mode(_snapshot(interval_index=None), None) == MODE_SIMULATION
+
+    def test_simulation_is_kept_through_free_ride_intervals(self):
+        ms = ModeState(MODE_SIMULATION)
+        workout = _two_interval_workout(first_free_ride=True)
+        assert ms.active_control_mode(_snapshot(interval_index=0), workout) == MODE_SIMULATION
+
+    def test_simulation_has_no_erg_setpoint(self):
+        ms = ModeState(MODE_SIMULATION)
+        assert ms.resolve_target_watts(_snapshot(), _simple_workout()) is None
+
+    def test_grade_is_flat_by_default(self):
+        ms = ModeState(MODE_SIMULATION)
+        assert ms.simulation_grade_percent() == 0.0
+        assert ms.course_grade_percent is None
+
+    def test_jog_adjusts_the_manual_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.jog(1, 250, _snapshot(), _simple_workout())
+        ms.jog(5, 250, _snapshot(), _simple_workout())
+        assert ms.simulation_grade_percent() == pytest.approx(6 * GRADE_JOG_STEP_PERCENT)
+        assert ms.erg_jog_watts == 0.0
+
+    def test_jog_can_make_the_grade_negative(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.jog(-5, 250, _snapshot(), _simple_workout())
+        assert ms.simulation_grade_percent() == pytest.approx(-5 * GRADE_JOG_STEP_PERCENT)
+
+    def test_manual_grade_is_limited_to_the_simulation_range(self):
+        ms = ModeState(MODE_SIMULATION)
+        for _ in range(1000):
+            ms.jog(5, 250, _snapshot(), _simple_workout())
+        assert ms.simulation_grade_percent() == MAX_SIMULATION_GRADE_PERCENT
+        ms.jog(-1, 250, _snapshot(), _simple_workout())
+        assert ms.simulation_grade_percent() < MAX_SIMULATION_GRADE_PERCENT
+
+    def test_jog_in_other_modes_leaves_the_grade_alone(self):
+        ms = ModeState("ERG")
+        ms.jog(5, 250, _snapshot(), _simple_workout())
+        assert ms.grade_offset_percent == 0.0
+
+    def test_course_grade_drives_the_simulated_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.set_course_grade(4.2)
+        assert ms.course_grade_percent == 4.2
+        assert ms.simulation_grade_percent() == pytest.approx(4.2)
+
+    def test_difficulty_scales_the_course_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.set_simulation_difficulty_percent(50)
+        ms.set_course_grade(8.0)
+        assert ms.simulation_grade_percent() == pytest.approx(4.0)
+        ms.set_course_grade(-6.0)
+        assert ms.simulation_grade_percent() == pytest.approx(-3.0)
+
+    def test_difficulty_does_not_scale_the_manual_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.set_simulation_difficulty_percent(50)
+        ms.jog(5, 250, _snapshot(), _simple_workout())
+        assert ms.simulation_grade_percent() == pytest.approx(5 * GRADE_JOG_STEP_PERCENT)
+
+    def test_manual_grade_offsets_the_course_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.set_course_grade(4.0)
+        ms.jog(-1, 250, _snapshot(), _simple_workout())
+        assert ms.simulation_grade_percent() == pytest.approx(4.0 - GRADE_JOG_STEP_PERCENT)
+
+    def test_combined_grade_is_limited_to_the_simulation_range(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.set_course_grade(40.0)
+        assert ms.simulation_grade_percent() == MAX_SIMULATION_GRADE_PERCENT
+
+    def test_clearing_the_course_returns_to_the_manual_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.set_course_grade(4.0)
+        ms.set_course_grade(None)
+        assert ms.course_grade_percent is None
+        assert ms.simulation_grade_percent() == 0.0
+
+    def test_reset_grade_offset_clears_the_manual_grade(self):
+        ms = ModeState(MODE_SIMULATION)
+        ms.jog(5, 250, _snapshot(), _simple_workout())
+        ms.reset_grade_offset()
+        assert ms.grade_offset_percent == 0.0

@@ -11,6 +11,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.workout_model import Workout
 
 # ── Colour palette ────────────────────────────────────────────────────────────
@@ -57,6 +58,19 @@ _ALPHA1_AXIS_LABEL = "α1"
 _ALPHA1_AXIS_MIN = 0.0
 _ALPHA1_AXIS_MAX = 1.6
 
+# Course elevation profile (shown in place of the interval view on a course ride)
+_COURSE_PEN = (120, 113, 108)             # stone outline of the whole profile
+_COURSE_FILL = (120, 113, 108, 70)        # light stone under the road still ahead
+_COURSE_RIDDEN_FILL = (34, 197, 94, 120)  # green under the road already ridden
+_COURSE_Y_PADDING_RATIO = 0.1             # headroom above/below the profile, as a share of its height
+_COURSE_MIN_Y_SPAN_METERS = 20.0          # a dead-flat course still gets a visible band
+_COURSE_MAX_PLOT_POINTS = 2000            # longer profiles are thinned for drawing
+_COURSE_PLOT_STRETCH = 4
+_COURSE_RIDE_PLOT_STRETCH = 6
+_INTERVAL_PLOT_STRETCH = 6
+_WORKOUT_PLOT_STRETCH = 4
+_METERS_PER_KILOMETER = 1000.0
+
 
 # ── Time axis ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +108,13 @@ class _TimeAxisItem(pg.AxisItem):
         return result
 
 
+class _DistanceAxisItem(pg.AxisItem):
+    """Bottom axis that labels distances given in metres as kilometres."""
+
+    def tickStrings(self, values: list, scale: float, spacing: float) -> list[str]:
+        return [f"{value / _METERS_PER_KILOMETER:g}" for value in values]
+
+
 # ── Main widget ───────────────────────────────────────────────────────────────
 
 class WorkoutChartWidget(QWidget):
@@ -117,11 +138,36 @@ class WorkoutChartWidget(QWidget):
         self._free_ride_x_window_seconds: int = 1800
         self._color_theme: str = _COLOR_THEME_LIGHT
 
+        self._course: Course | None = None
+        self._course_distances = np.array([], dtype=float)
+        self._course_elevations = np.array([], dtype=float)
+        self._course_ridden_drawn_m: float = 0.0
+        self._interval_plot_wanted: bool = True
+
+        self._course_plot = _make_course_plot()
         self._interval_plot = _make_plot()
         self._workout_plot  = _make_plot()
 
-        layout.addWidget(self._interval_plot, 6)  # ~60 % of height
-        layout.addWidget(self._workout_plot,  4)  # ~40 %
+        layout.addWidget(self._course_plot, 0)
+        layout.addWidget(self._interval_plot, _INTERVAL_PLOT_STRETCH)  # ~60 % of height
+        layout.addWidget(self._workout_plot,  _WORKOUT_PLOT_STRETCH)   # ~40 %
+        self._course_plot.setVisible(False)
+
+        self._course_profile = pg.PlotDataItem(
+            [], [],
+            pen=pg.mkPen(color=_COURSE_PEN, width=2),
+            fillLevel=0,
+            brush=pg.mkBrush(color=_COURSE_FILL),
+        )
+        self._course_ridden = pg.PlotDataItem(
+            [], [],
+            pen=None,
+            fillLevel=0,
+            brush=pg.mkBrush(color=_COURSE_RIDDEN_FILL),
+        )
+        self._course_pos = _make_position_line()
+        for item in (self._course_profile, self._course_ridden, self._course_pos):
+            self._course_plot.addItem(item)
 
         # ── series items ──────────────────────────────────────────────
         self._interval_target = _make_target_item()
@@ -179,8 +225,69 @@ class WorkoutChartWidget(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    @property
+    def course_plot_shown(self) -> bool:
+        """True while a course's elevation profile is on display."""
+        return not self._course_plot.isHidden()
+
+    @property
+    def course_position_m(self) -> float:
+        """Distance along the course the position marker currently sits at."""
+        return float(self._course_pos.value())
+
+    def load_course(self, course: Course) -> None:
+        """Show *course*'s elevation profile above an open-ended power chart."""
+        self.load_free_ride()
+        self._course = course
+        stride = max(1, -(-len(course.points) // _COURSE_MAX_PLOT_POINTS))
+        drawn = list(course.points[::stride])
+        if drawn[-1] is not course.points[-1]:
+            drawn.append(course.points[-1])
+        self._course_distances = np.array([point.distance_m for point in drawn], dtype=float)
+        self._course_elevations = np.array([point.elevation_m for point in drawn], dtype=float)
+
+        floor, ceiling = _course_y_range(course)
+        for item in (self._course_profile, self._course_ridden):
+            item.setFillLevel(floor)
+        self._course_profile.setData(self._course_distances, self._course_elevations)
+        self._course_ridden.setData([], [])
+        self._course_ridden_drawn_m = 0.0
+        self._course_pos.setValue(0.0)
+        self._course_plot.setXRange(0.0, float(course.total_distance_m), padding=0)
+        self._course_plot.setYRange(floor, ceiling, padding=0)
+        self._apply_plot_layout()
+
+    def set_course_position(self, distance_m: float) -> None:
+        """Move the rider's marker to *distance_m* and shade the road behind it."""
+        if self._course is None:
+            return
+        distance = min(max(0.0, float(distance_m)), float(self._course.total_distance_m))
+        self._course_pos.setValue(distance)
+        redraw_step = self._course.total_distance_m / _COURSE_MAX_PLOT_POINTS
+        if abs(distance - self._course_ridden_drawn_m) < redraw_step:
+            return
+        self._course_ridden_drawn_m = distance
+        ridden = int(np.searchsorted(self._course_distances, distance, side="right"))
+        distances = self._course_distances[:ridden]
+        elevations = self._course_elevations[:ridden]
+        if ridden and distances[-1] < distance:
+            distances = np.append(distances, distance)
+            elevations = np.append(elevations, self._course.elevation_at(distance))
+        self._course_ridden.setData(distances, elevations)
+
+    def clear_course(self) -> None:
+        """Remove the course profile and give its space back to the workout charts."""
+        self._course = None
+        self._course_distances = np.array([], dtype=float)
+        self._course_elevations = np.array([], dtype=float)
+        self._course_profile.setData([], [])
+        self._course_ridden.setData([], [])
+        self._course_pos.setValue(0.0)
+        self._apply_plot_layout()
+
     def load_workout(self, workout: Workout, ftp_watts: int) -> None:
         """Render the static target trace and reset live series."""
+        self.clear_course()
         self._workout   = workout
         self._ftp_watts = max(1, int(ftp_watts))
         self._interval_durations = [iv.duration_seconds for iv in workout.intervals]
@@ -381,6 +488,7 @@ class WorkoutChartWidget(QWidget):
 
     def clear(self) -> None:
         """Reset to idle state. Call before loading a new workout."""
+        self.clear_course()
         self._workout = None
         self._free_ride_mode = False
         self._free_ride_x_window_seconds = 1800
@@ -398,15 +506,30 @@ class WorkoutChartWidget(QWidget):
         self._clear_skip_markers()
 
     def set_interval_plot_visible(self, visible: bool) -> None:
-        """Show or hide the interval plot. When hidden the workout overview expands to fill the area."""
-        self._interval_plot.setVisible(visible)
+        """Show or hide the interval plot. When hidden the workout overview expands to fill the area.
+
+        A course profile takes the interval plot's place, so the choice only shows once
+        the course is cleared.
+        """
+        self._interval_plot_wanted = bool(visible)
+        self._apply_plot_layout()
+
+    def _apply_plot_layout(self) -> None:
+        """Show the plots that suit the current ride and share the height between them."""
+        course_shown = self._course is not None
+        interval_shown = self._interval_plot_wanted and not course_shown
+        self._course_plot.setVisible(course_shown)
+        self._interval_plot.setVisible(interval_shown)
         layout = self.layout()
-        if visible:
-            layout.setStretchFactor(self._interval_plot, 6)
-            layout.setStretchFactor(self._workout_plot, 4)
+        layout.setStretchFactor(self._course_plot, _COURSE_PLOT_STRETCH if course_shown else 0)
+        layout.setStretchFactor(self._interval_plot, _INTERVAL_PLOT_STRETCH if interval_shown else 0)
+        if course_shown:
+            workout_stretch = _COURSE_RIDE_PLOT_STRETCH
+        elif interval_shown:
+            workout_stretch = _WORKOUT_PLOT_STRETCH
         else:
-            layout.setStretchFactor(self._interval_plot, 0)
-            layout.setStretchFactor(self._workout_plot, 1)
+            workout_stretch = 1
+        layout.setStretchFactor(self._workout_plot, workout_stretch)
 
     def apply_color_theme(self, color_theme: str) -> None:
         self._color_theme = _COLOR_THEME_DARK if color_theme == _COLOR_THEME_DARK else _COLOR_THEME_LIGHT
@@ -424,6 +547,14 @@ class WorkoutChartWidget(QWidget):
                 right_axis.setPen(pg.mkPen(settings["axis_color"]))
                 right_axis.setTextPen(pg.mkPen(settings["axis_color"]))
 
+        self._course_plot.setBackground(settings["background"])
+        self._course_plot.showGrid(x=False, y=True, alpha=settings["grid_alpha"])
+        for axis_name in ("left", "bottom"):
+            axis = self._course_plot.getAxis(axis_name)
+            axis.setPen(pg.mkPen(settings["axis_color"]))
+            axis.setTextPen(pg.mkPen(settings["axis_color"]))
+
+        self._course_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
         self._interval_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
         self._workout_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
         self._interval_ftp_line.setPen(
@@ -583,6 +714,30 @@ def _make_plot() -> pg.PlotWidget:
     plot.getViewBox().disableAutoRange()
     plot.getPlotItem().hideButtons()
     return plot
+
+
+def _make_course_plot() -> pg.PlotWidget:
+    """Build the elevation-profile plot: metres of elevation against kilometres ridden."""
+    plot = pg.PlotWidget(axisItems={"bottom": _DistanceAxisItem("bottom")})
+    plot.setBackground(_PLOT_BACKGROUND_LIGHT)
+    plot.showGrid(x=False, y=True, alpha=_GRID_ALPHA_LIGHT)
+    plot.getAxis("left").setLabel("m")
+    plot.getAxis("bottom").setLabel("km")
+    plot.setMouseEnabled(x=False, y=False)
+    plot.setMenuEnabled(False)
+    plot.getViewBox().disableAutoRange()
+    plot.getPlotItem().hideButtons()
+    return plot
+
+
+def _course_y_range(course: Course) -> tuple[float, float]:
+    """Return the (floor, ceiling) elevations to draw *course* between, with headroom."""
+    low = course.min_elevation_m
+    high = course.max_elevation_m
+    span = max(high - low, _COURSE_MIN_Y_SPAN_METERS)
+    padding = span * _COURSE_Y_PADDING_RATIO
+    middle = (low + high) / 2.0
+    return middle - span / 2.0 - padding, middle + span / 2.0 + padding
 
 
 def _series_of(item: pg.PlotDataItem | None) -> tuple[np.ndarray, np.ndarray]:

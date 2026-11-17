@@ -40,6 +40,14 @@ def test_hotkey_t_cycles_mode():
     app.processEvents()
     assert screen.mode_selector.currentText() == "Hybrid"
 
+    QTest.keyClick(screen, Qt.Key_T)
+    app.processEvents()
+    assert screen.mode_selector.currentText() == "Simulation"
+
+    QTest.keyClick(screen, Qt.Key_T)
+    app.processEvents()
+    assert screen.mode_selector.currentText() == "ERG"
+
 
 def test_hotkeys_1_and_5_emit_time_extensions_in_workout_mode():
     app = _get_or_create_qapp()

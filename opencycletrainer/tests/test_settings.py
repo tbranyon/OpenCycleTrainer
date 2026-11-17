@@ -347,3 +347,50 @@ def test_declined_intervals_icu_ftp_missing_key_defaults_to_none():
     settings_file.write_text('{"ftp": 250}', encoding="utf-8")
 
     assert load_settings(settings_file).intervals_icu_declined_ftp is None
+
+
+# ── Grade simulation settings ─────────────────────────────────────────────────
+
+
+def test_simulation_settings_have_sensible_defaults():
+    settings = AppSettings()
+
+    assert settings.rider_weight_kg == 75.0
+    assert settings.bike_weight_kg == 9.0
+    assert settings.simulation_difficulty_percent == 100
+
+
+def test_simulation_settings_round_trip_through_serialization():
+    settings_file = _settings_file()
+    save_settings(
+        AppSettings(rider_weight_kg=68.5, bike_weight_kg=7.8, simulation_difficulty_percent=50),
+        settings_file,
+    )
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.rider_weight_kg == 68.5
+    assert loaded.bike_weight_kg == 7.8
+    assert loaded.simulation_difficulty_percent == 50
+
+
+def test_simulation_settings_missing_keys_use_defaults():
+    loaded = AppSettings.from_dict({"ftp": 280})
+
+    assert loaded.rider_weight_kg == 75.0
+    assert loaded.bike_weight_kg == 9.0
+    assert loaded.simulation_difficulty_percent == 100
+
+
+def test_simulation_settings_out_of_range_values_are_clamped():
+    loaded = AppSettings.from_dict(
+        {"rider_weight_kg": 1.0, "bike_weight_kg": 900.0, "simulation_difficulty_percent": 250}
+    )
+
+    assert loaded.rider_weight_kg == 30.0
+    assert loaded.bike_weight_kg == 30.0
+    assert loaded.simulation_difficulty_percent == 100
+
+
+def test_total_mass_combines_rider_and_bike():
+    assert AppSettings(rider_weight_kg=70.0, bike_weight_kg=8.5).total_mass_kg == 78.5

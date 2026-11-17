@@ -12,6 +12,8 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * ERG and Resistance mode control of Bluetooth FTMS trainers
 * Power matching between trainer and on-bike power meter (OpenTrueUp)
 * Hybrid control mode which uses ERG for recovery intervals and returns to the last-used Resistance level for work intervals (helpful for VO2max intervals)
+* Simulation mode which has the trainer simulate a road grade (FTMS indoor bike simulation), adjustable via the jog hotkeys
+* Ride a GPX course: the trainer follows the course's grade while your power drives a virtual speed along its elevation profile
 * Jog current power target or resistance in 1 or 5% steps via hotkeys
 * Extend or skip current interval via hotkeys
 * Send calibration command to bike-based power meters

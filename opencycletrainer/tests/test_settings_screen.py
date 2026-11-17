@@ -616,3 +616,40 @@ def test_connecting_makes_the_validated_key_available():
         screen._on_intervals_icu_connect_result("ok:Jane")
 
     assert screen.connected_intervals_icu_api_key() == "fresh-key"
+
+
+# ── Grade simulation settings ─────────────────────────────────────────────────
+
+
+def test_simulation_fields_reflect_saved_settings():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(
+        AppSettings(rider_weight_kg=68.5, bike_weight_kg=7.8, simulation_difficulty_percent=60),
+        settings_path,
+    )
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.rider_weight_spinbox.value() == 68.5
+    assert screen.bike_weight_spinbox.value() == 7.8
+    assert screen.simulation_difficulty_spinbox.value() == 60
+
+
+def test_simulation_fields_autosave():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+    applied: list[AppSettings] = []
+    screen.settings_applied.connect(applied.append)
+
+    screen.rider_weight_spinbox.setValue(82.0)
+    screen.bike_weight_spinbox.setValue(10.5)
+    screen.simulation_difficulty_spinbox.setValue(75)
+
+    loaded = load_settings(settings_path)
+    assert loaded.rider_weight_kg == 82.0
+    assert loaded.bike_weight_kg == 10.5
+    assert loaded.simulation_difficulty_percent == 75
+    assert applied[-1].total_mass_kg == 92.5

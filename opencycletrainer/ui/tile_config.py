@@ -4,6 +4,8 @@ MAX_CONFIGURABLE_TILES = 8
 
 # Selecting this tile is what enables the whole DFA α1 feature (spec [0e]).
 DFA_TILE_KEY = "dfa_a1"
+SPEED_TILE_KEY = "speed"
+DISTANCE_TILE_KEY = "distance"
 
 TILE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("windowed_avg_ftp", "Windowed Avg %FTP"),
@@ -17,6 +19,8 @@ TILE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("kj_work_completed_interval", "kJ Work (Interval)"),
     ("cadence_rpm", "Cadence"),
     ("pedal_balance", "L/R Balance"),
+    (SPEED_TILE_KEY, "Speed"),
+    (DISTANCE_TILE_KEY, "Distance"),
     (DFA_TILE_KEY, "DFA α1"),
 )
 
