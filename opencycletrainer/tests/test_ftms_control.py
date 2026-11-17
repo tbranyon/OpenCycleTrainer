@@ -66,9 +66,17 @@ class _FakeFTMSTransport:
 
 
 class _StubControl:
-    def __init__(self, *, mode: ControlMode = ControlMode.ERG, fail_on_apply: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        mode: ControlMode = ControlMode.ERG,
+        fail_on_apply: bool = False,
+        simulation_error: FTMSControlError | None = None,
+    ) -> None:
         self.mode = mode
         self.fail_on_apply = fail_on_apply
+        self.simulation_error = simulation_error
+        self.simulation_attempts = 0
         self.erg_targets: list[int] = []
         self.resistance_levels: list[float] = []
         self.simulation_grades: list[float] = []
@@ -83,6 +91,9 @@ class _StubControl:
         self.mode = ControlMode.SIMULATION
 
     def set_simulation_parameters(self, grade_percent: float) -> None:
+        self.simulation_attempts += 1
+        if self.simulation_error is not None:
+            raise self.simulation_error
         if self.fail_on_apply:
             raise FTMSControlError("simulated trainer write failure")
         self.simulation_grades.append(grade_percent)
@@ -958,3 +969,78 @@ def test_bridge_reports_simulation_failure_once_per_grade():
     bridge.apply_simulation_grade(snapshot, 6.0)
 
     assert len(alerts) == 2
+
+
+_RESULT_OP_CODE_NOT_SUPPORTED = 0x02
+_RESULT_INVALID_PARAMETER = 0x03
+
+
+def test_ack_error_carries_the_trainers_result_code():
+    transport = _FakeFTMSTransport(ack_result_code=_RESULT_INVALID_PARAMETER)
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    with pytest.raises(FTMSControlAckError) as raised:
+        control.set_simulation_parameters(2.0)
+
+    assert raised.value.result_code == _RESULT_INVALID_PARAMETER
+
+
+def test_bridge_stops_asking_a_trainer_without_simulation_support():
+    alerts: list[str] = []
+    control = _StubControl(
+        simulation_error=FTMSControlAckError(
+            "not supported", result_code=_RESULT_OP_CODE_NOT_SUPPORTED
+        )
+    )
+    bridge = WorkoutEngineFTMSBridge(
+        control, mode=ControlMode.SIMULATION, alert_callback=alerts.append
+    )
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 5.0)
+    bridge.apply_simulation_grade(snapshot, 6.0)
+    bridge.apply_simulation_grade(snapshot, 7.0)
+
+    assert alerts == ["Trainer does not support grade simulation"]
+    assert control.simulation_attempts == 1
+
+
+def test_bridge_asks_about_simulation_again_when_the_mode_is_reselected():
+    alerts: list[str] = []
+    control = _StubControl(
+        simulation_error=FTMSControlAckError(
+            "not supported", result_code=_RESULT_OP_CODE_NOT_SUPPORTED
+        )
+    )
+    bridge = WorkoutEngineFTMSBridge(
+        control, mode=ControlMode.SIMULATION, alert_callback=alerts.append
+    )
+    _, snapshot = _riding_snapshot()
+    bridge.apply_simulation_grade(snapshot, 5.0)
+
+    bridge.set_mode_resistance()
+    bridge.set_mode_simulation()
+    bridge.apply_simulation_grade(snapshot, 5.0)
+
+    assert control.simulation_attempts == 2
+    assert len(alerts) == 2
+
+
+def test_bridge_keeps_trying_after_a_grade_the_trainer_rejects_as_out_of_range():
+    alerts: list[str] = []
+    control = _StubControl(
+        simulation_error=FTMSControlAckError(
+            "invalid parameter", result_code=_RESULT_INVALID_PARAMETER
+        )
+    )
+    bridge = WorkoutEngineFTMSBridge(
+        control, mode=ControlMode.SIMULATION, alert_callback=alerts.append
+    )
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 24.0)
+    control.simulation_error = None
+    bridge.apply_simulation_grade(snapshot, 10.0)
+
+    assert alerts == ["Error communicating with trainer"]
+    assert control.simulation_grades == [10.0]

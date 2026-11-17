@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from opencycletrainer.core.recorder import RecorderSample
+from opencycletrainer.core.recorder import COURSE_SAMPLE_FIELDS, RecorderSample
 
 # Missing-data policy:
 #   trainer_power / bike_power:
@@ -140,6 +140,7 @@ class OneSecondAggregator:
         self._last_total_kj: float | None = None
         self._last_dfa_alpha1: float | None = None
         self._last_dfa_quality: str | None = None
+        self._last_course: dict[str, float | None] = dict.fromkeys(COURSE_SAMPLE_FIELDS)
 
     def set_recording_active(self, active: bool) -> None:
         """Update the aggregator's recording state.
@@ -288,6 +289,10 @@ class OneSecondAggregator:
             self._last_dfa_alpha1 = sample.dfa_alpha1
         if sample.dfa_quality is not None:
             self._last_dfa_quality = sample.dfa_quality
+        for name in COURSE_SAMPLE_FIELDS:
+            value = getattr(sample, name)
+            if value is not None:
+                self._last_course[name] = value
 
     def _close_bin(self) -> RecorderSample | None:
         """Close the current bin, compute aggregates, and return a RecorderSample.
@@ -322,6 +327,7 @@ class OneSecondAggregator:
             total_kj=self._last_total_kj,
             dfa_alpha1=self._last_dfa_alpha1,
             dfa_quality=self._last_dfa_quality,
+            **self._last_course,
         )
         self._reset_bin()
         return result
@@ -370,3 +376,4 @@ class OneSecondAggregator:
         self._last_total_kj = None
         self._last_dfa_alpha1 = None
         self._last_dfa_quality = None
+        self._last_course = dict.fromkeys(COURSE_SAMPLE_FIELDS)

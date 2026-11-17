@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
@@ -34,6 +34,12 @@ class FitExportSample:
     cadence_rpm: float | None = None
     speed_mps: float | None = None
     dfa_alpha1: float | None = None
+    # Course ride fields; all None for a ride that did not follow a course.
+    distance_m: float | None = None
+    altitude_m: float | None = None
+    grade_percent: float | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
 
 
 class FitWriterBackend(Protocol):
@@ -67,14 +73,7 @@ class FitExporter:
         normalized_start = _normalize_utc(started_at_utc)
         normalized_finish = _normalize_utc(finished_at_utc)
         normalized_samples = [
-            FitExportSample(
-                timestamp_utc=_normalize_utc(sample.timestamp_utc),
-                power_watts=sample.power_watts,
-                heart_rate_bpm=sample.heart_rate_bpm,
-                cadence_rpm=sample.cadence_rpm,
-                speed_mps=sample.speed_mps,
-                dfa_alpha1=sample.dfa_alpha1,
-            )
+            replace(sample, timestamp_utc=_normalize_utc(sample.timestamp_utc))
             for sample in samples
         ]
         self._writer_backend.write_activity(
@@ -165,6 +164,15 @@ class _FitToolWriterBackend:
                 _set_field(record, ("cadence",), int(round(sample.cadence_rpm)))
             if sample.speed_mps is not None:
                 _set_field(record, ("speed",), float(sample.speed_mps))
+            if sample.distance_m is not None:
+                _set_field(record, ("distance",), float(sample.distance_m))
+            if sample.altitude_m is not None:
+                _set_field(record, ("altitude",), float(sample.altitude_m))
+            if sample.grade_percent is not None:
+                _set_field(record, ("grade",), float(sample.grade_percent))
+            if sample.latitude_deg is not None and sample.longitude_deg is not None:
+                _set_field(record, ("position_lat", "positionLat"), float(sample.latitude_deg))
+                _set_field(record, ("position_long", "positionLong"), float(sample.longitude_deg))
             if include_dfa_alpha1 and sample.dfa_alpha1 is not None:
                 _attach_dfa_developer_field(record, sample.dfa_alpha1)
             builder.add(record)
@@ -176,11 +184,19 @@ class _FitToolWriterBackend:
 
         add_timer_event(finish_ts_ms, EventType.STOP_ALL)
 
+        total_distance_m = _total_distance_m(samples)
+        total_ascent_m, total_descent_m = _total_ascent_descent_m(samples)
+        has_positions = any(sample.latitude_deg is not None for sample in samples)
+        # A ride along a course is a virtual ride; anything else is plain indoor cycling.
+        sub_sport = SubSport.VIRTUAL_ACTIVITY if has_positions else SubSport.INDOOR_CYCLING
+
         lap = LapMessage()
         _set_field(lap, ("timestamp",), finish_ts_ms)
         _set_field(lap, ("start_time", "startTime"), start_ts_ms)
         _set_field(lap, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
         _set_field(lap, ("total_timer_time", "totalTimerTime"), timer_seconds)
+        if total_distance_m is not None:
+            _set_field(lap, ("total_distance", "totalDistance"), total_distance_m)
         _set_field(lap, ("event",), _enum_value(Event.LAP))
         _set_field(lap, ("event_type", "eventType"), _enum_value(EventType.STOP))
         builder.add(lap)
@@ -191,7 +207,12 @@ class _FitToolWriterBackend:
         _set_field(session, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
         _set_field(session, ("total_timer_time", "totalTimerTime"), timer_seconds)
         _set_field(session, ("sport",), _enum_value(Sport.CYCLING))
-        _set_field(session, ("sub_sport", "subSport"), _enum_value(SubSport.INDOOR_CYCLING))
+        _set_field(session, ("sub_sport", "subSport"), _enum_value(sub_sport))
+        if total_distance_m is not None:
+            _set_field(session, ("total_distance", "totalDistance"), total_distance_m)
+        if total_ascent_m is not None:
+            _set_field(session, ("total_ascent", "totalAscent"), total_ascent_m)
+            _set_field(session, ("total_descent", "totalDescent"), total_descent_m)
         _set_field(session, ("event",), _enum_value(Event.SESSION))
         _set_field(session, ("event_type", "eventType"), _enum_value(EventType.STOP_DISABLE_ALL))
         _set_field(session, ("num_laps", "numLaps"), 1)
@@ -209,6 +230,26 @@ class _FitToolWriterBackend:
 
         fit_file = builder.build()
         fit_file.to_file(str(fit_file_path))
+
+
+def _total_distance_m(samples: list[FitExportSample]) -> float | None:
+    """Return the distance covered by the last sample that has one, or None if none do."""
+    distances = [sample.distance_m for sample in samples if sample.distance_m is not None]
+    return float(distances[-1]) if distances else None
+
+
+def _total_ascent_descent_m(samples: list[FitExportSample]) -> tuple[int | None, int | None]:
+    """Return whole metres climbed and descended across the samples' altitudes.
+
+    Both are None when no sample carries an altitude.
+    """
+    altitudes = [sample.altitude_m for sample in samples if sample.altitude_m is not None]
+    if not altitudes:
+        return None, None
+    changes = [later - earlier for earlier, later in zip(altitudes, altitudes[1:])]
+    ascent = sum(change for change in changes if change > 0)
+    descent = -sum(change for change in changes if change < 0)
+    return int(round(ascent)), int(round(descent))
 
 
 def _pause_intervals(samples: list[FitExportSample]) -> list[tuple[datetime, datetime]]:
@@ -319,6 +360,11 @@ class JsonFitWriterBackend:
                     "cadence_rpm": sample.cadence_rpm,
                     "speed_mps": sample.speed_mps,
                     "dfa_alpha1": sample.dfa_alpha1,
+                    "distance_m": sample.distance_m,
+                    "altitude_m": sample.altitude_m,
+                    "grade_percent": sample.grade_percent,
+                    "latitude_deg": sample.latitude_deg,
+                    "longitude_deg": sample.longitude_deg,
                 }
                 for sample in samples
             ],

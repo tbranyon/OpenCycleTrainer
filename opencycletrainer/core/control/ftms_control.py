@@ -34,6 +34,7 @@ _SPIN_DOWN_START = 0x01
 _SPIN_DOWN_IGNORE = 0x02
 
 _RESULT_SUCCESS = 0x01
+_RESULT_OP_CODE_NOT_SUPPORTED = 0x02
 
 _OPCODE_LABELS = {
     _OPCODE_REQUEST_CONTROL: "request_control",
@@ -91,6 +92,10 @@ class FTMSControlAckTimeoutError(FTMSControlError):
 
 class FTMSControlAckError(FTMSControlError):
     """Raised when a control-point ack returns a non-success result."""
+
+    def __init__(self, message: str, *, result_code: int | None = None) -> None:
+        super().__init__(message)
+        self.result_code = result_code
 
 
 @dataclass(frozen=True)
@@ -341,7 +346,7 @@ class FTMSControl:
                     f"'{_result_label(result_code)}'."
                 )
                 _logger.error(msg)
-                raise FTMSControlAckError(msg)
+                raise FTMSControlAckError(msg, result_code=result_code)
             return FTMSControlAck(
                 request_opcode=request_opcode,
                 result_code=result_code,
@@ -384,6 +389,7 @@ class WorkoutEngineFTMSBridge:
         self._last_sent_erg_target_watts: int | None = None
         self._last_sent_resistance_level: float | None = None
         self._last_sent_simulation_grade: float | None = None
+        self._simulation_unsupported: bool = False
         self._erg_jog_offset_watts: float = 0.0
         if mode is ControlMode.ERG:
             self._control.set_mode_erg()
@@ -412,6 +418,7 @@ class WorkoutEngineFTMSBridge:
         if self._control.mode is ControlMode.SIMULATION:
             return
         self._control.set_mode_simulation()
+        self._simulation_unsupported = False
         self._forget_sent_setpoints()
 
     def _forget_sent_setpoints(self) -> None:
@@ -726,10 +733,15 @@ class WorkoutEngineFTMSBridge:
     def _send_simulation_grade(self, grade_percent: float) -> None:
         """Send a grade, limited to the simulation range, unless it is the one last attempted.
 
-        A grade the trainer rejected is still remembered, so a trainer without simulation
-        support is asked again only when the grade changes rather than on every tick.
+        A grade that failed to send is still remembered, so it is retried only when the
+        grade changes rather than on every tick. A trainer that answers that it has no
+        simulation support is not asked again until the mode is reselected.
         """
-        limited = max(-MAX_SIMULATION_GRADE_PERCENT, min(MAX_SIMULATION_GRADE_PERCENT, float(grade_percent)))
+        if self._simulation_unsupported:
+            return
+        limited = max(
+            -MAX_SIMULATION_GRADE_PERCENT, min(MAX_SIMULATION_GRADE_PERCENT, float(grade_percent))
+        )
         steps = round(limited / SIMULATION_GRADE_STEP_PERCENT)
         if self._last_sent_simulation_grade is not None and steps == round(
             self._last_sent_simulation_grade / SIMULATION_GRADE_STEP_PERCENT
@@ -741,6 +753,12 @@ class WorkoutEngineFTMSBridge:
         self._last_sent_resistance_level = None
         try:
             self._control.set_simulation_parameters(grade)
+        except FTMSControlAckError as exc:
+            if exc.result_code == _RESULT_OP_CODE_NOT_SUPPORTED:
+                self._simulation_unsupported = True
+                self._report_error("Trainer does not support grade simulation")
+            else:
+                self._report_error("Error communicating with trainer")
         except FTMSControlError:
             self._report_error("Error communicating with trainer")
 

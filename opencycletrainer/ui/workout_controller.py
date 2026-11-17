@@ -26,7 +26,7 @@ from opencycletrainer.core.gpx_parser import GPXParseError, parse_gpx_file
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.pedaling_detector import PedalingDetector
 from opencycletrainer.core.power_history import PowerHistory
-from opencycletrainer.core.recorder import WorkoutRecorder
+from opencycletrainer.core.recorder import WorkoutRecorder, to_fit_export_sample
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
@@ -348,6 +348,20 @@ class WorkoutSessionController(QObject):
         return self._fresh_value(
             self._last_speed_mps, self._last_speed_received_at, float(self._monotonic_clock())
         )
+
+    def _course_readings(self) -> dict[str, float | None]:
+        """Return the rider's place on the course for the recorder; empty outside a course."""
+        ride = self._course_ride
+        if ride is None:
+            return {}
+        latitude, longitude = ride.position or (None, None)
+        return {
+            "distance_m": ride.distance_m,
+            "altitude_m": ride.elevation_m,
+            "grade_percent": ride.grade_percent,
+            "latitude_deg": latitude,
+            "longitude_deg": longitude,
+        }
 
     def _course_distance_m(self) -> float | None:
         """Distance ridden along the course, or None outside a course ride."""
@@ -834,6 +848,7 @@ class WorkoutSessionController(QObject):
                     last_speed_mps=self._current_speed_mps(),
                     dfa_alpha1=dfa_record.alpha1 if dfa_record is not None else None,
                     dfa_quality=dfa_record.quality.value if dfa_record is not None else None,
+                    **self._course_readings(),
                 ),
             )
 
@@ -948,21 +963,7 @@ class WorkoutSessionController(QObject):
             "fit",
         )
         dest_path = Path(directory) / filename
-        fit_samples = [
-            FitExportSample(
-                timestamp_utc=sample.timestamp_utc,
-                power_watts=(
-                    sample.bike_power_watts
-                    if sample.bike_power_watts is not None
-                    else sample.trainer_power_watts
-                ),
-                heart_rate_bpm=sample.heart_rate_bpm,
-                cadence_rpm=sample.cadence_rpm,
-                speed_mps=sample.speed_mps,
-                dfa_alpha1=getattr(sample, "dfa_alpha1", None),
-            )
-            for sample in snapshot["samples"]
-        ]
+        fit_samples = [to_fit_export_sample(sample) for sample in snapshot["samples"]]
         self._screen.show_alert(f"Saving {dest_path.name}…", "info")
         # Encoding a long ride takes seconds, so it runs off the UI thread; the result is
         # reported back through a queued signal.

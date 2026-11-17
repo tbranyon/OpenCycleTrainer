@@ -385,6 +385,36 @@ def test_recorded_speed_is_the_virtual_speed(session, tmp_path):
     assert recorded[-1] == pytest.approx(s.controller.course_ride.speed_mps, rel=0.1)
 
 
+def test_recorded_samples_place_the_rider_on_the_course(session, tmp_path):
+    s = session()
+    s.load(_write_gpx(tmp_path, _constant_grade(5.0)))
+    s.start()
+
+    s.ride(20.0, 250)
+
+    ride = s.controller.course_ride
+    last = s.recorder.samples[-1]
+    assert 0.0 < last.distance_m <= ride.distance_m
+    assert last.altitude_m == pytest.approx(ride.course.elevation_at(last.distance_m), abs=0.01)
+    assert last.grade_percent == pytest.approx(5.0, abs=0.01)
+    assert 45.0 < last.latitude_deg < 45.019
+    assert last.longitude_deg == pytest.approx(7.0)
+    distances = [sample.distance_m for sample in s.recorder.samples]
+    assert distances == sorted(distances)
+
+
+def test_recorded_samples_have_no_course_fields_outside_a_course(session):
+    s = session()
+    s.load(DATA_DIR / "step_only.mrc")
+    s.start()
+
+    s.ride(5.0, 200)
+
+    assert s.recorder.samples
+    assert all(sample.distance_m is None for sample in s.recorder.samples)
+    assert all(sample.latitude_deg is None for sample in s.recorder.samples)
+
+
 def test_paused_course_ride_does_not_advance(session, tmp_path):
     s = session()
     s.load(_write_gpx(tmp_path, _constant_grade(0.0)))

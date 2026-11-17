@@ -4,7 +4,7 @@ import json
 import logging
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,33 @@ class RecorderSample:
     total_kj: float | None = None
     dfa_alpha1: float | None = None
     dfa_quality: str | None = None
+    # Course ride fields; all None for a ride that did not follow a course.
+    distance_m: float | None = None
+    altitude_m: float | None = None
+    grade_percent: float | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
+
+
+COURSE_SAMPLE_FIELDS = ("distance_m", "altitude_m", "grade_percent", "latitude_deg", "longitude_deg")
+"""Names of the RecorderSample fields that describe the rider's place on a course."""
+
+
+def to_fit_export_sample(sample: RecorderSample) -> FitExportSample:
+    """Convert a recorded sample for FIT export: bike power is preferred over trainer power."""
+    return FitExportSample(
+        timestamp_utc=sample.timestamp_utc,
+        power_watts=(
+            sample.bike_power_watts
+            if sample.bike_power_watts is not None
+            else sample.trainer_power_watts
+        ),
+        heart_rate_bpm=sample.heart_rate_bpm,
+        cadence_rpm=sample.cadence_rpm,
+        speed_mps=sample.speed_mps,
+        dfa_alpha1=getattr(sample, "dfa_alpha1", None),
+        **{name: getattr(sample, name, None) for name in COURSE_SAMPLE_FIELDS},
+    )
 
 
 @dataclass(frozen=True)
@@ -121,21 +148,7 @@ class FinishedRecording:
         """
         session = self._session
         metrics = self._metrics or compute_workout_metrics(self._samples, ftp_watts=0)
-        fit_samples = [
-            FitExportSample(
-                timestamp_utc=sample.timestamp_utc,
-                power_watts=(
-                    sample.bike_power_watts
-                    if sample.bike_power_watts is not None
-                    else sample.trainer_power_watts
-                ),
-                heart_rate_bpm=sample.heart_rate_bpm,
-                cadence_rpm=sample.cadence_rpm,
-                speed_mps=sample.speed_mps,
-                dfa_alpha1=sample.dfa_alpha1,
-            )
-            for sample in self._samples
-        ]
+        fit_samples = [to_fit_export_sample(sample) for sample in self._samples]
         try:
             self._fit_exporter.export_activity(
                 workout_name=self._workout_name,
@@ -287,20 +300,7 @@ class WorkoutRecorder:
             if delta_seconds < 1:
                 return False
 
-        normalized_sample = RecorderSample(
-            timestamp_utc=normalized_timestamp,
-            target_power_watts=sample.target_power_watts,
-            trainer_power_watts=sample.trainer_power_watts,
-            bike_power_watts=sample.bike_power_watts,
-            heart_rate_bpm=sample.heart_rate_bpm,
-            cadence_rpm=sample.cadence_rpm,
-            speed_mps=sample.speed_mps,
-            mode=sample.mode,
-            erg_setpoint_watts=sample.erg_setpoint_watts,
-            total_kj=sample.total_kj,
-            dfa_alpha1=sample.dfa_alpha1,
-            dfa_quality=sample.dfa_quality,
-        )
+        normalized_sample = replace(sample, timestamp_utc=normalized_timestamp)
         self._recorded_samples.append(normalized_sample)
         self._last_recorded_timestamp_utc = normalized_timestamp
         self._max_recorded_timestamp_utc = normalized_timestamp
@@ -451,6 +451,7 @@ class WorkoutRecorder:
             "total_kj": sample.total_kj,
             "dfa_alpha1": sample.dfa_alpha1,
             "dfa_quality": sample.dfa_quality,
+            **{name: getattr(sample, name) for name in COURSE_SAMPLE_FIELDS},
         }
 
 

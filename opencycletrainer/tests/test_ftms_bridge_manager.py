@@ -565,6 +565,9 @@ def test_simulation_mode_follows_grade_changes():
     _, snapshot, workout = _running_snapshot_and_workout()
 
     manager.submit_snapshot(snapshot, workout)
+    # The grade is read when the bridge thread applies the snapshot, so let it catch up
+    # before the grade changes.
+    manager._ftms_bridge_executor.submit(lambda: None).result(timeout=2.0)
     mode_state.grade_percent = -3.0
     manager.submit_snapshot(snapshot, workout)
     manager.submit_snapshot(snapshot, workout)

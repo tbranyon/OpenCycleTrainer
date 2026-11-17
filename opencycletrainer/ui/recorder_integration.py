@@ -10,7 +10,7 @@ from time import monotonic
 from types import SimpleNamespace
 
 from opencycletrainer.core.one_second_aggregator import OneSecondAggregator
-from opencycletrainer.core.recorder import RecorderSample, RecorderSummary
+from opencycletrainer.core.recorder import COURSE_SAMPLE_FIELDS, RecorderSample, RecorderSummary
 from opencycletrainer.core.workout_metrics import compute_workout_metrics
 from opencycletrainer.core.workout_engine import WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
@@ -31,6 +31,12 @@ class SensorSnapshot:
     last_speed_mps: float | None
     dfa_alpha1: float | None = None
     dfa_quality: str | None = None
+    # Course ride readings; all None outside a course ride.
+    distance_m: float | None = None
+    altitude_m: float | None = None
+    grade_percent: float | None = None
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
 
 
 class RecorderIntegration:
@@ -298,6 +304,7 @@ class RecorderIntegration:
             total_kj=round(self._total_kj, 3),
             dfa_alpha1=sensor_snapshot.dfa_alpha1,
             dfa_quality=sensor_snapshot.dfa_quality,
+            **{name: getattr(sensor_snapshot, name) for name in COURSE_SAMPLE_FIELDS},
         )
 
         completed = self._aggregator.feed(raw_sample)
