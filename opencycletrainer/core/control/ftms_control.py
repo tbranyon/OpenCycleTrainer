@@ -12,6 +12,10 @@ from typing import Protocol
 
 _logger = logging.getLogger(__name__)
 
+from opencycletrainer.core.bike_physics import (
+    ROLLING_RESISTANCE_COEFFICIENT,
+    WIND_RESISTANCE_KG_PER_M,
+)
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController, OpenTrueUpStatus
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
@@ -22,6 +26,7 @@ from opencycletrainer.storage.settings import DEFAULT_JOG_PERSISTENCE_MODE, JogP
 _OPCODE_REQUEST_CONTROL = 0x00
 _OPCODE_SET_TARGET_RESISTANCE = 0x04
 _OPCODE_SET_TARGET_POWER = 0x05
+_OPCODE_SET_INDOOR_BIKE_SIMULATION = 0x11
 _OPCODE_SPIN_DOWN_CONTROL = 0x13
 _OPCODE_RESPONSE_CODE = 0x80
 
@@ -34,6 +39,7 @@ _OPCODE_LABELS = {
     _OPCODE_REQUEST_CONTROL: "request_control",
     _OPCODE_SET_TARGET_RESISTANCE: "set_target_resistance",
     _OPCODE_SET_TARGET_POWER: "set_target_power",
+    _OPCODE_SET_INDOOR_BIKE_SIMULATION: "set_indoor_bike_simulation",
     _OPCODE_SPIN_DOWN_CONTROL: "spin_down_control",
 }
 
@@ -42,6 +48,23 @@ WORK_INTERVAL_MIN_PERCENT_FTP = 60.0
 
 _RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
 """Engine states in which the trainer should be held at the interval setpoint."""
+
+# Indoor Bike Simulation Parameters (FTMS 4.16.2.18): units per count of each field.
+_SIMULATION_WIND_SPEED_RESOLUTION_MPS = 0.001
+_SIMULATION_GRADE_RESOLUTION_PERCENT = 0.01
+_SIMULATION_CRR_RESOLUTION = 0.0001
+_SIMULATION_CW_RESOLUTION_KG_PER_M = 0.01
+_SINT16_MIN = -32768
+_SINT16_MAX = 32767
+_UINT8_MAX = 255
+
+MAX_SIMULATION_GRADE_PERCENT = 25.0
+"""Steepest grade, up or down, the bridge will ask a trainer to simulate."""
+
+SIMULATION_GRADE_STEP_PERCENT = 0.1
+"""Grade is sent to the trainer in steps of this size, so tiny changes are not re-sent."""
+
+_FLAT_GRADE_PERCENT = 0.0
 
 _RESULT_LABELS = {
     0x01: "success",
@@ -55,6 +78,7 @@ _RESULT_LABELS = {
 class ControlMode(str, Enum):
     ERG = "erg"
     RESISTANCE = "resistance"
+    SIMULATION = "simulation"
 
 
 class FTMSControlError(RuntimeError):
@@ -146,6 +170,42 @@ class FTMSControl:
 
     def set_mode_resistance(self) -> None:
         self._mode = ControlMode.RESISTANCE
+
+    def set_mode_simulation(self) -> None:
+        self._mode = ControlMode.SIMULATION
+
+    def set_simulation_parameters(
+        self,
+        grade_percent: float,
+        *,
+        wind_speed_mps: float = 0.0,
+        rolling_resistance: float = ROLLING_RESISTANCE_COEFFICIENT,
+        wind_resistance_kg_per_m: float = WIND_RESISTANCE_KG_PER_M,
+    ) -> FTMSControlAck:
+        """Set the simulated road the trainer resists against (opcode 0x11).
+
+        Encoded per FTMS as wind speed SINT16 (0.001 m/s), grade SINT16 (0.01 %),
+        Crr UINT8 (0.0001) and Cw UINT8 (0.01 kg/m), least significant octet first.
+        """
+        wind_raw = int(round(float(wind_speed_mps) / _SIMULATION_WIND_SPEED_RESOLUTION_MPS))
+        grade_raw = int(round(float(grade_percent) / _SIMULATION_GRADE_RESOLUTION_PERCENT))
+        crr_raw = int(round(float(rolling_resistance) / _SIMULATION_CRR_RESOLUTION))
+        cw_raw = int(round(float(wind_resistance_kg_per_m) / _SIMULATION_CW_RESOLUTION_KG_PER_M))
+        if not _SINT16_MIN <= wind_raw <= _SINT16_MAX:
+            raise ValueError("Simulation wind speed is outside the encodable range.")
+        if not _SINT16_MIN <= grade_raw <= _SINT16_MAX:
+            raise ValueError("Simulation grade is outside the encodable range.")
+        if not 0 <= crr_raw <= _UINT8_MAX:
+            raise ValueError("Rolling resistance coefficient is outside the encodable range.")
+        if not 0 <= cw_raw <= _UINT8_MAX:
+            raise ValueError("Wind resistance coefficient is outside the encodable range.")
+        payload = struct.pack(
+            "<BhhBB", _OPCODE_SET_INDOOR_BIKE_SIMULATION, wind_raw, grade_raw, crr_raw, cw_raw
+        )
+        return self._send_command_with_ack(
+            request_opcode=_OPCODE_SET_INDOOR_BIKE_SIMULATION,
+            payload=payload,
+        )
 
     def set_erg_target_watts(self, watts: int) -> FTMSControlAck:
         watts_int = int(watts)
@@ -323,9 +383,12 @@ class WorkoutEngineFTMSBridge:
         self._current_erg_target_base_watts: int | None = None
         self._last_sent_erg_target_watts: int | None = None
         self._last_sent_resistance_level: float | None = None
+        self._last_sent_simulation_grade: float | None = None
         self._erg_jog_offset_watts: float = 0.0
         if mode is ControlMode.ERG:
             self._control.set_mode_erg()
+        elif mode is ControlMode.SIMULATION:
+            self._control.set_mode_simulation()
         else:
             self._control.set_mode_resistance()
 
@@ -337,21 +400,28 @@ class WorkoutEngineFTMSBridge:
         if self._control.mode is ControlMode.ERG:
             return
         self._control.set_mode_erg()
-        self._last_state = None
-        self._last_interval_index = None
-        self._lead_time_sent_for_interval = None
-        self._last_sent_erg_target_watts = None
-        self._last_sent_resistance_level = None
+        self._forget_sent_setpoints()
 
     def set_mode_resistance(self) -> None:
         if self._control.mode is ControlMode.RESISTANCE:
             return
         self._control.set_mode_resistance()
+        self._forget_sent_setpoints()
+
+    def set_mode_simulation(self) -> None:
+        if self._control.mode is ControlMode.SIMULATION:
+            return
+        self._control.set_mode_simulation()
+        self._forget_sent_setpoints()
+
+    def _forget_sent_setpoints(self) -> None:
+        """Clear setpoint tracking so the next update re-sends the new mode's target."""
         self._last_state = None
         self._last_interval_index = None
         self._lead_time_sent_for_interval = None
         self._last_sent_erg_target_watts = None
         self._last_sent_resistance_level = None
+        self._last_sent_simulation_grade = None
 
     def set_erg_jog_offset_watts(self, offset_watts: float) -> None:
         """Apply a manual ERG jog offset and immediately send the updated target."""
@@ -398,6 +468,14 @@ class WorkoutEngineFTMSBridge:
             self._send_resistance_level(level)
         except FTMSControlError:
             self._report_error("Error communicating with trainer")
+
+    def apply_simulation_grade(self, snapshot: WorkoutEngineSnapshot, grade_percent: float) -> None:
+        """Simulate *grade_percent* while riding, and a flat road in any other state."""
+        self._current_erg_target_base_watts = None
+        riding = snapshot.state in _RIDING_STATES
+        self._send_simulation_grade(grade_percent if riding else _FLAT_GRADE_PERCENT)
+        self._last_state = snapshot.state
+        self._last_interval_index = snapshot.current_interval_index
 
     def on_engine_snapshot(
         self,
@@ -494,6 +572,8 @@ class WorkoutEngineFTMSBridge:
         if self._control.mode is ControlMode.ERG:
             self._send_erg_target(0, force=True)
             self._current_erg_target_base_watts = 0
+        elif self._control.mode is ControlMode.SIMULATION:
+            self._send_simulation_grade(_FLAT_GRADE_PERCENT)
         else:
             self._send_resistance_level(0, force=True)
 
@@ -630,6 +710,7 @@ class WorkoutEngineFTMSBridge:
         self._control.set_erg_target_watts(target)
         self._last_sent_erg_target_watts = target
         self._last_sent_resistance_level = None
+        self._last_sent_simulation_grade = None
         if self._opentrueup is not None:
             self._opentrueup.note_applied_erg_target(target)
 
@@ -640,6 +721,28 @@ class WorkoutEngineFTMSBridge:
         self._control.set_resistance_level(resistance)
         self._last_sent_resistance_level = resistance
         self._last_sent_erg_target_watts = None
+        self._last_sent_simulation_grade = None
+
+    def _send_simulation_grade(self, grade_percent: float) -> None:
+        """Send a grade, limited to the simulation range, unless it is the one last attempted.
+
+        A grade the trainer rejected is still remembered, so a trainer without simulation
+        support is asked again only when the grade changes rather than on every tick.
+        """
+        limited = max(-MAX_SIMULATION_GRADE_PERCENT, min(MAX_SIMULATION_GRADE_PERCENT, float(grade_percent)))
+        steps = round(limited / SIMULATION_GRADE_STEP_PERCENT)
+        if self._last_sent_simulation_grade is not None and steps == round(
+            self._last_sent_simulation_grade / SIMULATION_GRADE_STEP_PERCENT
+        ):
+            return
+        grade = steps * SIMULATION_GRADE_STEP_PERCENT
+        self._last_sent_simulation_grade = grade
+        self._last_sent_erg_target_watts = None
+        self._last_sent_resistance_level = None
+        try:
+            self._control.set_simulation_parameters(grade)
+        except FTMSControlError:
+            self._report_error("Error communicating with trainer")
 
 
 def should_jog_persist_into_interval(

@@ -11,6 +11,7 @@ from opencycletrainer.core.control.ftms_control import (
     FTMSControlAckError,
     FTMSControlAckTimeoutError,
     FTMSControlError,
+    MAX_SIMULATION_GRADE_PERCENT,
     WorkoutEngineFTMSBridge,
     _normalize_resistance,
 )
@@ -70,12 +71,21 @@ class _StubControl:
         self.fail_on_apply = fail_on_apply
         self.erg_targets: list[int] = []
         self.resistance_levels: list[float] = []
+        self.simulation_grades: list[float] = []
 
     def set_mode_erg(self) -> None:
         self.mode = ControlMode.ERG
 
     def set_mode_resistance(self) -> None:
         self.mode = ControlMode.RESISTANCE
+
+    def set_mode_simulation(self) -> None:
+        self.mode = ControlMode.SIMULATION
+
+    def set_simulation_parameters(self, grade_percent: float) -> None:
+        if self.fail_on_apply:
+            raise FTMSControlError("simulated trainer write failure")
+        self.simulation_grades.append(grade_percent)
 
     def set_erg_target_watts(self, watts: int) -> None:
         if self.fail_on_apply:
@@ -773,3 +783,178 @@ def test_manual_resistance_write_failure_is_reported_not_raised():
     bridge.apply_manual_resistance_level(43.0)
 
     assert alerts == ["Error communicating with trainer"]
+
+
+# ── Indoor bike simulation (grade) ────────────────────────────────────────────
+
+
+def test_ftms_control_encodes_simulation_parameters():
+    transport = _FakeFTMSTransport()
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    ack = control.set_simulation_parameters(
+        4.56,
+        wind_speed_mps=-1.5,
+        rolling_resistance=0.004,
+        wind_resistance_kg_per_m=0.51,
+    )
+
+    assert ack.result_label == "success"
+    assert ack.request_label == "set_indoor_bike_simulation"
+    # opcode, wind SINT16 (0.001 m/s), grade SINT16 (0.01 %), Crr UINT8 (0.0001), Cw UINT8 (0.01 kg/m)
+    assert transport.writes == [b"\x00", struct.pack("<BhhBB", 0x11, -1500, 456, 40, 51)]
+
+
+def test_ftms_control_encodes_negative_grade_with_default_coefficients():
+    transport = _FakeFTMSTransport()
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    control.set_simulation_parameters(-3.2)
+
+    opcode, wind_raw, grade_raw, crr_raw, cw_raw = struct.unpack("<BhhBB", transport.writes[-1])
+    assert (opcode, wind_raw, grade_raw) == (0x11, 0, -320)
+    assert 0 < crr_raw <= 255
+    assert 0 < cw_raw <= 255
+
+
+@pytest.mark.parametrize("grade_percent", [400.0, -400.0])
+def test_ftms_control_rejects_grade_outside_the_encodable_range(grade_percent):
+    transport = _FakeFTMSTransport()
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    with pytest.raises(ValueError):
+        control.set_simulation_parameters(grade_percent)
+
+    assert transport.writes == []
+
+
+def test_ftms_control_rejects_coefficients_outside_the_encodable_range():
+    transport = _FakeFTMSTransport()
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    with pytest.raises(ValueError):
+        control.set_simulation_parameters(1.0, rolling_resistance=0.5)
+    with pytest.raises(ValueError):
+        control.set_simulation_parameters(1.0, wind_resistance_kg_per_m=-0.1)
+
+
+def test_ftms_control_reports_trainer_rejecting_simulation():
+    transport = _FakeFTMSTransport(ack_result_code=0x02)
+    control = FTMSControl(transport, ack_timeout_seconds=0.2, write_timeout_seconds=0.2)
+
+    with pytest.raises(FTMSControlAckError):
+        control.set_simulation_parameters(2.0)
+
+
+def _riding_snapshot():
+    engine = WorkoutEngine()
+    engine.load_workout(_build_workout())
+    engine.start()
+    return engine, engine.tick(0.0)
+
+
+def test_bridge_sends_grade_while_riding():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 4.5)
+
+    assert bridge.mode is ControlMode.SIMULATION
+    assert control.simulation_grades == [4.5]
+    assert control.erg_targets == []
+    assert control.resistance_levels == []
+
+
+def test_bridge_does_not_resend_an_unchanged_grade():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 4.5)
+    bridge.apply_simulation_grade(snapshot, 4.5)
+    bridge.apply_simulation_grade(snapshot, 4.52)
+
+    assert control.simulation_grades == [4.5]
+
+
+def test_bridge_sends_grade_changes_at_tenth_of_a_percent_resolution():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 4.5)
+    bridge.apply_simulation_grade(snapshot, 4.68)
+    bridge.apply_simulation_grade(snapshot, -2.04)
+
+    assert control.simulation_grades == pytest.approx([4.5, 4.7, -2.0])
+
+
+def test_bridge_limits_grade_to_the_supported_simulation_range():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 60.0)
+    bridge.apply_simulation_grade(snapshot, -60.0)
+
+    assert control.simulation_grades == [MAX_SIMULATION_GRADE_PERCENT, -MAX_SIMULATION_GRADE_PERCENT]
+
+
+def test_bridge_flattens_the_road_while_paused_and_restores_grade_on_resume():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    engine, snapshot = _riding_snapshot()
+    bridge.apply_simulation_grade(snapshot, 6.0)
+
+    bridge.apply_simulation_grade(engine.pause(), 6.0)
+    bridge.apply_simulation_grade(engine.resume(), 6.0)
+
+    assert control.simulation_grades == [6.0, 0.0, 6.0]
+
+
+def test_bridge_keeps_the_road_flat_before_the_ride_starts():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    engine = WorkoutEngine()
+    ready_snapshot = engine.load_workout(_build_workout())
+
+    bridge.apply_simulation_grade(ready_snapshot, 8.0)
+
+    assert control.simulation_grades == [0.0]
+
+
+def test_switching_to_simulation_and_back_resends_each_modes_setpoint():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.ERG)
+    workout = _build_workout()
+    engine, snapshot = _riding_snapshot()
+    bridge.on_engine_snapshot(snapshot, workout)
+
+    bridge.set_mode_simulation()
+    bridge.apply_simulation_grade(snapshot, 3.0)
+    bridge.set_mode_erg()
+    bridge.on_engine_snapshot(snapshot, workout)
+    bridge.set_mode_simulation()
+    bridge.apply_simulation_grade(snapshot, 3.0)
+
+    assert control.erg_targets == [150, 150]
+    assert control.simulation_grades == [3.0, 3.0]
+
+
+def test_bridge_reports_simulation_failure_once_per_grade():
+    alerts: list[str] = []
+    control = _StubControl(fail_on_apply=True)
+    bridge = WorkoutEngineFTMSBridge(
+        control, mode=ControlMode.SIMULATION, alert_callback=alerts.append
+    )
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 5.0)
+    bridge.apply_simulation_grade(snapshot, 5.0)
+
+    assert alerts == ["Error communicating with trainer"]
+
+    bridge.apply_simulation_grade(snapshot, 6.0)
+
+    assert len(alerts) == 2
