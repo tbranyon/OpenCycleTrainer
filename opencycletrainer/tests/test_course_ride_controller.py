@@ -723,3 +723,54 @@ def test_imperial_units_apply_to_sensor_speed_outside_a_course(session):
     s.ride(1.0, 200)
 
     assert s.screen._tile_by_key["speed"].value_label.text() == "22.4 mph"
+
+
+# ── Road surface ──────────────────────────────────────────────────────────────
+
+def _simulation_rolling_resistances(transport: _FakeFTMSTransport) -> list[float]:
+    """Crr of every simulation command written so far."""
+    return [
+        struct.unpack("<BhhBB", write)[3] / 10000.0
+        for write in list(transport.writes)
+        if write[0] == _SIMULATION_OPCODE
+    ]
+
+
+def test_rougher_surface_slows_the_course_ride(session, tmp_path):
+    gpx = _write_gpx(tmp_path, _constant_grade(0.0))
+    smooth = session(settings=AppSettings(road_surface="smooth_road"))
+    gravel = session(settings=AppSettings(road_surface="gravel"))
+    for s in (smooth, gravel):
+        s.load(gpx)
+        s.start()
+        s.ride(60.0, 200)
+
+    assert gravel.controller.course_ride.distance_m < smooth.controller.course_ride.distance_m - 20.0
+
+
+def test_selected_surface_is_sent_to_the_trainer(session, tmp_path):
+    transport = _FakeFTMSTransport()
+    s = session(settings=AppSettings(road_surface="chipseal"), transport=transport)
+    s.load(_write_gpx(tmp_path, _constant_grade(3.0)))
+    s.start()
+
+    s.ride(2.0, 200)
+
+    assert _wait_until(s.app, lambda: transport.simulation_grades()[-1:] == [3.0])
+    assert _simulation_rolling_resistances(transport)[-1] == 0.007
+
+
+def test_changing_surface_mid_ride_takes_effect(session, tmp_path):
+    transport = _FakeFTMSTransport()
+    s = session(transport=transport)
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+    s.ride(60.0, 200)
+    smooth_speed = s.controller.course_ride.speed_mps
+
+    s.controller.apply_settings(AppSettings(road_surface="gravel", workout_data_dir=tmp_path))
+    s.ride(60.0, 200)
+
+    assert s.state == EngineState.RUNNING
+    assert s.controller.course_ride.speed_mps < smooth_speed - 0.5
+    assert _wait_until(s.app, lambda: _simulation_rolling_resistances(transport)[-1:] == [0.012])

@@ -2,7 +2,23 @@ from __future__ import annotations
 
 import pytest
 
-from opencycletrainer.core.bike_physics import advance_speed, resistive_force_newtons
+from opencycletrainer.core.bike_physics import (
+    ROLLING_RESISTANCE_BY_SURFACE,
+    ROLLING_RESISTANCE_COEFFICIENT,
+    advance_speed,
+    resistive_force_newtons,
+    rolling_resistance_for_surface,
+)
+from opencycletrainer.storage.settings import (
+    DEFAULT_ROAD_SURFACE,
+    ROAD_SURFACE_AGED_ASPHALT,
+    ROAD_SURFACE_CHIPSEAL,
+    ROAD_SURFACE_GRAVEL,
+    ROAD_SURFACE_HARDPACK_GRAVEL,
+    ROAD_SURFACE_LOOSE_GRAVEL,
+    ROAD_SURFACE_SMOOTH_ROAD,
+    SUPPORTED_ROAD_SURFACES,
+)
 
 MASS_KG = 84.0
 STEP_SECONDS = 0.25
@@ -89,3 +105,56 @@ def test_long_time_step_matches_many_short_ones():
 
 def test_zero_time_step_leaves_speed_unchanged():
     assert advance_speed(7.5, 250.0, 2.0, MASS_KG, 0.0) == 7.5
+
+
+# ── Road surfaces ─────────────────────────────────────────────────────────────
+
+_FTMS_MAX_ROLLING_RESISTANCE = 0.0255
+
+
+def test_every_supported_surface_has_a_rolling_resistance():
+    assert set(ROLLING_RESISTANCE_BY_SURFACE) == SUPPORTED_ROAD_SURFACES
+
+
+def test_smooth_road_is_the_default_rolling_resistance():
+    assert rolling_resistance_for_surface(ROAD_SURFACE_SMOOTH_ROAD) == ROLLING_RESISTANCE_COEFFICIENT
+    assert rolling_resistance_for_surface(DEFAULT_ROAD_SURFACE) == ROLLING_RESISTANCE_COEFFICIENT
+
+
+def test_rougher_surfaces_roll_with_more_resistance():
+    ordered = [
+        ROAD_SURFACE_SMOOTH_ROAD,
+        ROAD_SURFACE_AGED_ASPHALT,
+        ROAD_SURFACE_CHIPSEAL,
+        ROAD_SURFACE_HARDPACK_GRAVEL,
+        ROAD_SURFACE_GRAVEL,
+        ROAD_SURFACE_LOOSE_GRAVEL,
+    ]
+    coefficients = [rolling_resistance_for_surface(surface) for surface in ordered]
+
+    assert coefficients == sorted(coefficients)
+    assert len(set(coefficients)) == len(coefficients)
+
+
+def test_every_surface_can_be_sent_to_a_trainer():
+    assert all(
+        0.0 < coefficient <= _FTMS_MAX_ROLLING_RESISTANCE
+        for coefficient in ROLLING_RESISTANCE_BY_SURFACE.values()
+    )
+
+
+def test_unknown_surface_rolls_like_the_default():
+    assert rolling_resistance_for_surface("moon dust") == ROLLING_RESISTANCE_COEFFICIENT
+
+
+def test_gravel_is_slower_than_smooth_road_at_the_same_power():
+    def settle(surface: str) -> float:
+        speed = 0.0
+        for _ in range(SETTLE_STEPS):
+            speed = advance_speed(
+                speed, 200.0, 0.0, MASS_KG, STEP_SECONDS,
+                rolling_resistance=rolling_resistance_for_surface(surface),
+            )
+        return speed
+
+    assert settle(ROAD_SURFACE_GRAVEL) < settle(ROAD_SURFACE_SMOOTH_ROAD) - 0.5

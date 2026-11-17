@@ -4,6 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
+from opencycletrainer.core.bike_physics import rolling_resistance_for_surface
 from opencycletrainer.core.control.ftms_control import (
     ControlMode,
     FTMSControl,
@@ -14,7 +15,11 @@ from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.core.workout_engine import WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.devices.decoders.ftms import ResistanceLevelRange
-from opencycletrainer.storage.settings import DEFAULT_JOG_PERSISTENCE_MODE, JogPersistenceMode
+from opencycletrainer.storage.settings import (
+    DEFAULT_JOG_PERSISTENCE_MODE,
+    DEFAULT_ROAD_SURFACE,
+    JogPersistenceMode,
+)
 
 from .mode_state import MODE_SIMULATION
 
@@ -204,7 +209,12 @@ class FTMSBridgeManager:
         active_mode = self._mode_state.active_control_mode(snapshot, workout)
         if active_mode == MODE_SIMULATION:
             bridge.set_mode_simulation()
-            bridge.apply_simulation_grade(snapshot, self._mode_state.simulation_grade_percent())
+            road_surface = getattr(self._settings, "road_surface", DEFAULT_ROAD_SURFACE)
+            bridge.apply_simulation_grade(
+                snapshot,
+                self._mode_state.simulation_grade_percent(),
+                rolling_resistance_for_surface(road_surface),
+            )
             return
 
         if getattr(self._mode_state, "is_free_ride", False):

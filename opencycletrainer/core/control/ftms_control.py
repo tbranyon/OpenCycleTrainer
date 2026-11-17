@@ -389,6 +389,7 @@ class WorkoutEngineFTMSBridge:
         self._last_sent_erg_target_watts: int | None = None
         self._last_sent_resistance_level: float | None = None
         self._last_sent_simulation_grade: float | None = None
+        self._last_sent_rolling_resistance: float | None = None
         self._simulation_unsupported: bool = False
         self._erg_jog_offset_watts: float = 0.0
         if mode is ControlMode.ERG:
@@ -476,11 +477,21 @@ class WorkoutEngineFTMSBridge:
         except FTMSControlError:
             self._report_error("Error communicating with trainer")
 
-    def apply_simulation_grade(self, snapshot: WorkoutEngineSnapshot, grade_percent: float) -> None:
-        """Simulate *grade_percent* while riding, and a flat road in any other state."""
+    def apply_simulation_grade(
+        self,
+        snapshot: WorkoutEngineSnapshot,
+        grade_percent: float,
+        rolling_resistance: float = ROLLING_RESISTANCE_COEFFICIENT,
+    ) -> None:
+        """Simulate *grade_percent* while riding, and a flat road in any other state.
+
+        *rolling_resistance* is the Crr of the surface being ridden.
+        """
         self._current_erg_target_base_watts = None
         riding = snapshot.state in _RIDING_STATES
-        self._send_simulation_grade(grade_percent if riding else _FLAT_GRADE_PERCENT)
+        self._send_simulation_grade(
+            grade_percent if riding else _FLAT_GRADE_PERCENT, rolling_resistance
+        )
         self._last_state = snapshot.state
         self._last_interval_index = snapshot.current_interval_index
 
@@ -580,7 +591,10 @@ class WorkoutEngineFTMSBridge:
             self._send_erg_target(0, force=True)
             self._current_erg_target_base_watts = 0
         elif self._control.mode is ControlMode.SIMULATION:
-            self._send_simulation_grade(_FLAT_GRADE_PERCENT)
+            self._send_simulation_grade(
+                _FLAT_GRADE_PERCENT,
+                self._last_sent_rolling_resistance or ROLLING_RESISTANCE_COEFFICIENT,
+            )
         else:
             self._send_resistance_level(0, force=True)
 
@@ -730,12 +744,13 @@ class WorkoutEngineFTMSBridge:
         self._last_sent_erg_target_watts = None
         self._last_sent_simulation_grade = None
 
-    def _send_simulation_grade(self, grade_percent: float) -> None:
-        """Send a grade, limited to the simulation range, unless it is the one last attempted.
+    def _send_simulation_grade(self, grade_percent: float, rolling_resistance: float) -> None:
+        """Send a grade and surface, unless they are the ones last attempted.
 
-        A grade that failed to send is still remembered, so it is retried only when the
-        grade changes rather than on every tick. A trainer that answers that it has no
-        simulation support is not asked again until the mode is reselected.
+        The grade is limited to the simulation range. A send that failed is still
+        remembered, so it is retried only when the grade or surface changes rather than on
+        every tick. A trainer that answers that it has no simulation support is not asked
+        again until the mode is reselected.
         """
         if self._simulation_unsupported:
             return
@@ -743,16 +758,18 @@ class WorkoutEngineFTMSBridge:
             -MAX_SIMULATION_GRADE_PERCENT, min(MAX_SIMULATION_GRADE_PERCENT, float(grade_percent))
         )
         steps = round(limited / SIMULATION_GRADE_STEP_PERCENT)
-        if self._last_sent_simulation_grade is not None and steps == round(
+        same_grade = self._last_sent_simulation_grade is not None and steps == round(
             self._last_sent_simulation_grade / SIMULATION_GRADE_STEP_PERCENT
-        ):
+        )
+        if same_grade and rolling_resistance == self._last_sent_rolling_resistance:
             return
         grade = steps * SIMULATION_GRADE_STEP_PERCENT
         self._last_sent_simulation_grade = grade
+        self._last_sent_rolling_resistance = rolling_resistance
         self._last_sent_erg_target_watts = None
         self._last_sent_resistance_level = None
         try:
-            self._control.set_simulation_parameters(grade)
+            self._control.set_simulation_parameters(grade, rolling_resistance=rolling_resistance)
         except FTMSControlAckError as exc:
             if exc.result_code == _RESULT_OP_CODE_NOT_SUPPORTED:
                 self._simulation_unsupported = True

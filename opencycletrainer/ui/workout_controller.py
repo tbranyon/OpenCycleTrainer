@@ -16,6 +16,7 @@ from opencycletrainer.core.control.ftms_control import FTMSControlTransport, sho
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
 from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
+from opencycletrainer.core.bike_physics import rolling_resistance_for_surface
 from opencycletrainer.core.cadence_history import CadenceHistory
 from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.course_ride import CourseRide
@@ -274,6 +275,9 @@ class WorkoutSessionController(QObject):
         self._mode_state.set_simulation_difficulty_percent(settings.simulation_difficulty_percent)
         if self._course_ride is not None:
             self._course_ride.set_total_mass_kg(settings.total_mass_kg)
+            self._course_ride.set_rolling_resistance(
+                rolling_resistance_for_surface(settings.road_surface)
+            )
         if was_enabled != now_enabled:
             self._ftms_bridge_manager.set_opentrueup(self._opentrueup_state.controller)
 
@@ -471,7 +475,11 @@ class WorkoutSessionController(QObject):
         ends when the rider reaches the end of the course.
         """
         self._leave_open_ended_ride()
-        self._course_ride = CourseRide(course, total_mass_kg=self._settings.total_mass_kg)
+        self._course_ride = CourseRide(
+            course,
+            total_mass_kg=self._settings.total_mass_kg,
+            rolling_resistance=rolling_resistance_for_surface(self._settings.road_surface),
+        )
         self._last_course_tick_monotonic = None
         self._interval_extra_seconds = {}
         self._mode_state.set_free_ride(True, DEFAULT_FREE_RIDE_ERG_TARGET_WATTS)

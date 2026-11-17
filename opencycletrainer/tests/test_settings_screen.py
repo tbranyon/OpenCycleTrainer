@@ -825,3 +825,54 @@ def test_heaviest_allowed_weight_in_pounds_is_not_clamped_on_reload():
     assert stored == pytest.approx(heaviest_lb * _KG_PER_LB, abs=0.01)
     assert stored <= 200.0
     assert reopened.rider_weight_spinbox.value() == heaviest_lb
+
+
+# ── Road surface ──────────────────────────────────────────────────────────────
+
+
+def _surface_keys(screen: SettingsScreen) -> list[str]:
+    combo = screen.road_surface_combo
+    return [combo.itemData(index) for index in range(combo.count())]
+
+
+def test_road_surface_dropdown_lists_every_surface_from_smooth_to_rough():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert _surface_keys(screen) == [
+        "smooth_road",
+        "aged_asphalt",
+        "chipseal",
+        "hardpack_gravel",
+        "gravel",
+        "loose_gravel",
+    ]
+    assert screen.road_surface_combo.currentData() == "smooth_road"
+    assert screen.road_surface_combo.itemText(0) == "Smooth road"
+
+
+def test_road_surface_dropdown_reflects_saved_setting():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(road_surface="chipseal"), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.road_surface_combo.currentData() == "chipseal"
+
+
+def test_road_surface_dropdown_autosaves_and_notifies():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+    applied: list[AppSettings] = []
+    screen.settings_applied.connect(applied.append)
+
+    screen.road_surface_combo.setCurrentIndex(screen.road_surface_combo.findData("gravel"))
+
+    assert load_settings(settings_path).road_surface == "gravel"
+    assert applied[-1].road_surface == "gravel"

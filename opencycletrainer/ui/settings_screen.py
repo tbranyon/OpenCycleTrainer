@@ -58,6 +58,12 @@ from opencycletrainer.storage.settings import (
     MIN_BIKE_WEIGHT_KG,
     MIN_RIDER_WEIGHT_KG,
     MIN_SIMULATION_DIFFICULTY_PERCENT,
+    ROAD_SURFACE_AGED_ASPHALT,
+    ROAD_SURFACE_CHIPSEAL,
+    ROAD_SURFACE_GRAVEL,
+    ROAD_SURFACE_HARDPACK_GRAVEL,
+    ROAD_SURFACE_LOOSE_GRAVEL,
+    ROAD_SURFACE_SMOOTH_ROAD,
     THEME_MODE_DARK,
     THEME_MODE_LIGHT,
     THEME_MODE_SYSTEM,
@@ -94,6 +100,20 @@ SIMULATION_DIFFICULTY_STEP_PERCENT = 5
 SPINBOX_MAX_WIDTH = 100
 COMBO_MAX_WIDTH = 180
 TEXT_FIELD_MAX_WIDTH = 360
+
+# Listed from the fastest-rolling surface to the slowest.
+ROAD_SURFACE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Smooth road", ROAD_SURFACE_SMOOTH_ROAD),
+    ("Aged asphalt", ROAD_SURFACE_AGED_ASPHALT),
+    ("Chipseal", ROAD_SURFACE_CHIPSEAL),
+    ("Hardpack gravel", ROAD_SURFACE_HARDPACK_GRAVEL),
+    ("Gravel", ROAD_SURFACE_GRAVEL),
+    ("Loose gravel", ROAD_SURFACE_LOOSE_GRAVEL),
+)
+ROAD_SURFACE_TOOLTIP = (
+    "The surface being ridden, which sets rolling resistance. A rougher surface lowers "
+    "your speed on a course and is also sent to the trainer in Simulation mode"
+)
 
 THEME_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Use System Theme", THEME_MODE_SYSTEM),
@@ -361,6 +381,17 @@ class SettingsScreen(QWidget):
         self.simulation_difficulty_spinbox.setToolTip(SIMULATION_DIFFICULTY_TOOLTIP)
         simulation_layout.addRow("Trainer Difficulty (%)", self.simulation_difficulty_spinbox)
 
+        self.road_surface_combo = QComboBox(simulation_group)
+        for label, value in ROAD_SURFACE_OPTIONS:
+            self.road_surface_combo.addItem(label, value)
+        selected_surface_index = self.road_surface_combo.findData(self._settings.road_surface)
+        if selected_surface_index < 0:
+            selected_surface_index = self.road_surface_combo.findData(ROAD_SURFACE_SMOOTH_ROAD)
+        self.road_surface_combo.setCurrentIndex(selected_surface_index)
+        self.road_surface_combo.setMaximumWidth(COMBO_MAX_WIDTH)
+        self.road_surface_combo.setToolTip(ROAD_SURFACE_TOOLTIP)
+        simulation_layout.addRow("Road Surface", self.road_surface_combo)
+
         self.imperial_units_checkbox = ToggleSwitch("Imperial (mi, mph, ft, lb)", simulation_group)
         self.imperial_units_checkbox.setChecked(
             self._settings.display_units == DISPLAY_UNITS_IMPERIAL
@@ -494,6 +525,7 @@ class SettingsScreen(QWidget):
             bike_weight_kg=self._bike_weight_kg,
             simulation_difficulty_percent=self.simulation_difficulty_spinbox.value(),
             display_units=self._selected_display_units(),
+            road_surface=str(self.road_surface_combo.currentData()),
         )
 
     def _selected_display_units(self) -> str:
@@ -603,6 +635,7 @@ class SettingsScreen(QWidget):
         self.bike_weight_spinbox.valueChanged.connect(self._on_bike_weight_edited)
         self.simulation_difficulty_spinbox.valueChanged.connect(self._autosave)
         self.imperial_units_checkbox.toggled.connect(self._on_units_toggled)
+        self.road_surface_combo.currentIndexChanged.connect(self._autosave)
 
     def _browse_workout_data_dir(self) -> None:
         start_dir_text = self.workout_data_dir_edit.text().strip()

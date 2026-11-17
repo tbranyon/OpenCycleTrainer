@@ -2,10 +2,29 @@ from __future__ import annotations
 
 import math
 
+from opencycletrainer.storage.settings import (
+    ROAD_SURFACE_AGED_ASPHALT,
+    ROAD_SURFACE_CHIPSEAL,
+    ROAD_SURFACE_GRAVEL,
+    ROAD_SURFACE_HARDPACK_GRAVEL,
+    ROAD_SURFACE_LOOSE_GRAVEL,
+    ROAD_SURFACE_SMOOTH_ROAD,
+)
+
 GRAVITY_MPS2 = 9.80665
 
 ROLLING_RESISTANCE_COEFFICIENT = 0.004
-"""Crr of a road tyre on asphalt (unitless)."""
+"""Crr of a fast road tyre on smooth asphalt (unitless); the default surface."""
+
+ROLLING_RESISTANCE_BY_SURFACE: dict[str, float] = {
+    ROAD_SURFACE_SMOOTH_ROAD: ROLLING_RESISTANCE_COEFFICIENT,
+    ROAD_SURFACE_AGED_ASPHALT: 0.005,
+    ROAD_SURFACE_CHIPSEAL: 0.007,
+    ROAD_SURFACE_HARDPACK_GRAVEL: 0.008,
+    ROAD_SURFACE_GRAVEL: 0.012,
+    ROAD_SURFACE_LOOSE_GRAVEL: 0.020,
+}
+"""Approximate Crr per road surface, for a tyre suited to that surface."""
 
 WIND_RESISTANCE_KG_PER_M = 0.25
 """Cw = half air density x CdA, for a rider on the hoods at sea level (kg/m)."""
@@ -16,6 +35,11 @@ _MIN_DRIVE_SPEED_MPS = 1.0
 
 _MAX_STEP_SECONDS = 0.1
 """Longest single integration step; longer time spans are split into steps of this size."""
+
+
+def rolling_resistance_for_surface(surface: str) -> float:
+    """Return the Crr of a road surface; an unknown surface rolls like the default one."""
+    return ROLLING_RESISTANCE_BY_SURFACE.get(surface, ROLLING_RESISTANCE_COEFFICIENT)
 
 
 def resistive_force_newtons(

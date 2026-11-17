@@ -5,6 +5,7 @@ import struct
 
 import pytest
 
+from opencycletrainer.core.bike_physics import ROLLING_RESISTANCE_COEFFICIENT
 from opencycletrainer.core.control.ftms_control import (
     ControlMode,
     FTMSControl,
@@ -80,6 +81,7 @@ class _StubControl:
         self.erg_targets: list[int] = []
         self.resistance_levels: list[float] = []
         self.simulation_grades: list[float] = []
+        self.simulation_rolling_resistances: list[float] = []
 
     def set_mode_erg(self) -> None:
         self.mode = ControlMode.ERG
@@ -90,13 +92,16 @@ class _StubControl:
     def set_mode_simulation(self) -> None:
         self.mode = ControlMode.SIMULATION
 
-    def set_simulation_parameters(self, grade_percent: float) -> None:
+    def set_simulation_parameters(
+        self, grade_percent: float, *, rolling_resistance: float | None = None
+    ) -> None:
         self.simulation_attempts += 1
         if self.simulation_error is not None:
             raise self.simulation_error
         if self.fail_on_apply:
             raise FTMSControlError("simulated trainer write failure")
         self.simulation_grades.append(grade_percent)
+        self.simulation_rolling_resistances.append(rolling_resistance)
 
     def set_erg_target_watts(self, watts: int) -> None:
         if self.fail_on_apply:
@@ -1044,3 +1049,52 @@ def test_bridge_keeps_trying_after_a_grade_the_trainer_rejects_as_out_of_range()
 
     assert alerts == ["Error communicating with trainer"]
     assert control.simulation_grades == [10.0]
+
+
+# ── Rolling resistance of the simulated road ─────────────────────────────────
+
+
+def test_bridge_sends_the_roads_rolling_resistance_with_the_grade():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 4.5, rolling_resistance=0.012)
+
+    assert control.simulation_grades == [4.5]
+    assert control.simulation_rolling_resistances == [0.012]
+
+
+def test_bridge_uses_the_default_rolling_resistance_when_none_is_given():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 4.5)
+
+    assert control.simulation_rolling_resistances == [ROLLING_RESISTANCE_COEFFICIENT]
+
+
+def test_bridge_resends_an_unchanged_grade_when_the_surface_changes():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    _, snapshot = _riding_snapshot()
+
+    bridge.apply_simulation_grade(snapshot, 4.5, rolling_resistance=0.004)
+    bridge.apply_simulation_grade(snapshot, 4.5, rolling_resistance=0.004)
+    bridge.apply_simulation_grade(snapshot, 4.5, rolling_resistance=0.012)
+
+    assert control.simulation_grades == [4.5, 4.5]
+    assert control.simulation_rolling_resistances == [0.004, 0.012]
+
+
+def test_bridge_keeps_the_surface_while_the_road_is_flattened_for_a_pause():
+    control = _StubControl()
+    bridge = WorkoutEngineFTMSBridge(control, mode=ControlMode.SIMULATION)
+    engine, snapshot = _riding_snapshot()
+    bridge.apply_simulation_grade(snapshot, 6.0, rolling_resistance=0.012)
+
+    bridge.apply_simulation_grade(engine.pause(), 6.0, rolling_resistance=0.012)
+
+    assert control.simulation_grades == [6.0, 0.0]
+    assert control.simulation_rolling_resistances == [0.012, 0.012]

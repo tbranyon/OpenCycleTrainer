@@ -152,3 +152,32 @@ def test_position_follows_course_coordinates():
     latitude, longitude = ride.position
     assert 45.0 < latitude < 45.009
     assert longitude == pytest.approx(7.0)
+
+
+# ── Rolling resistance ────────────────────────────────────────────────────────
+
+_GRAVEL_ROLLING_RESISTANCE = 0.012
+
+
+def test_higher_rolling_resistance_slows_the_ride():
+    smooth = CourseRide(_flat(100_000.0), total_mass_kg=MASS_KG)
+    gravel = CourseRide(
+        _flat(100_000.0), total_mass_kg=MASS_KG, rolling_resistance=_GRAVEL_ROLLING_RESISTANCE
+    )
+
+    _ride(smooth, 300.0, 200.0)
+    _ride(gravel, 300.0, 200.0)
+
+    assert gravel.speed_mps < smooth.speed_mps - 0.5
+    assert gravel.distance_m < smooth.distance_m
+
+
+def test_rolling_resistance_can_change_mid_ride():
+    ride = CourseRide(_flat(100_000.0), total_mass_kg=MASS_KG)
+    _ride(ride, 300.0, 200.0)
+    smooth_speed = ride.speed_mps
+
+    ride.set_rolling_resistance(_GRAVEL_ROLLING_RESISTANCE)
+    _ride(ride, 300.0, 200.0)
+
+    assert ride.speed_mps < smooth_speed - 0.5

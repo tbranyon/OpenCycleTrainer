@@ -29,6 +29,22 @@ class JogPersistenceMode(str, Enum):
 
 DEFAULT_JOG_PERSISTENCE_MODE = JogPersistenceMode.NEVER
 
+ROAD_SURFACE_SMOOTH_ROAD = "smooth_road"
+ROAD_SURFACE_AGED_ASPHALT = "aged_asphalt"
+ROAD_SURFACE_CHIPSEAL = "chipseal"
+ROAD_SURFACE_HARDPACK_GRAVEL = "hardpack_gravel"
+ROAD_SURFACE_GRAVEL = "gravel"
+ROAD_SURFACE_LOOSE_GRAVEL = "loose_gravel"
+DEFAULT_ROAD_SURFACE = ROAD_SURFACE_SMOOTH_ROAD
+SUPPORTED_ROAD_SURFACES = {
+    ROAD_SURFACE_SMOOTH_ROAD,
+    ROAD_SURFACE_AGED_ASPHALT,
+    ROAD_SURFACE_CHIPSEAL,
+    ROAD_SURFACE_HARDPACK_GRAVEL,
+    ROAD_SURFACE_GRAVEL,
+    ROAD_SURFACE_LOOSE_GRAVEL,
+}
+
 THEME_MODE_SYSTEM = "system"
 THEME_MODE_LIGHT = "light"
 THEME_MODE_DARK = "dark"
@@ -118,6 +134,8 @@ class AppSettings:
     bike_weight_kg: float = DEFAULT_BIKE_WEIGHT_KG
     # Share of a course's real grade the trainer is asked to simulate.
     simulation_difficulty_percent: int = DEFAULT_SIMULATION_DIFFICULTY_PERCENT
+    # Surface being ridden, which sets the rolling resistance of a simulated ride.
+    road_surface: str = DEFAULT_ROAD_SURFACE
 
     @property
     def total_mass_kg(self) -> float:
@@ -147,6 +165,7 @@ class AppSettings:
             "rider_weight_kg": self.rider_weight_kg,
             "bike_weight_kg": self.bike_weight_kg,
             "simulation_difficulty_percent": self.simulation_difficulty_percent,
+            "road_surface": self.road_surface,
         }
 
     @classmethod
@@ -166,6 +185,10 @@ class AppSettings:
             default_workout_behavior = DEFAULT_WORKOUT_BEHAVIOR
 
         erg_jog_persistence_mode = _resolve_jog_persistence_mode(data)
+
+        road_surface = str(data.get("road_surface", DEFAULT_ROAD_SURFACE))
+        if road_surface not in SUPPORTED_ROAD_SURFACES:
+            road_surface = DEFAULT_ROAD_SURFACE
 
         return cls(
             ftp=int(data.get("ftp", 250)),
@@ -208,6 +231,7 @@ class AppSettings:
                     )
                 )
             ),
+            road_surface=road_surface,
         )
 
 

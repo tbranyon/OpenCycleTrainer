@@ -394,3 +394,25 @@ def test_simulation_settings_out_of_range_values_are_clamped():
 
 def test_total_mass_combines_rider_and_bike():
     assert AppSettings(rider_weight_kg=70.0, bike_weight_kg=8.5).total_mass_kg == 78.5
+
+
+# ── Road surface ──────────────────────────────────────────────────────────────
+
+
+def test_road_surface_defaults_to_smooth_road():
+    assert AppSettings().road_surface == "smooth_road"
+
+
+def test_road_surface_round_trips_through_serialization():
+    settings_file = _settings_file()
+    save_settings(AppSettings(road_surface="gravel"), settings_file)
+
+    assert load_settings(settings_file).road_surface == "gravel"
+
+
+def test_road_surface_missing_key_defaults_to_smooth_road():
+    assert AppSettings.from_dict({"ftp": 280}).road_surface == "smooth_road"
+
+
+def test_road_surface_invalid_value_defaults_to_smooth_road():
+    assert AppSettings.from_dict({"road_surface": "moon dust"}).road_surface == "smooth_road"

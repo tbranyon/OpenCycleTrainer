@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .bike_physics import advance_speed
+from .bike_physics import ROLLING_RESISTANCE_COEFFICIENT, advance_speed
 from .course_model import Course
 
 MAX_ADVANCE_SECONDS = 5.0
@@ -10,9 +10,16 @@ MAX_ADVANCE_SECONDS = 5.0
 class CourseRide:
     """Tracks a rider's virtual progress along a course, driven by their power output."""
 
-    def __init__(self, course: Course, *, total_mass_kg: float) -> None:
+    def __init__(
+        self,
+        course: Course,
+        *,
+        total_mass_kg: float,
+        rolling_resistance: float = ROLLING_RESISTANCE_COEFFICIENT,
+    ) -> None:
         self._course = course
         self._total_mass_kg = float(total_mass_kg)
+        self._rolling_resistance = float(rolling_resistance)
         self._distance_m = 0.0
         self._speed_mps = 0.0
 
@@ -54,6 +61,10 @@ class CourseRide:
         """Change the rider + bike mass used from the next advance on."""
         self._total_mass_kg = float(total_mass_kg)
 
+    def set_rolling_resistance(self, rolling_resistance: float) -> None:
+        """Change the road's Crr used from the next advance on."""
+        self._rolling_resistance = float(rolling_resistance)
+
     def advance(self, dt_seconds: float, power_watts: float | None) -> None:
         """Ride for *dt_seconds* at *power_watts*; no-op once the course is finished."""
         if self.finished:
@@ -66,6 +77,7 @@ class CourseRide:
             self.grade_percent,
             self._total_mass_kg,
             dt,
+            rolling_resistance=self._rolling_resistance,
         )
         travelled = (previous_speed + self._speed_mps) / 2.0 * dt
         self._distance_m = min(self._distance_m + travelled, self._course.total_distance_m)

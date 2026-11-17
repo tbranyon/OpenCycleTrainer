@@ -605,3 +605,42 @@ def test_configure_starts_the_bridge_in_simulation_mode_when_selected():
     manager, _, _, _ = _configured_manager(mode="Simulation")
 
     assert manager._ftms_bridge.mode is ControlMode.SIMULATION
+
+
+# ── Tests: road surface ────────────────────────────────────────────────────────
+
+
+def _simulation_rolling_resistances(transport: _FakeTransport) -> list[float]:
+    """Return the Crr of every simulation command written to *transport*."""
+    import struct
+
+    return [
+        struct.unpack("<BhhBB", write)[3] / 10000.0
+        for write in transport.writes
+        if write[0] == _SIMULATION_OPCODE
+    ]
+
+
+def test_simulation_uses_smooth_road_rolling_resistance_by_default():
+    manager, _, _, transport = _configured_manager(mode="Simulation", grade_percent=2.0)
+    _, snapshot, workout = _running_snapshot_and_workout()
+
+    manager.submit_snapshot(snapshot, workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_rolling_resistances(transport)[-1] == 0.004
+
+
+def test_simulation_sends_the_selected_surfaces_rolling_resistance():
+    manager, _, _, transport = _configured_manager(mode="Simulation", grade_percent=2.0)
+    _, snapshot, workout = _running_snapshot_and_workout()
+    settings = _FakeSettings()
+    settings.road_surface = "gravel"
+    settings.erg_jog_persistence_mode = manager._erg_jog_persistence_mode
+
+    manager.apply_settings(settings)
+    manager.submit_snapshot(snapshot, workout)
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_rolling_resistances(transport)[-1] == 0.012
+    assert _simulation_grades(transport)[-1] == 2.0
