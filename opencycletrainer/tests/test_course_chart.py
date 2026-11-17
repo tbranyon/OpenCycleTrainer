@@ -33,6 +33,38 @@ def test_course_plot_is_hidden_until_a_course_is_loaded():
     assert not widget.course_plot_shown
 
 
+def test_course_plot_is_only_built_when_a_course_is_loaded():
+    _qapp()
+    widget = WorkoutChartWidget()
+    plots_without_course = widget.layout().count()
+
+    widget.load_course(_course())
+
+    assert widget.layout().count() == plots_without_course + 1
+
+
+def test_reloading_a_course_reuses_the_course_plot():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_course())
+    plots_with_course = widget.layout().count()
+
+    widget.clear_course()
+    widget.load_course(_course())
+
+    assert widget.layout().count() == plots_with_course
+    assert widget.course_plot_shown
+
+
+def test_position_updates_are_ignored_without_a_course():
+    _qapp()
+    widget = WorkoutChartWidget()
+
+    widget.set_course_position(500.0)
+
+    assert widget.course_position_m == 0.0
+
+
 def test_loading_a_course_shows_its_elevation_profile():
     _qapp()
     widget = WorkoutChartWidget()

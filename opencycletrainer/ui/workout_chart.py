@@ -144,30 +144,18 @@ class WorkoutChartWidget(QWidget):
         self._course_ridden_drawn_m: float = 0.0
         self._interval_plot_wanted: bool = True
 
-        self._course_plot = _make_course_plot()
+        # The course plot is only built when a course is first loaded: a plot is costly
+        # to create, and most rides never show one.
+        self._course_plot: pg.PlotWidget | None = None
+        self._course_profile: pg.PlotDataItem | None = None
+        self._course_ridden: pg.PlotDataItem | None = None
+        self._course_pos: pg.InfiniteLine | None = None
+
         self._interval_plot = _make_plot()
         self._workout_plot  = _make_plot()
 
-        layout.addWidget(self._course_plot, 0)
         layout.addWidget(self._interval_plot, _INTERVAL_PLOT_STRETCH)  # ~60 % of height
         layout.addWidget(self._workout_plot,  _WORKOUT_PLOT_STRETCH)   # ~40 %
-        self._course_plot.setVisible(False)
-
-        self._course_profile = pg.PlotDataItem(
-            [], [],
-            pen=pg.mkPen(color=_COURSE_PEN, width=2),
-            fillLevel=0,
-            brush=pg.mkBrush(color=_COURSE_FILL),
-        )
-        self._course_ridden = pg.PlotDataItem(
-            [], [],
-            pen=None,
-            fillLevel=0,
-            brush=pg.mkBrush(color=_COURSE_RIDDEN_FILL),
-        )
-        self._course_pos = _make_position_line()
-        for item in (self._course_profile, self._course_ridden, self._course_pos):
-            self._course_plot.addItem(item)
 
         # ── series items ──────────────────────────────────────────────
         self._interval_target = _make_target_item()
@@ -228,16 +216,17 @@ class WorkoutChartWidget(QWidget):
     @property
     def course_plot_shown(self) -> bool:
         """True while a course's elevation profile is on display."""
-        return not self._course_plot.isHidden()
+        return self._course_plot is not None and not self._course_plot.isHidden()
 
     @property
     def course_position_m(self) -> float:
         """Distance along the course the position marker currently sits at."""
-        return float(self._course_pos.value())
+        return float(self._course_pos.value()) if self._course_pos is not None else 0.0
 
     def load_course(self, course: Course) -> None:
         """Show *course*'s elevation profile above an open-ended power chart."""
         self.load_free_ride()
+        self._ensure_course_plot()
         self._course = course
         stride = max(1, -(-len(course.points) // _COURSE_MAX_PLOT_POINTS))
         drawn = list(course.points[::stride])
@@ -280,10 +269,46 @@ class WorkoutChartWidget(QWidget):
         self._course = None
         self._course_distances = np.array([], dtype=float)
         self._course_elevations = np.array([], dtype=float)
-        self._course_profile.setData([], [])
-        self._course_ridden.setData([], [])
-        self._course_pos.setValue(0.0)
+        if self._course_plot is not None:
+            self._course_profile.setData([], [])
+            self._course_ridden.setData([], [])
+            self._course_pos.setValue(0.0)
         self._apply_plot_layout()
+
+    def _ensure_course_plot(self) -> None:
+        """Build the course plot and its items above the other plots, the first time it is needed."""
+        if self._course_plot is not None:
+            return
+        self._course_plot = _make_course_plot()
+        self._course_profile = pg.PlotDataItem(
+            [], [],
+            pen=pg.mkPen(color=_COURSE_PEN, width=2),
+            fillLevel=0,
+            brush=pg.mkBrush(color=_COURSE_FILL),
+        )
+        self._course_ridden = pg.PlotDataItem(
+            [], [],
+            pen=None,
+            fillLevel=0,
+            brush=pg.mkBrush(color=_COURSE_RIDDEN_FILL),
+        )
+        self._course_pos = _make_position_line()
+        for item in (self._course_profile, self._course_ridden, self._course_pos):
+            self._course_plot.addItem(item)
+        self.layout().insertWidget(0, self._course_plot, 0)
+        self._apply_course_theme(_theme_settings(self._color_theme))
+
+    def _apply_course_theme(self, settings: dict[str, object]) -> None:
+        """Colour the course plot to match the other plots; no-op until it has been built."""
+        if self._course_plot is None:
+            return
+        self._course_plot.setBackground(settings["background"])
+        self._course_plot.showGrid(x=False, y=True, alpha=settings["grid_alpha"])
+        for axis_name in ("left", "bottom"):
+            axis = self._course_plot.getAxis(axis_name)
+            axis.setPen(pg.mkPen(settings["axis_color"]))
+            axis.setTextPen(pg.mkPen(settings["axis_color"]))
+        self._course_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
 
     def load_workout(self, workout: Workout, ftp_watts: int) -> None:
         """Render the static target trace and reset live series."""
@@ -518,10 +543,11 @@ class WorkoutChartWidget(QWidget):
         """Show the plots that suit the current ride and share the height between them."""
         course_shown = self._course is not None
         interval_shown = self._interval_plot_wanted and not course_shown
-        self._course_plot.setVisible(course_shown)
         self._interval_plot.setVisible(interval_shown)
         layout = self.layout()
-        layout.setStretchFactor(self._course_plot, _COURSE_PLOT_STRETCH if course_shown else 0)
+        if self._course_plot is not None:
+            self._course_plot.setVisible(course_shown)
+            layout.setStretchFactor(self._course_plot, _COURSE_PLOT_STRETCH if course_shown else 0)
         layout.setStretchFactor(self._interval_plot, _INTERVAL_PLOT_STRETCH if interval_shown else 0)
         if course_shown:
             workout_stretch = _COURSE_RIDE_PLOT_STRETCH
@@ -547,14 +573,7 @@ class WorkoutChartWidget(QWidget):
                 right_axis.setPen(pg.mkPen(settings["axis_color"]))
                 right_axis.setTextPen(pg.mkPen(settings["axis_color"]))
 
-        self._course_plot.setBackground(settings["background"])
-        self._course_plot.showGrid(x=False, y=True, alpha=settings["grid_alpha"])
-        for axis_name in ("left", "bottom"):
-            axis = self._course_plot.getAxis(axis_name)
-            axis.setPen(pg.mkPen(settings["axis_color"]))
-            axis.setTextPen(pg.mkPen(settings["axis_color"]))
-
-        self._course_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
+        self._apply_course_theme(settings)
         self._interval_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
         self._workout_pos.setPen(pg.mkPen(settings["position_pen"], width=1))
         self._interval_ftp_line.setPen(
