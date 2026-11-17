@@ -9,6 +9,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from opencycletrainer.core.workout_engine import EngineState
@@ -194,6 +195,16 @@ class _Session:
     def state(self) -> EngineState:
         return self.controller.last_snapshot.state
 
+    def dispose(self) -> None:
+        """Shut the controller down and destroy the screen.
+
+        Every live workout screen filters all application events for its hotkeys, so a
+        screen left alive would slow down every test that runs afterwards.
+        """
+        self.controller.shutdown()
+        self.screen.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
 
 @pytest.fixture
 def session(tmp_path):
@@ -206,7 +217,7 @@ def session(tmp_path):
 
     yield _make
     for made in created:
-        made.controller.shutdown()
+        made.dispose()
 
 
 # ── Loading ───────────────────────────────────────────────────────────────────
