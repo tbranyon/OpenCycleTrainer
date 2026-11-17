@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from PySide6.QtWidgets import QApplication
 
 from opencycletrainer.devices.mock_backend import MockDeviceBackend
@@ -694,3 +696,132 @@ def test_imperial_units_toggle_autosaves_and_notifies():
     screen.imperial_units_checkbox.setChecked(False)
 
     assert load_settings(settings_path).display_units == "metric"
+
+
+# ── Weights in the chosen units ───────────────────────────────────────────────
+
+_KG_PER_LB = 0.45359237
+
+
+def test_weights_are_shown_in_kilograms_for_metric_units():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(rider_weight_kg=75.0, bike_weight_kg=9.0), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.rider_weight_label.text() == "Rider Weight (kg)"
+    assert screen.bike_weight_label.text() == "Bike Weight (kg)"
+    assert screen.rider_weight_spinbox.value() == 75.0
+    assert screen.bike_weight_spinbox.value() == 9.0
+
+
+def test_weights_are_shown_in_pounds_for_imperial_units():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(
+        AppSettings(rider_weight_kg=75.0, bike_weight_kg=9.0, display_units="imperial"),
+        settings_path,
+    )
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.rider_weight_label.text() == "Rider Weight (lb)"
+    assert screen.bike_weight_label.text() == "Bike Weight (lb)"
+    assert screen.rider_weight_spinbox.value() == 165.3
+    assert screen.bike_weight_spinbox.value() == 19.8
+
+
+def test_toggling_units_converts_the_weights_shown_without_changing_what_is_stored():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(rider_weight_kg=68.4, bike_weight_kg=7.7), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    screen.imperial_units_checkbox.setChecked(True)
+
+    assert screen.rider_weight_label.text() == "Rider Weight (lb)"
+    assert screen.rider_weight_spinbox.value() == 150.8
+    assert screen.bike_weight_spinbox.value() == 17.0
+    loaded = load_settings(settings_path)
+    assert loaded.rider_weight_kg == 68.4
+    assert loaded.bike_weight_kg == 7.7
+
+    screen.imperial_units_checkbox.setChecked(False)
+
+    assert screen.rider_weight_label.text() == "Rider Weight (kg)"
+    assert screen.rider_weight_spinbox.value() == 68.4
+    assert screen.bike_weight_spinbox.value() == 7.7
+    loaded = load_settings(settings_path)
+    assert loaded.rider_weight_kg == 68.4
+    assert loaded.bike_weight_kg == 7.7
+
+
+def test_weights_entered_in_pounds_are_stored_in_kilograms():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(display_units="imperial"), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+    applied: list[AppSettings] = []
+    screen.settings_applied.connect(applied.append)
+
+    screen.rider_weight_spinbox.setValue(200.0)
+    screen.bike_weight_spinbox.setValue(18.0)
+
+    loaded = load_settings(settings_path)
+    assert loaded.rider_weight_kg == pytest.approx(200.0 * _KG_PER_LB, abs=0.01)
+    assert loaded.bike_weight_kg == pytest.approx(18.0 * _KG_PER_LB, abs=0.01)
+    assert applied[-1].total_mass_kg == pytest.approx(218.0 * _KG_PER_LB, abs=0.02)
+
+
+def test_a_weight_entered_in_pounds_survives_switching_to_metric():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(display_units="imperial"), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+    screen.rider_weight_spinbox.setValue(200.0)
+
+    screen.imperial_units_checkbox.setChecked(False)
+
+    assert screen.rider_weight_spinbox.value() == 90.7
+    assert load_settings(settings_path).rider_weight_kg == pytest.approx(90.72, abs=0.01)
+
+    screen.imperial_units_checkbox.setChecked(True)
+
+    assert screen.rider_weight_spinbox.value() == 200.0
+
+
+def test_weight_limits_follow_the_units():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.rider_weight_spinbox.minimum() == 30.0
+    assert screen.rider_weight_spinbox.maximum() == 200.0
+
+    screen.imperial_units_checkbox.setChecked(True)
+
+    assert screen.rider_weight_spinbox.minimum() * _KG_PER_LB == pytest.approx(30.0, abs=0.05)
+    assert screen.rider_weight_spinbox.maximum() * _KG_PER_LB == pytest.approx(200.0, abs=0.05)
+    assert screen.rider_weight_spinbox.minimum() * _KG_PER_LB >= 30.0
+    assert screen.rider_weight_spinbox.maximum() * _KG_PER_LB <= 200.0
+    assert screen.bike_weight_spinbox.maximum() * _KG_PER_LB <= 30.0
+
+
+def test_heaviest_allowed_weight_in_pounds_is_not_clamped_on_reload():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(display_units="imperial"), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    heaviest_lb = screen.rider_weight_spinbox.maximum()
+    screen.rider_weight_spinbox.setValue(heaviest_lb)
+    stored = load_settings(settings_path).rider_weight_kg
+
+    reopened = SettingsScreen(settings_path=settings_path)
+
+    assert heaviest_lb > 400.0
+    assert stored == pytest.approx(heaviest_lb * _KG_PER_LB, abs=0.01)
+    assert stored <= 200.0
+    assert reopened.rider_weight_spinbox.value() == heaviest_lb

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
@@ -63,6 +64,7 @@ from opencycletrainer.storage.settings import (
     load_settings,
     save_settings,
 )
+from .ride_format import kilograms_per_weight_unit, weight_unit_label
 from .tile_config import MAX_CONFIGURABLE_TILES, TILE_OPTIONS, normalize_tile_selections
 from .toggle_switch import ToggleSwitch
 
@@ -78,10 +80,15 @@ SIMULATION_DIFFICULTY_TOOLTIP = (
 )
 COURSE_UNITS_TOOLTIP = (
     "Show speed, distance and elevation in miles, mph and feet instead of kilometres, "
-    "km/h and metres. Recorded ride files are always metric"
+    "km/h and metres, and enter weights in pounds instead of kilograms. Recorded ride "
+    "files are always metric"
 )
 WEIGHT_DECIMALS = 1
 WEIGHT_STEP_KG = 0.5
+WEIGHT_STEP_LB = 1.0
+# Weights are kept in kilograms to this precision, finer than the weight fields show, so
+# a weight entered in pounds reads back as the same number of pounds.
+STORED_WEIGHT_DECIMALS = 2
 SIMULATION_DIFFICULTY_STEP_PERCENT = 5
 
 SPINBOX_MAX_WIDTH = 100
@@ -328,21 +335,21 @@ class SettingsScreen(QWidget):
         simulation_group = QGroupBox("Grade Simulation", self)
         simulation_layout = QFormLayout(simulation_group)
 
-        self.rider_weight_spinbox = QDoubleSpinBox(simulation_group)
-        self.rider_weight_spinbox.setRange(MIN_RIDER_WEIGHT_KG, MAX_RIDER_WEIGHT_KG)
-        self.rider_weight_spinbox.setDecimals(WEIGHT_DECIMALS)
-        self.rider_weight_spinbox.setSingleStep(WEIGHT_STEP_KG)
-        self.rider_weight_spinbox.setValue(self._settings.rider_weight_kg)
-        self.rider_weight_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
-        simulation_layout.addRow("Rider Weight (kg)", self.rider_weight_spinbox)
+        # The weight fields show kilograms or pounds; these hold what is saved, in kilograms.
+        self._rider_weight_kg = self._settings.rider_weight_kg
+        self._bike_weight_kg = self._settings.bike_weight_kg
 
+        self.rider_weight_label = QLabel("", simulation_group)
+        self.rider_weight_spinbox = QDoubleSpinBox(simulation_group)
+        self.rider_weight_spinbox.setDecimals(WEIGHT_DECIMALS)
+        self.rider_weight_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
+        simulation_layout.addRow(self.rider_weight_label, self.rider_weight_spinbox)
+
+        self.bike_weight_label = QLabel("", simulation_group)
         self.bike_weight_spinbox = QDoubleSpinBox(simulation_group)
-        self.bike_weight_spinbox.setRange(MIN_BIKE_WEIGHT_KG, MAX_BIKE_WEIGHT_KG)
         self.bike_weight_spinbox.setDecimals(WEIGHT_DECIMALS)
-        self.bike_weight_spinbox.setSingleStep(WEIGHT_STEP_KG)
-        self.bike_weight_spinbox.setValue(self._settings.bike_weight_kg)
         self.bike_weight_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
-        simulation_layout.addRow("Bike Weight (kg)", self.bike_weight_spinbox)
+        simulation_layout.addRow(self.bike_weight_label, self.bike_weight_spinbox)
 
         self.simulation_difficulty_spinbox = QSpinBox(simulation_group)
         self.simulation_difficulty_spinbox.setRange(
@@ -354,12 +361,13 @@ class SettingsScreen(QWidget):
         self.simulation_difficulty_spinbox.setToolTip(SIMULATION_DIFFICULTY_TOOLTIP)
         simulation_layout.addRow("Trainer Difficulty (%)", self.simulation_difficulty_spinbox)
 
-        self.imperial_units_checkbox = ToggleSwitch("Imperial (mi, mph, ft)", simulation_group)
+        self.imperial_units_checkbox = ToggleSwitch("Imperial (mi, mph, ft, lb)", simulation_group)
         self.imperial_units_checkbox.setChecked(
             self._settings.display_units == DISPLAY_UNITS_IMPERIAL
         )
         self.imperial_units_checkbox.setToolTip(COURSE_UNITS_TOOLTIP)
-        simulation_layout.addRow("Course Units", self.imperial_units_checkbox)
+        simulation_layout.addRow("Units", self.imperial_units_checkbox)
+        self._show_weights_in_display_units()
 
         root_layout.addWidget(simulation_group)
 
@@ -482,15 +490,61 @@ class SettingsScreen(QWidget):
             intervals_icu_auto_sync_enabled=self.intervals_icu_auto_sync_checkbox.isChecked(),
             show_interval_plot=self.show_interval_plot_checkbox.isChecked(),
             erg_jog_persistence_mode=JogPersistenceMode(str(self.erg_jog_persistence_mode_combo.currentData())),
-            rider_weight_kg=round(self.rider_weight_spinbox.value(), WEIGHT_DECIMALS),
-            bike_weight_kg=round(self.bike_weight_spinbox.value(), WEIGHT_DECIMALS),
+            rider_weight_kg=self._rider_weight_kg,
+            bike_weight_kg=self._bike_weight_kg,
             simulation_difficulty_percent=self.simulation_difficulty_spinbox.value(),
-            display_units=(
-                DISPLAY_UNITS_IMPERIAL
-                if self.imperial_units_checkbox.isChecked()
-                else DISPLAY_UNITS_METRIC
-            ),
+            display_units=self._selected_display_units(),
         )
+
+    def _selected_display_units(self) -> str:
+        """Return the display units the units toggle currently selects."""
+        if self.imperial_units_checkbox.isChecked():
+            return DISPLAY_UNITS_IMPERIAL
+        return DISPLAY_UNITS_METRIC
+
+    def _show_weights_in_display_units(self) -> None:
+        """Label, limit and fill the weight fields in the selected units.
+
+        Only what is shown changes; the saved weights are left exactly as they were.
+        """
+        units = self._selected_display_units()
+        kg_per_unit = kilograms_per_weight_unit(units)
+        step = WEIGHT_STEP_LB if units == DISPLAY_UNITS_IMPERIAL else WEIGHT_STEP_KG
+        shown_steps = 10 ** WEIGHT_DECIMALS
+        fields = (
+            (self.rider_weight_label, self.rider_weight_spinbox, "Rider Weight",
+             self._rider_weight_kg, MIN_RIDER_WEIGHT_KG, MAX_RIDER_WEIGHT_KG),
+            (self.bike_weight_label, self.bike_weight_spinbox, "Bike Weight",
+             self._bike_weight_kg, MIN_BIKE_WEIGHT_KG, MAX_BIKE_WEIGHT_KG),
+        )
+        for label, spinbox, title, weight_kg, min_kg, max_kg in fields:
+            label.setText(f"{title} ({weight_unit_label(units)})")
+            # Limits are rounded inward so the largest and smallest entries stay within
+            # the allowed weights once converted back to kilograms.
+            minimum = math.ceil(min_kg / kg_per_unit * shown_steps) / shown_steps
+            maximum = math.floor(max_kg / kg_per_unit * shown_steps) / shown_steps
+            was_blocked = spinbox.blockSignals(True)
+            spinbox.setRange(minimum, maximum)
+            spinbox.setSingleStep(step)
+            spinbox.setValue(weight_kg / kg_per_unit)
+            spinbox.blockSignals(was_blocked)
+
+    def _weight_kg_shown_in(self, spinbox: QDoubleSpinBox) -> float:
+        """Return the weight a field shows, converted to kilograms."""
+        kg_per_unit = kilograms_per_weight_unit(self._selected_display_units())
+        return round(spinbox.value() * kg_per_unit, STORED_WEIGHT_DECIMALS)
+
+    def _on_rider_weight_edited(self) -> None:
+        self._rider_weight_kg = self._weight_kg_shown_in(self.rider_weight_spinbox)
+        self._autosave()
+
+    def _on_bike_weight_edited(self) -> None:
+        self._bike_weight_kg = self._weight_kg_shown_in(self.bike_weight_spinbox)
+        self._autosave()
+
+    def _on_units_toggled(self) -> None:
+        self._show_weights_in_display_units()
+        self._autosave()
 
     def set_ftp(self, watts: int) -> None:
         """Set FTP from code (not typed by the rider); saved and applied like any edit."""
@@ -545,10 +599,10 @@ class SettingsScreen(QWidget):
         self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
         self.intervals_icu_auto_sync_checkbox.toggled.connect(self._autosave)
         self.show_interval_plot_checkbox.toggled.connect(self._autosave)
-        self.rider_weight_spinbox.valueChanged.connect(self._autosave)
-        self.bike_weight_spinbox.valueChanged.connect(self._autosave)
+        self.rider_weight_spinbox.valueChanged.connect(self._on_rider_weight_edited)
+        self.bike_weight_spinbox.valueChanged.connect(self._on_bike_weight_edited)
         self.simulation_difficulty_spinbox.valueChanged.connect(self._autosave)
-        self.imperial_units_checkbox.toggled.connect(self._autosave)
+        self.imperial_units_checkbox.toggled.connect(self._on_units_toggled)
 
     def _browse_workout_data_dir(self) -> None:
         start_dir_text = self.workout_data_dir_edit.text().strip()

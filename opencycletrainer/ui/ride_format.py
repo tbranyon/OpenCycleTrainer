@@ -5,6 +5,7 @@ from opencycletrainer.storage.settings import DISPLAY_UNITS_IMPERIAL, DISPLAY_UN
 _METERS_PER_KILOMETER = 1000.0
 _METERS_PER_MILE = 1609.344
 _METERS_PER_FOOT = 0.3048
+_KILOGRAMS_PER_POUND = 0.45359237
 _SECONDS_PER_HOUR = 3600.0
 _GRADE_DISPLAY_STEP_PERCENT = 0.1
 
@@ -32,6 +33,16 @@ def meters_per_distance_unit(units: str = DISPLAY_UNITS_METRIC) -> float:
 def meters_per_elevation_unit(units: str = DISPLAY_UNITS_METRIC) -> float:
     """Return how many metres one displayed elevation unit (m or ft) spans."""
     return _METERS_PER_FOOT if _is_imperial(units) else 1.0
+
+
+def weight_unit_label(units: str = DISPLAY_UNITS_METRIC) -> str:
+    """Return the unit weights are shown in: ``kg`` or ``lb``."""
+    return "lb" if _is_imperial(units) else "kg"
+
+
+def kilograms_per_weight_unit(units: str = DISPLAY_UNITS_METRIC) -> float:
+    """Return how many kilograms one displayed weight unit (kg or lb) weighs."""
+    return _KILOGRAMS_PER_POUND if _is_imperial(units) else 1.0
 
 
 def format_distance(distance_m: float, units: str = DISPLAY_UNITS_METRIC) -> str:

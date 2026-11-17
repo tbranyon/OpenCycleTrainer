@@ -9,8 +9,10 @@ from opencycletrainer.ui.ride_format import (
     format_distance,
     format_grade_percent,
     format_speed,
+    kilograms_per_weight_unit,
     meters_per_distance_unit,
     meters_per_elevation_unit,
+    weight_unit_label,
 )
 
 _METERS_PER_MILE = 1609.344
@@ -59,3 +61,10 @@ def test_unit_labels_and_sizes_for_chart_axes():
     assert meters_per_distance_unit(DISPLAY_UNITS_IMPERIAL) == pytest.approx(_METERS_PER_MILE)
     assert meters_per_elevation_unit(DISPLAY_UNITS_METRIC) == 1.0
     assert meters_per_elevation_unit(DISPLAY_UNITS_IMPERIAL) == pytest.approx(_METERS_PER_FOOT)
+
+
+def test_weight_unit_label_and_size():
+    assert weight_unit_label(DISPLAY_UNITS_METRIC) == "kg"
+    assert weight_unit_label(DISPLAY_UNITS_IMPERIAL) == "lb"
+    assert kilograms_per_weight_unit(DISPLAY_UNITS_METRIC) == 1.0
+    assert kilograms_per_weight_unit(DISPLAY_UNITS_IMPERIAL) == pytest.approx(0.45359237)
