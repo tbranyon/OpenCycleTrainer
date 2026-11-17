@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from opencycletrainer.core.dfa.pipeline import DfaRecord
 
-from .ride_format import format_distance_km, format_speed_kmh
+from .ride_format import format_distance, format_speed
 from .tile_config import DISTANCE_TILE_KEY, SPEED_TILE_KEY
 
 
@@ -101,10 +101,10 @@ class TileComputation:
             return f"{record.alpha1:.2f}"
         if key == SPEED_TILE_KEY:
             speed = self._speed_source() if self._speed_source is not None else None
-            return format_speed_kmh(speed) if speed is not None else "--"
+            return format_speed(speed, settings.display_units) if speed is not None else "--"
         if key == DISTANCE_TILE_KEY:
             distance = self._distance_source() if self._distance_source is not None else None
-            return format_distance_km(distance) if distance is not None else "--"
+            return format_distance(distance, settings.display_units) if distance is not None else "--"
         return "--"
 
     def available_kj_sources(self) -> list[str]:

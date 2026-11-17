@@ -648,3 +648,78 @@ def test_speed_tile_is_blank_without_a_speed_reading(session):
     s.ride(1.0, 200)
 
     assert s.screen._tile_by_key["speed"].value_label.text() == "--"
+
+
+# ── Display units ─────────────────────────────────────────────────────────────
+
+_METERS_PER_MILE = 1609.344
+_MPH_PER_MPS = 3600.0 / _METERS_PER_MILE
+
+
+def test_imperial_units_show_course_values_in_miles_and_mph(session, tmp_path):
+    s = session(
+        settings=AppSettings(display_units="imperial", tile_selections=["speed", "distance"])
+    )
+    s.load(_write_gpx(tmp_path, _constant_grade(5.0)))
+    s.start()
+
+    s.ride(20.0, 250)
+
+    ride = s.controller.course_ride
+    assert s.screen.remaining_tile.value_label.text() == f"{ride.remaining_m / _METERS_PER_MILE:.2f} mi"
+    assert s.screen._tile_by_key["distance"].value_label.text() == f"{ride.distance_m / _METERS_PER_MILE:.2f} mi"
+    assert s.screen._tile_by_key["speed"].value_label.text() == f"{ride.speed_mps * _MPH_PER_MPS:.1f} mph"
+    assert s.screen.interval_remaining_tile.value_label.text() == "+5.0 %"
+
+
+def test_imperial_units_label_the_elevation_profile_in_miles_and_feet(session, tmp_path):
+    s = session(settings=AppSettings(display_units="imperial"))
+
+    s.load(_write_gpx(tmp_path, _constant_grade(2.0)))
+
+    course_plot = s.screen.chart_widget._course_plot
+    assert course_plot.getAxis("bottom").labelText == "mi"
+    assert course_plot.getAxis("left").labelText == "ft"
+
+
+def test_switching_units_mid_ride_updates_the_course_values(session, tmp_path):
+    s = session(settings=AppSettings(tile_selections=["speed"]))
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+    s.ride(10.0, 200)
+    assert s.screen.remaining_tile.value_label.text().endswith(" km")
+
+    imperial = AppSettings(
+        display_units="imperial", tile_selections=["speed"], workout_data_dir=tmp_path
+    )
+    s.screen.apply_settings(imperial)
+    s.controller.apply_settings(imperial)
+    s.ride(1.0, 200)
+
+    assert s.screen.remaining_tile.value_label.text().endswith(" mi")
+    assert s.screen._tile_by_key["speed"].value_label.text().endswith(" mph")
+    assert s.screen.chart_widget._course_plot.getAxis("bottom").labelText == "mi"
+
+
+def test_recorded_course_values_stay_metric_with_imperial_units(session, tmp_path):
+    s = session(settings=AppSettings(display_units="imperial"))
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+
+    s.ride(20.0, 200)
+
+    ride = s.controller.course_ride
+    last = s.recorder.samples[-1]
+    assert last.distance_m == pytest.approx(ride.distance_m, rel=0.1)
+    assert last.speed_mps == pytest.approx(ride.speed_mps, rel=0.1)
+
+
+def test_imperial_units_apply_to_sensor_speed_outside_a_course(session):
+    s = session(settings=AppSettings(display_units="imperial", tile_selections=["speed"]))
+    s.load(DATA_DIR / "step_only.mrc")
+    s.start()
+
+    s.controller.receive_speed_mps(10.0)
+    s.ride(1.0, 200)
+
+    assert s.screen._tile_by_key["speed"].value_label.text() == "22.4 mph"

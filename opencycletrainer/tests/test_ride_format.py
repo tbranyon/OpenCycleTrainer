@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import pytest
+
+from opencycletrainer.storage.settings import DISPLAY_UNITS_IMPERIAL, DISPLAY_UNITS_METRIC
+from opencycletrainer.ui.ride_format import (
+    distance_unit_label,
+    elevation_unit_label,
+    format_distance,
+    format_grade_percent,
+    format_speed,
+    meters_per_distance_unit,
+    meters_per_elevation_unit,
+)
+
+_METERS_PER_MILE = 1609.344
+_METERS_PER_FOOT = 0.3048
+
+
+def test_distance_is_shown_in_kilometres_by_default():
+    assert format_distance(12340.0) == "12.34 km"
+    assert format_distance(12340.0, DISPLAY_UNITS_METRIC) == "12.34 km"
+
+
+def test_distance_is_shown_in_miles_for_imperial_units():
+    assert format_distance(_METERS_PER_MILE, DISPLAY_UNITS_IMPERIAL) == "1.00 mi"
+    assert format_distance(10000.0, DISPLAY_UNITS_IMPERIAL) == "6.21 mi"
+
+
+def test_negative_distance_is_shown_as_zero():
+    assert format_distance(-5.0) == "0.00 km"
+    assert format_distance(-5.0, DISPLAY_UNITS_IMPERIAL) == "0.00 mi"
+
+
+def test_speed_is_shown_in_kmh_by_default():
+    assert format_speed(10.0) == "36.0 km/h"
+
+
+def test_speed_is_shown_in_mph_for_imperial_units():
+    assert format_speed(10.0, DISPLAY_UNITS_IMPERIAL) == "22.4 mph"
+
+
+def test_unknown_units_fall_back_to_metric():
+    assert format_distance(1000.0, "furlongs") == "1.00 km"
+    assert format_speed(10.0, "furlongs") == "36.0 km/h"
+
+
+def test_grade_is_shown_the_same_in_both_unit_systems():
+    assert format_grade_percent(4.52) == "+4.5 %"
+    assert format_grade_percent(-0.01) == "0.0 %"
+
+
+def test_unit_labels_and_sizes_for_chart_axes():
+    assert distance_unit_label(DISPLAY_UNITS_METRIC) == "km"
+    assert distance_unit_label(DISPLAY_UNITS_IMPERIAL) == "mi"
+    assert elevation_unit_label(DISPLAY_UNITS_METRIC) == "m"
+    assert elevation_unit_label(DISPLAY_UNITS_IMPERIAL) == "ft"
+    assert meters_per_distance_unit(DISPLAY_UNITS_METRIC) == 1000.0
+    assert meters_per_distance_unit(DISPLAY_UNITS_IMPERIAL) == pytest.approx(_METERS_PER_MILE)
+    assert meters_per_elevation_unit(DISPLAY_UNITS_METRIC) == 1.0
+    assert meters_per_elevation_unit(DISPLAY_UNITS_IMPERIAL) == pytest.approx(_METERS_PER_FOOT)

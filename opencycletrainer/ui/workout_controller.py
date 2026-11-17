@@ -46,7 +46,7 @@ from .mode_state import (
 )
 from .pause_state import PauseState
 from .recorder_integration import RecorderIntegration, SensorSnapshot
-from .ride_format import format_distance_km, format_grade_percent
+from .ride_format import format_distance, format_grade_percent
 from .tile_computation import TileComputation
 from .tile_config import DFA_TILE_KEY
 from .trainer_connection import TrainerConnection
@@ -804,7 +804,9 @@ class WorkoutSessionController(QObject):
             remaining_text = "\u2014"
             interval_remaining_text = "\u2014"
             if self._course_ride is not None:
-                remaining_text = format_distance_km(self._course_ride.remaining_m)
+                remaining_text = format_distance(
+                    self._course_ride.remaining_m, self._settings.display_units
+                )
                 interval_remaining_text = format_grade_percent(self._course_ride.grade_percent)
                 self._screen.update_course_position(self._course_ride.distance_m)
             if self._mode_state.active_control_mode(snapshot, self._workout) == "ERG" and self._mode_state.free_ride_erg_target is not None:

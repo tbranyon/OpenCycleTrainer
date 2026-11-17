@@ -514,6 +514,7 @@ class WorkoutScreen(QWidget):
         self._build_chart_scaffolding(root_layout)
         self.chart_widget.set_interval_plot_visible(self._settings.show_interval_plot)
         self.chart_widget.set_dfa_alpha1_enabled(DFA_TILE_KEY in self._selected_tiles)
+        self.chart_widget.set_display_units(self._settings.display_units)
         self._build_mode_footer(root_layout)
         self._render_selected_tiles()
         self._wire_button_state_tracking()
@@ -540,6 +541,7 @@ class WorkoutScreen(QWidget):
         self._render_selected_tiles()
         self.chart_widget.set_interval_plot_visible(settings.show_interval_plot)
         self.chart_widget.set_dfa_alpha1_enabled(DFA_TILE_KEY in self._selected_tiles)
+        self.chart_widget.set_display_units(settings.display_units)
 
     def apply_color_theme(self, color_theme: str) -> None:
         self._theme_mode = color_theme

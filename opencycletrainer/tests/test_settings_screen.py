@@ -653,3 +653,44 @@ def test_simulation_fields_autosave():
     assert loaded.bike_weight_kg == 10.5
     assert loaded.simulation_difficulty_percent == 75
     assert applied[-1].total_mass_kg == 92.5
+
+
+# ── Display units ─────────────────────────────────────────────────────────────
+
+
+def test_imperial_units_toggle_defaults_to_off():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert not screen.imperial_units_checkbox.isChecked()
+
+
+def test_imperial_units_toggle_reflects_saved_setting():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(display_units="imperial"), settings_path)
+
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.imperial_units_checkbox.isChecked()
+
+
+def test_imperial_units_toggle_autosaves_and_notifies():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+    applied: list[AppSettings] = []
+    screen.settings_applied.connect(applied.append)
+
+    screen.imperial_units_checkbox.setChecked(True)
+
+    assert load_settings(settings_path).display_units == "imperial"
+    assert applied[-1].display_units == "imperial"
+
+    screen.imperial_units_checkbox.setChecked(False)
+
+    assert load_settings(settings_path).display_units == "metric"

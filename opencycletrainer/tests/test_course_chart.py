@@ -172,10 +172,58 @@ def test_course_plot_follows_the_colour_theme():
     assert light == widget._workout_plot.backgroundBrush().color().getRgb()[:3]
 
 
-def test_distance_axis_labels_kilometres():
-    from opencycletrainer.ui.workout_chart import _DistanceAxisItem
+def _axis_labels(widget: WorkoutChartWidget, axis_name: str, values: list[float]) -> list[str]:
+    """Tick labels the course plot's axis would draw at *values* (given in metres)."""
+    axis = widget._course_plot.getAxis(axis_name)
+    return axis.tickStrings(values, axis.scale, 1.0)
 
+
+def test_course_axes_are_metric_by_default():
     _qapp()
-    axis = _DistanceAxisItem("bottom")
+    widget = WorkoutChartWidget()
+    widget.load_course(_course())
 
-    assert axis.tickStrings([0.0, 2500.0, 10000.0], 1.0, 2500.0) == ["0", "2.5", "10"]
+    assert widget._course_plot.getAxis("bottom").labelText == "km"
+    assert widget._course_plot.getAxis("left").labelText == "m"
+    assert [float(label) for label in _axis_labels(widget, "bottom", [0.0, 2500.0])] == [0.0, 2.5]
+    assert [float(label) for label in _axis_labels(widget, "left", [100.0, 200.0])] == [100.0, 200.0]
+
+
+def test_course_axes_show_miles_and_feet_for_imperial_units():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.set_display_units("imperial")
+    widget.load_course(_course())
+
+    assert widget._course_plot.getAxis("bottom").labelText == "mi"
+    assert widget._course_plot.getAxis("left").labelText == "ft"
+    assert [float(label) for label in _axis_labels(widget, "bottom", [0.0, 1609.344])] == [0.0, 1.0]
+    assert [float(label) for label in _axis_labels(widget, "left", [0.0, 304.8])] == [0.0, 1000.0]
+
+
+def test_changing_units_relabels_a_course_already_shown():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_course())
+    widget.set_course_position(1500.0)
+
+    widget.set_display_units("imperial")
+
+    assert widget._course_plot.getAxis("bottom").labelText == "mi"
+    assert widget._course_plot.getAxis("left").labelText == "ft"
+    assert widget.course_position_m == pytest.approx(1500.0)
+    (x_min, x_max), _ = widget._course_plot.getViewBox().viewRange()
+    assert (x_min, x_max) == pytest.approx((0.0, 3000.0))
+
+    widget.set_display_units("metric")
+
+    assert widget._course_plot.getAxis("bottom").labelText == "km"
+
+
+def test_units_can_be_set_before_any_course_is_loaded():
+    _qapp()
+    widget = WorkoutChartWidget()
+
+    widget.set_display_units("imperial")
+
+    assert not widget.course_plot_shown

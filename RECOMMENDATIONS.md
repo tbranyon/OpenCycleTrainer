@@ -27,9 +27,8 @@ C++ would not have fixed any of them; it would only help install size and startu
    and this removes the manual file shuffle for anyone following a plan.
 5. **FTP ramp test** that proposes a new FTP. FTP is manual only today, and it drives
    every percentage-based workout.
-6. **Finish or remove half-built pieces:** `display_units` is stored but never read,
-   and `core/control/hybrid_mode.py` is unused; the live Hybrid mode runs a separate
-   copy of that logic in `ui/mode_state.py`.
+6. **Finish or remove half-built pieces:** `core/control/hybrid_mode.py` is unused;
+   the live Hybrid mode runs a separate copy of that logic in `ui/mode_state.py`.
 7. **Import `.erg` workouts** (close to the existing MRC parser), plus favourites and a
    ride-history browser.
 

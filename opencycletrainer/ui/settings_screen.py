@@ -48,6 +48,8 @@ from opencycletrainer.integrations.intervalsicu.key_store import (
 from opencycletrainer.storage.paths import get_workout_fit_dir
 from opencycletrainer.storage.settings import (
     AppSettings,
+    DISPLAY_UNITS_IMPERIAL,
+    DISPLAY_UNITS_METRIC,
     JogPersistenceMode,
     MAX_BIKE_WEIGHT_KG,
     MAX_RIDER_WEIGHT_KG,
@@ -73,6 +75,10 @@ OPENTRUEUP_TOOLTIP = (
 SIMULATION_DIFFICULTY_TOOLTIP = (
     "How much of a course's real grade the trainer simulates. At 50% a 10% climb feels "
     "like 5%; your speed on the course is still calculated from the real grade"
+)
+COURSE_UNITS_TOOLTIP = (
+    "Show speed, distance and elevation in miles, mph and feet instead of kilometres, "
+    "km/h and metres. Recorded ride files are always metric"
 )
 WEIGHT_DECIMALS = 1
 WEIGHT_STEP_KG = 0.5
@@ -348,6 +354,13 @@ class SettingsScreen(QWidget):
         self.simulation_difficulty_spinbox.setToolTip(SIMULATION_DIFFICULTY_TOOLTIP)
         simulation_layout.addRow("Trainer Difficulty (%)", self.simulation_difficulty_spinbox)
 
+        self.imperial_units_checkbox = ToggleSwitch("Imperial (mi, mph, ft)", simulation_group)
+        self.imperial_units_checkbox.setChecked(
+            self._settings.display_units == DISPLAY_UNITS_IMPERIAL
+        )
+        self.imperial_units_checkbox.setToolTip(COURSE_UNITS_TOOLTIP)
+        simulation_layout.addRow("Course Units", self.imperial_units_checkbox)
+
         root_layout.addWidget(simulation_group)
 
         charts_group = QGroupBox("Charts", self)
@@ -472,6 +485,11 @@ class SettingsScreen(QWidget):
             rider_weight_kg=round(self.rider_weight_spinbox.value(), WEIGHT_DECIMALS),
             bike_weight_kg=round(self.bike_weight_spinbox.value(), WEIGHT_DECIMALS),
             simulation_difficulty_percent=self.simulation_difficulty_spinbox.value(),
+            display_units=(
+                DISPLAY_UNITS_IMPERIAL
+                if self.imperial_units_checkbox.isChecked()
+                else DISPLAY_UNITS_METRIC
+            ),
         )
 
     def set_ftp(self, watts: int) -> None:
@@ -530,6 +548,7 @@ class SettingsScreen(QWidget):
         self.rider_weight_spinbox.valueChanged.connect(self._autosave)
         self.bike_weight_spinbox.valueChanged.connect(self._autosave)
         self.simulation_difficulty_spinbox.valueChanged.connect(self._autosave)
+        self.imperial_units_checkbox.toggled.connect(self._autosave)
 
     def _browse_workout_data_dir(self) -> None:
         start_dir_text = self.workout_data_dir_edit.text().strip()

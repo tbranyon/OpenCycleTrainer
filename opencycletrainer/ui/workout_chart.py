@@ -13,6 +13,14 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.workout_model import Workout
+from opencycletrainer.storage.settings import DISPLAY_UNITS_METRIC
+
+from .ride_format import (
+    distance_unit_label,
+    elevation_unit_label,
+    meters_per_distance_unit,
+    meters_per_elevation_unit,
+)
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 _TARGET_PEN   = (59,  130, 246)           # #3b82f6 blue
@@ -69,7 +77,6 @@ _COURSE_PLOT_STRETCH = 4
 _COURSE_RIDE_PLOT_STRETCH = 6
 _INTERVAL_PLOT_STRETCH = 6
 _WORKOUT_PLOT_STRETCH = 4
-_METERS_PER_KILOMETER = 1000.0
 
 
 # ── Time axis ─────────────────────────────────────────────────────────────────
@@ -108,13 +115,6 @@ class _TimeAxisItem(pg.AxisItem):
         return result
 
 
-class _DistanceAxisItem(pg.AxisItem):
-    """Bottom axis that labels distances given in metres as kilometres."""
-
-    def tickStrings(self, values: list, scale: float, spacing: float) -> list[str]:
-        return [f"{value / _METERS_PER_KILOMETER:g}" for value in values]
-
-
 # ── Main widget ───────────────────────────────────────────────────────────────
 
 class WorkoutChartWidget(QWidget):
@@ -143,6 +143,7 @@ class WorkoutChartWidget(QWidget):
         self._course_elevations = np.array([], dtype=float)
         self._course_ridden_drawn_m: float = 0.0
         self._interval_plot_wanted: bool = True
+        self._display_units: str = DISPLAY_UNITS_METRIC
 
         # The course plot is only built when a course is first loaded: a plot is costly
         # to create, and most rides never show one.
@@ -223,6 +224,26 @@ class WorkoutChartWidget(QWidget):
         """Distance along the course the position marker currently sits at."""
         return float(self._course_pos.value()) if self._course_pos is not None else 0.0
 
+    def set_display_units(self, units: str) -> None:
+        """Show course distance and elevation in metric (km, m) or imperial (mi, ft) units."""
+        self._display_units = units
+        self._apply_course_units()
+
+    def _apply_course_units(self) -> None:
+        """Label and scale the course plot's axes for the display units; no-op until it is built.
+
+        The plot's data stays in metres; only the axes are scaled, so tick marks fall on
+        round numbers of the displayed unit.
+        """
+        if self._course_plot is None:
+            return
+        bottom = self._course_plot.getAxis("bottom")
+        bottom.setScale(1.0 / meters_per_distance_unit(self._display_units))
+        bottom.setLabel(distance_unit_label(self._display_units))
+        left = self._course_plot.getAxis("left")
+        left.setScale(1.0 / meters_per_elevation_unit(self._display_units))
+        left.setLabel(elevation_unit_label(self._display_units))
+
     def load_course(self, course: Course) -> None:
         """Show *course*'s elevation profile above an open-ended power chart."""
         self.load_free_ride()
@@ -297,6 +318,7 @@ class WorkoutChartWidget(QWidget):
             self._course_plot.addItem(item)
         self.layout().insertWidget(0, self._course_plot, 0)
         self._apply_course_theme(_theme_settings(self._color_theme))
+        self._apply_course_units()
 
     def _apply_course_theme(self, settings: dict[str, object]) -> None:
         """Colour the course plot to match the other plots; no-op until it has been built."""
@@ -736,12 +758,15 @@ def _make_plot() -> pg.PlotWidget:
 
 
 def _make_course_plot() -> pg.PlotWidget:
-    """Build the elevation-profile plot: metres of elevation against kilometres ridden."""
-    plot = pg.PlotWidget(axisItems={"bottom": _DistanceAxisItem("bottom")})
+    """Build the elevation-profile plot: elevation against distance ridden, both in metres.
+
+    The axes are labelled and scaled for the display units separately.
+    """
+    plot = pg.PlotWidget()
     plot.setBackground(_PLOT_BACKGROUND_LIGHT)
     plot.showGrid(x=False, y=True, alpha=_GRID_ALPHA_LIGHT)
-    plot.getAxis("left").setLabel("m")
-    plot.getAxis("bottom").setLabel("km")
+    for axis_name in ("left", "bottom"):
+        plot.getAxis(axis_name).enableAutoSIPrefix(False)
     plot.setMouseEnabled(x=False, y=False)
     plot.setMenuEnabled(False)
     plot.getViewBox().disableAutoRange()
