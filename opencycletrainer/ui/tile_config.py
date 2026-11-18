@@ -6,6 +6,7 @@ MAX_CONFIGURABLE_TILES = 8
 DFA_TILE_KEY = "dfa_a1"
 SPEED_TILE_KEY = "speed"
 DISTANCE_TILE_KEY = "distance"
+ELEVATION_GAIN_TILE_KEY = "elevation_gain"
 
 TILE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("windowed_avg_ftp", "Windowed Avg %FTP"),
@@ -21,6 +22,7 @@ TILE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("pedal_balance", "L/R Balance"),
     (SPEED_TILE_KEY, "Speed"),
     (DISTANCE_TILE_KEY, "Distance"),
+    (ELEVATION_GAIN_TILE_KEY, "Elevation Gain"),
     (DFA_TILE_KEY, "DFA α1"),
 )
 

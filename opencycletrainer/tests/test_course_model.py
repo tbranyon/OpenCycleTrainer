@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from opencycletrainer.core.course_model import GRADE_WINDOW_METERS, Course, CoursePoint
+from dataclasses import replace
+
+from opencycletrainer.core.course_model import GRADE_WINDOW_METERS, Course, CoursePoi, CoursePoint
 
 
 def _course(*profile: tuple[float, float]) -> Course:
@@ -383,3 +385,61 @@ def test_lap_starts_must_begin_at_the_start_and_lie_on_the_course():
         Course(name="Bad", points=points, lap_starts_m=(0.0, 2000.0, 1000.0))
     with pytest.raises(ValueError):
         Course(name="Bad", points=points, lap_starts_m=(0.0, 3000.0))
+
+
+# ── Climbing between two points ───────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("start_m", "end_m", "expected_m"),
+    [
+        (0.0, 3000.0, 50.0),     # the whole course
+        (0.0, 1500.0, 25.0),     # half way up the climb
+        (1500.0, 3000.0, 25.0),  # the rest of the climb, then only descent
+        (2000.0, 3000.0, 0.0),   # all downhill
+        (1200.0, 1200.0, 0.0),
+    ],
+)
+def test_ascent_between_two_points_counts_the_climbing_between_them(start_m, end_m, expected_m):
+    assert _climb_then_descent().ascent_between(start_m, end_m) == pytest.approx(expected_m)
+
+
+def test_ascent_between_laps_skips_the_jump_back_to_the_start():
+    route = _point_to_point(finish_elevation_m=110.0)  # +10 m a lap, then back down to the start
+
+    laps = route.laps(3)
+
+    assert laps.ascent_between(0.0, laps.total_distance_m) == pytest.approx(30.0)
+    assert laps.ascent_between(_LEG_M / 2, 2.5 * _LEG_M) == pytest.approx(5.0 + 10.0 + 5.0)
+
+
+# ── Points of interest ────────────────────────────────────────────────────────
+
+def _with_pois() -> Course:
+    return replace(
+        _climb_then_descent(),
+        pois=(
+            CoursePoi(distance_m=2000.0, name="Summit", kind="Summit"),
+            CoursePoi(distance_m=500.0, name="Café", notes="Good cake"),
+        ),
+    )
+
+
+def test_points_of_interest_are_kept_in_order_along_the_course():
+    assert [poi.name for poi in _with_pois().pois] == ["Café", "Summit"]
+
+
+def test_a_section_keeps_the_points_of_interest_inside_it_measured_from_its_start():
+    section = _with_pois().section(1000.0, 3000.0)
+
+    assert [(poi.name, poi.distance_m) for poi in section.pois] == [("Summit", 1000.0)]
+
+
+def test_each_lap_has_the_points_of_interest_again():
+    course = _with_pois()
+
+    laps = course.laps(2)
+
+    assert [(poi.name, poi.distance_m) for poi in laps.pois] == [
+        ("Café", 500.0), ("Summit", 2000.0), ("Café", 3500.0), ("Summit", 5000.0),
+    ]
+    assert laps.pois[2].notes == "Good cake"

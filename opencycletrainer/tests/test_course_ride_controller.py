@@ -241,6 +241,52 @@ def test_loading_a_gpx_file_readies_a_course_ride(session, tmp_path):
     )
 
 
+def _write_tcx(folder: Path, elevations: list[float]) -> Path:
+    points = "".join(
+        f"<Trackpoint><Position><LatitudeDegrees>{45.0 + index * _POINT_SPACING_DEGREES:.6f}</LatitudeDegrees>"
+        f"<LongitudeDegrees>7.0</LongitudeDegrees></Position><AltitudeMeters>{elevation}</AltitudeMeters></Trackpoint>"
+        for index, elevation in enumerate(elevations)
+    )
+    path = folder / "course.tcx"
+    path.write_text(
+        '<?xml version="1.0"?><TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">'
+        f"<Courses><Course><Name>River Road</Name><Track>{points}</Track></Course></Courses></TrainingCenterDatabase>",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_fit(folder: Path, elevations: list[float]) -> Path:
+    from .test_fit_course_parser import write_fit_course
+
+    return write_fit_course(folder / "course.fit", elevations, name="River Road")
+
+
+@pytest.mark.parametrize("write_course", [_write_tcx, _write_fit], ids=["tcx", "fit"])
+def test_tcx_and_fit_files_load_as_course_rides(session, tmp_path, write_course):
+    s = session()
+
+    s.load(write_course(tmp_path, _constant_grade(0.0, point_count=5)))
+
+    assert s.state == EngineState.READY
+    assert s.screen.title_label.text() == "River Road"
+    assert s.controller.course_ride.course.total_distance_m == pytest.approx(
+        4 * _POINT_SPACING_METERS, rel=1e-3
+    )
+
+
+@pytest.mark.parametrize("suffix", [".tcx", ".fit"])
+def test_an_unreadable_tcx_or_fit_course_shows_an_alert_and_loads_nothing(session, tmp_path, suffix):
+    s = session()
+    path = tmp_path / f"broken{suffix}"
+    path.write_text("not a course", encoding="utf-8")
+
+    s.load(path)
+
+    assert f"broken{suffix}" in s.screen.alert_label.text()
+    assert s.controller.course_ride is None
+
+
 def test_loading_a_gpx_file_asks_how_to_ride_it(session, tmp_path):
     asked: list[tuple[object, str]] = []
 
@@ -355,9 +401,8 @@ def test_file_dialog_offers_workouts_and_courses(session, monkeypatch):
 
     s.screen.load_from_file_button.click()
 
-    assert "*.gpx" in offered[0]
-    assert "*.mrc" in offered[0]
-    assert "*.zwo" in offered[0]
+    for pattern in ("*.gpx", "*.tcx", "*.fit", "*.mrc", "*.zwo"):
+        assert pattern in offered[0]
 
 
 def test_zwo_workout_loads_from_a_file(session):
@@ -465,6 +510,27 @@ def test_speed_and_distance_tiles_show_the_virtual_ride(session, tmp_path):
     ride = s.controller.course_ride
     assert s.screen._tile_by_key["speed"].value_label.text() == f"{ride.speed_mps * 3.6:.1f} km/h"
     assert s.screen._tile_by_key["distance"].value_label.text() == f"{ride.distance_m / 1000.0:.2f} km"
+
+
+@pytest.mark.parametrize(("units", "metres_per_unit", "label"), [("metric", 1.0, "m"), ("imperial", 0.3048, "ft")])
+def test_elevation_gain_tile_shows_the_climbing_done_and_still_to_come(session, tmp_path, units, metres_per_unit, label):
+    import re
+
+    s = session(settings=AppSettings(display_units=units, tile_selections=["elevation_gain"]))
+    s.load(_write_gpx(tmp_path, _constant_grade(5.0)))
+    s.start()
+
+    s.ride(60.0, 300)
+
+    ride = s.controller.course_ride
+    text = s.screen._tile_by_key["elevation_gain"].value_label.text()
+    match = re.fullmatch(rf"(\d+) {label} · (\d+) {label} to go", text)
+    assert match, text
+    gained, to_go = (int(value) * metres_per_unit for value in match.groups())
+    climbed_m = 0.05 * ride.distance_m
+    assert climbed_m > 5.0
+    assert gained == pytest.approx(climbed_m, abs=metres_per_unit)
+    assert to_go == pytest.approx(0.05 * ride.course.total_distance_m - climbed_m, abs=metres_per_unit)
 
 
 def test_recorded_speed_is_the_virtual_speed(session, tmp_path):
@@ -758,7 +824,7 @@ def test_switching_a_course_ride_to_erg_holds_the_power_target(session, tmp_path
 # ── Tiles outside a course ────────────────────────────────────────────────────
 
 def test_speed_tile_shows_sensor_speed_outside_a_course(session):
-    s = session(settings=AppSettings(tile_selections=["speed", "distance"]))
+    s = session(settings=AppSettings(tile_selections=["speed", "distance", "elevation_gain"]))
     s.load(DATA_DIR / "step_only.mrc")
     s.start()
 
@@ -767,6 +833,7 @@ def test_speed_tile_shows_sensor_speed_outside_a_course(session):
 
     assert s.screen._tile_by_key["speed"].value_label.text() == "36.0 km/h"
     assert s.screen._tile_by_key["distance"].value_label.text() == "--"
+    assert s.screen._tile_by_key["elevation_gain"].value_label.text() == "--"
 
 
 def test_speed_tile_is_blank_without_a_speed_reading(session):

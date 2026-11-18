@@ -23,7 +23,10 @@ from opencycletrainer.core.course_ride import CourseRide
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaPipeline, DfaRecord
 from opencycletrainer.core.energy_tracker import ExternalEnergyTracker
 from opencycletrainer.core.fit_exporter import FitExporter, FitExportSample
-from opencycletrainer.core.gpx_parser import GPXParseError, parse_gpx_file
+from opencycletrainer.core.course_files import CourseFileError
+from opencycletrainer.core.fit_course_parser import parse_fit_course_file
+from opencycletrainer.core.gpx_parser import parse_gpx_file
+from opencycletrainer.core.tcx_parser import parse_tcx_file
 from opencycletrainer.core.interval_stats import IntervalStats
 from opencycletrainer.core.pedaling_detector import PedalingDetector
 from opencycletrainer.core.power_history import PowerHistory
@@ -61,10 +64,11 @@ _PEDALING_STOPPED_PAUSE_SECONDS = 3.0
 _AUTO_START_PEDALING_SECONDS = 3.0
 _RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
 
-_COURSE_FILE_SUFFIX = ".gpx"
+_COURSE_PARSERS = {".gpx": parse_gpx_file, ".tcx": parse_tcx_file, ".fit": parse_fit_course_file}
 _ZWO_FILE_SUFFIX = ".zwo"
 _LOAD_FILE_FILTER = (
-    "Workouts and Courses (*.mrc *.zwo *.gpx);;Workout Files (*.mrc *.zwo);;GPX Courses (*.gpx)"
+    "Workouts and Courses (*.mrc *.zwo *.gpx *.tcx *.fit);;Workout Files (*.mrc *.zwo);;"
+    "Courses (*.gpx *.tcx *.fit)"
 )
 _OPEN_ENDED_RIDE_SECONDS = 86400
 """Nominal length of a ride with no planned end (a free ride or a course)."""
@@ -206,6 +210,7 @@ class WorkoutSessionController(QObject):
             dfa_source=self.latest_dfa_record,
             speed_source=self._current_speed_mps,
             distance_source=self._course_distance_m,
+            elevation_gain_source=self._course_elevation_gain_m,
         )
 
         self._timer = QTimer(self)
@@ -381,6 +386,17 @@ class WorkoutSessionController(QObject):
         """Distance ridden along the course, or None outside a course ride."""
         return self._course_ride.distance_m if self._course_ride is not None else None
 
+    def _course_elevation_gain_m(self) -> tuple[float, float] | None:
+        """Climbing done so far and still to come on the course, or None outside a course ride."""
+        ride = self._course_ride
+        if ride is None:
+            return None
+        course = ride.course
+        return (
+            course.ascent_between(0.0, ride.distance_m),
+            course.ascent_between(ride.distance_m, course.total_distance_m),
+        )
+
     def _wire_screen_actions(self) -> None:
         self._screen.start_button.clicked.connect(self._start_workout)
         self._screen.pause_button.clicked.connect(self._pause_workout)
@@ -427,9 +443,9 @@ class WorkoutSessionController(QObject):
         self._load_workout_from_file(file_path)
 
     def _load_workout_from_file(self, path: Path) -> None:
-        """Load a workout (.mrc, .zwo) or a course (.gpx), chosen by the file's extension."""
+        """Load a workout (.mrc, .zwo) or a course (.gpx, .tcx, .fit), chosen by the file's extension."""
         self._screen.clear_alert()
-        if path.suffix.lower() == _COURSE_FILE_SUFFIX:
+        if path.suffix.lower() in _COURSE_PARSERS:
             self._load_course_from_file(path)
             return
         ftp = max(1, int(self._settings.ftp))
@@ -463,10 +479,10 @@ class WorkoutSessionController(QObject):
         save_settings(self._settings, self._settings_path)
 
     def _load_course_from_file(self, path: Path) -> None:
-        """Parse a GPX file, ask how to ride it, and ready a ride along the chosen course."""
+        """Parse a course file, ask how to ride it, and ready a ride along the chosen course."""
         try:
-            course = parse_gpx_file(path)
-        except GPXParseError as exc:
+            course = _COURSE_PARSERS[path.suffix.lower()](path)
+        except CourseFileError as exc:
             self._screen.show_alert(f"Could not load '{path.name}' — {exc}")
             return
         except (OSError, UnicodeDecodeError):

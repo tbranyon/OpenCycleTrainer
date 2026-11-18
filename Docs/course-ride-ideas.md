@@ -42,22 +42,28 @@ their cache headers, and never download tiles in bulk ahead of time.
    whole route beside the chart, ridden road in green and any left in red. Its tiles are
    fetched when the ride ends and the image is written once they arrive (or after a few
    seconds with those that did; straight away if the app is closing).
-5. **Later.** Show points of interest if FIT course import happens.
+5. **Points of interest.** *(Done in v0.16.0.)* POIs from the course file show as small icons
+   on the map (shaped and coloured by kind) for the lap being ridden; hovering one shows
+   what the file says about it and how far ahead it is.
 
-## Import FIT for POIs?
+## Course files and POIs
 
-- FIT course files carry course points (climbs, sprints, food, turns) that GPX usually
-  doesn't. fit-tool is already a dependency and can read them.
-- Would need to decide how POIs show up: markers on the elevation profile, the map, or a
-  "next POI in X km" tile.
-- Could also accept a FIT course as the course itself, not just for POIs.
+*(Done in v0.16.0.)* Courses load from GPX, TCX and FIT files (TCX and FIT activities work
+too). Distances are measured from the coordinates for every format. Points of interest come
+from TCX and FIT course points (turn cues are left out) and from GPX waypoints within
+100 m of the route. They show as subtle markers on the elevation profile and icons on the
+map. Hovering one shows its name, kind and notes (FIT has no notes), then its distance along
+the course and how far ahead of the rider it is.
 
-## Show / record elevation gain
+Still open:
 
-- Total ascent and descent are already written to the FIT session, but nothing on screen shows
-  them.
-- Ideas: an elevation gained tile (and gain remaining on the course), and climbing totals in the
-  end-of-ride summary.
+- A "next POI in X km" tile.
+- Turn cues, if there is ever a use for them indoors.
+
+## Elevation gain
+
+*(Done in v0.16.0.)* An "Elevation Gain" tile shows the climbing done and still to come on
+a course ride. Still open: climbing totals in the end-of-ride summary.
 
 ## Switch surfaces mid course (manual)
 

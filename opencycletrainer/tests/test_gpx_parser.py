@@ -186,3 +186,33 @@ def test_track_that_never_moves_is_rejected():
 
     with pytest.raises(GPXParseError):
         parse_gpx_text(_wrap(points))
+
+
+# ── Waypoints ─────────────────────────────────────────────────────────────────
+
+def _with_waypoints(waypoints_xml: str) -> str:
+    return _wrap(_northward_track([100.0, 101.0, 102.0, 103.0, 104.0])).replace(
+        "<trk>", waypoints_xml + "<trk>", 1
+    )
+
+
+def test_waypoints_on_the_route_become_points_of_interest_where_the_route_passes_them():
+    course = parse_gpx_text(_with_waypoints(
+        '<wpt lat="45.0025" lon="7.0003"><name>Fountain</name><desc>Cold water</desc><type>Water</type></wpt>'
+    ))
+
+    (poi,) = course.pois
+    assert (poi.name, poi.notes, poi.kind) == ("Fountain", "Cold water", "Water")
+    assert poi.distance_m == pytest.approx(2.5 * MILLIDEGREE_LATITUDE_METERS, rel=1e-3)
+
+
+def test_waypoints_far_from_the_route_are_left_out():
+    course = parse_gpx_text(_with_waypoints('<wpt lat="45.002" lon="7.02"><name>Castle</name></wpt>'))
+
+    assert course.pois == ()
+
+
+def test_a_waypoint_without_a_name_is_still_a_point_of_interest():
+    course = parse_gpx_text(_with_waypoints('<wpt lat="45.001" lon="7.0"></wpt>'))
+
+    assert [(poi.name, poi.notes) for poi in course.pois] == [("", "")]

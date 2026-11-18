@@ -5,7 +5,9 @@ import os
 import numpy as np
 import pytest
 
-from opencycletrainer.core.course_model import Course, CoursePoint
+from dataclasses import replace
+
+from opencycletrainer.core.course_model import Course, CoursePoi, CoursePoint
 from opencycletrainer.ui.workout_chart import WorkoutChartWidget, course_grade_band
 
 
@@ -499,3 +501,75 @@ def test_the_jump_between_laps_is_not_coloured_as_a_climb():
     widget.load_course(climb.laps(2))
 
     assert _band_segments(widget, "very_steep") == [(0.0, 500.0), (500.0, 1000.0)]
+
+
+# ── Points of interest ────────────────────────────────────────────────────────
+
+def _course_with_pois() -> Course:
+    return replace(
+        _course(),
+        pois=(CoursePoi(500.0, name="Café", notes="Cake"), CoursePoi(2000.0, kind="Summit")),
+    )
+
+
+def hover(plot_widget, x: float, y: float) -> str:
+    """Move the mouse onto (x, y) of *plot_widget*'s data and return the tooltip it shows.
+
+    The move is sent straight to the plot: Qt sends no move at all when the pointer is
+    already at that spot of the screen, as it is when an earlier test hovered there.
+    """
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    view_box = plot_widget.getViewBox()
+    viewport = plot_widget.viewport()
+    local = QPointF(plot_widget.mapFromScene(view_box.mapViewToScene(QPointF(x, y))))
+    move = QMouseEvent(
+        QEvent.Type.MouseMove, local, QPointF(viewport.mapToGlobal(local.toPoint())),
+        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(viewport, move)
+    _qapp().processEvents()
+    return view_box.toolTip()
+
+
+def test_points_of_interest_are_marked_on_the_profile():
+    _qapp()
+    widget = WorkoutChartWidget()
+
+    widget.load_course(_course_with_pois())
+
+    xs, ys = widget._course_pois.getData()
+    assert list(xs) == [500.0, 2000.0]
+    assert list(ys) == [100.0, 180.0]
+
+
+@pytest.mark.parametrize("units", ["metric", "imperial"])
+def test_hovering_a_point_of_interest_shows_its_details_and_how_far_ahead_it_is(units):
+    from opencycletrainer.ui.ride_format import format_poi_tooltip
+
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.resize(900, 600)
+    widget.show()
+    course = _course_with_pois()
+    widget.load_course(course)
+    widget.set_display_units(units)
+    widget.set_course_position(800.0)
+    _qapp().processEvents()
+
+    tip = hover(widget._course_plot, 2000.0, 180.0)
+
+    assert tip == format_poi_tooltip(course.pois[1], 800.0, units)
+
+
+def test_clearing_the_course_removes_its_points_of_interest():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_course_with_pois())
+
+    widget.clear_course()
+
+    xs, _ = widget._course_pois.getData()
+    assert len(xs) == 0

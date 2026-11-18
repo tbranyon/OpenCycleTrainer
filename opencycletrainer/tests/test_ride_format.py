@@ -68,3 +68,29 @@ def test_weight_unit_label_and_size():
     assert weight_unit_label(DISPLAY_UNITS_IMPERIAL) == "lb"
     assert kilograms_per_weight_unit(DISPLAY_UNITS_METRIC) == 1.0
     assert kilograms_per_weight_unit(DISPLAY_UNITS_IMPERIAL) == pytest.approx(0.45359237)
+
+
+# ── Point of interest tooltips ────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("poi_kwargs", "rider_m", "units", "expected"),
+    [
+        (
+            dict(name="Col du Test", kind="Summit", notes="Views both ways"),
+            9250.0, DISPLAY_UNITS_METRIC,
+            "Col du Test\nSummit\nViews both ways\nAt 12.40 km · 3.15 km ahead",
+        ),
+        (dict(kind="Water"), 0.0, DISPLAY_UNITS_METRIC, "Water\nAt 12.40 km · 12.40 km ahead"),
+        (dict(name="Summit", kind="Summit"), 13000.0, DISPLAY_UNITS_METRIC, "Summit\nAt 12.40 km · passed"),
+        (dict(), 2340.0, DISPLAY_UNITS_METRIC, "At 12.40 km · 10.06 km ahead"),
+        (dict(), 0.0, DISPLAY_UNITS_IMPERIAL, "At 7.71 mi · 7.71 mi ahead"),
+    ],
+    ids=["details", "kind-only", "passed", "no-details", "imperial"],
+)
+def test_poi_tooltip_shows_its_details_then_where_it_is(poi_kwargs, rider_m, units, expected):
+    from opencycletrainer.core.course_model import CoursePoi
+    from opencycletrainer.ui.ride_format import format_poi_tooltip
+
+    poi = CoursePoi(distance_m=12_400.0, **poi_kwargs)
+
+    assert format_poi_tooltip(poi, rider_m, units) == expected

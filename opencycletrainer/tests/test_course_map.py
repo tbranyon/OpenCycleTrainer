@@ -6,7 +6,9 @@ import os
 import numpy as np
 import pytest
 
-from opencycletrainer.core.course_model import Course, CoursePoint
+from dataclasses import replace
+
+from opencycletrainer.core.course_model import Course, CoursePoi, CoursePoint
 from opencycletrainer.ui.course_map import (
     DEFAULT_FOLLOW_ZOOM,
     MAX_FOLLOW_ZOOM,
@@ -635,3 +637,65 @@ def test_switching_tile_source_redraws_the_map_from_the_new_server(monkeypatch):
 
     widget.set_tile_source(CYCLOSM)
     assert len(created) == 1
+
+
+# ── Points of interest ────────────────────────────────────────────────────────
+
+def _course_with_pois() -> Course:
+    return replace(_course(), pois=(CoursePoi(150.0, name="Fountain", kind="Water"), CoursePoi(700.0)))
+
+
+def test_points_of_interest_are_shown_on_the_map_where_they_are():
+    widget = _loaded(_course_with_pois())
+
+    assert _series(widget._poi_icons) == pytest.approx([_xy(45.0015, 7.0), _xy(45.004, 7.0042)])
+
+
+def test_clearing_the_map_removes_its_points_of_interest():
+    widget = _loaded(_course_with_pois())
+
+    widget.clear()
+
+    assert _series(widget._poi_icons) == []
+
+
+@pytest.mark.parametrize("units", ["metric", "imperial"])
+def test_hovering_a_map_icon_shows_the_point_of_interest(units):
+    from opencycletrainer.ui.ride_format import format_poi_tooltip
+
+    from .test_course_chart import hover
+
+    course = _course_with_pois()
+    widget = _loaded(course)
+    widget.set_display_units(units)
+    widget.show()
+    widget.set_following(False)
+    widget.set_position(100.0)
+    _qapp().processEvents()
+
+    tip = hover(widget._plot, *_xy(45.0015, 7.0))
+
+    assert tip == format_poi_tooltip(course.pois[0], 100.0, units)
+
+
+def test_the_workout_screen_shows_map_tooltips_in_the_riders_units():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _screen(AppSettings(display_units="imperial"))
+    screen.load_course_chart(_course_with_pois())
+
+    assert screen.course_map_panel.map_widget.display_units == "imperial"
+    screen.apply_settings(AppSettings(display_units="metric"))
+    assert screen.course_map_panel.map_widget.display_units == "metric"
+
+
+def test_a_lapped_course_shows_each_point_of_interest_once_for_the_lap_being_ridden():
+    lapped = _course_with_pois().laps(2)
+    widget = _loaded(lapped)
+    lap_length = _course().total_distance_m
+
+    widget.set_position(lap_length + 50.0)
+
+    icons = widget._poi_icons
+    assert _series(icons) == pytest.approx([_xy(45.0015, 7.0), _xy(45.004, 7.0042)])
+    assert [spot.data().distance_m for spot in icons.points()] == [lap_length + 150.0, lap_length + 700.0]

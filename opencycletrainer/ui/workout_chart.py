@@ -18,6 +18,7 @@ from opencycletrainer.storage.settings import DEFAULT_COURSE_ZOOM_SPAN, DISPLAY_
 from .ride_format import (
     distance_unit_label,
     elevation_unit_label,
+    format_poi_tooltip,
     meters_per_distance_unit,
     meters_per_elevation_unit,
 )
@@ -79,6 +80,12 @@ _COURSE_DOT_SIZE = 8                      # px; small marker on the profile at t
 _COURSE_DOT_PEN = (30, 41, 59)            # dark slate outline
 _COURSE_DOT_BRUSH = (255, 255, 255)
 _COURSE_GRADE_PEN_WIDTH = 3
+# Points of interest: small, muted markers on the profile that name themselves on hover.
+_COURSE_POI_SYMBOL = "t"                  # a small downward triangle pointing at the road
+_COURSE_POI_SIZE = 9
+_COURSE_POI_HOVER_SIZE = 13
+_COURSE_POI_PEN = (255, 255, 255, 200)
+_COURSE_POI_BRUSH = (71, 85, 105, 170)    # translucent slate
 # Climbs coloured by grade: (band, lowest grade %, highest grade %, colour). Each band
 # includes its upper bound; grades below the first band keep the plain profile colour.
 GRADE_BAND_MODERATE = "moderate"
@@ -329,6 +336,11 @@ class WorkoutChartWidget(QWidget):
         self._course_window_start_m = 0.0
         self._course_pos.setValue(0.0)
         self._move_course_dot(0.0)
+        self._course_pois.setData(
+            [poi.distance_m for poi in course.pois],
+            [course.elevation_at(poi.distance_m) for poi in course.pois],
+            data=list(course.pois),
+        )
         self._redraw_course_view()
         self._apply_plot_layout()
 
@@ -366,9 +378,14 @@ class WorkoutChartWidget(QWidget):
             self._course_ridden.setData([], [])
             self._course_pos.setValue(0.0)
             self._course_dot.setData([], [])
+            self._course_pois.setData([], [])
             for item in self._course_grade_items.values():
                 item.setData([], [])
         self._apply_plot_layout()
+
+    def _course_poi_tip(self, x: float, y: float, data) -> str:  # noqa: ARG002 (pyqtgraph's tip signature)
+        """Hover text for a point of interest, with how far ahead of the rider it is now."""
+        return format_poi_tooltip(data, self.course_position_m, self._display_units)
 
     def _course_zoom_span_m(self) -> float:
         return self._course_zoom_span * meters_per_distance_unit(self._display_units)
@@ -505,9 +522,18 @@ class WorkoutChartWidget(QWidget):
             pen=pg.mkPen(color=_COURSE_DOT_PEN, width=1.5),
             brush=pg.mkBrush(color=_COURSE_DOT_BRUSH),
         )
+        self._course_pois = pg.ScatterPlotItem(
+            symbol=_COURSE_POI_SYMBOL,
+            size=_COURSE_POI_SIZE,
+            pen=pg.mkPen(color=_COURSE_POI_PEN, width=1),
+            brush=pg.mkBrush(color=_COURSE_POI_BRUSH),
+            hoverable=True,
+            hoverSize=_COURSE_POI_HOVER_SIZE,
+            tip=self._course_poi_tip,
+        )
         for item in (
             self._course_profile, self._course_ridden, *self._course_grade_items.values(),
-            self._course_pos, self._course_dot,
+            self._course_pos, self._course_pois, self._course_dot,
         ):
             self._course_plot.addItem(item)
         self._course_zoom_button = QToolButton(self._course_plot)

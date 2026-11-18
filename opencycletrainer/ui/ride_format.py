@@ -69,3 +69,21 @@ def format_grade_percent(grade_percent: float) -> str:
     if rounded == 0:
         return "0.0 %"
     return f"{rounded:+.1f} %"
+
+
+def format_poi_tooltip(poi, rider_distance_m: float, units: str = DISPLAY_UNITS_METRIC) -> str:
+    """Describe a course point of interest for its hover text.
+
+    Whatever the course file says about it (name, kind, notes) comes first, one per
+    line, then where it is: its distance along the course and how far ahead of the
+    rider it lies, or that it has been passed.
+    """
+    lines = [poi.name] if poi.name else []
+    if poi.kind and poi.kind.casefold() != poi.name.casefold():
+        lines.append(poi.kind)
+    if poi.notes:
+        lines.append(poi.notes)
+    ahead_m = poi.distance_m - rider_distance_m
+    where = format_distance(ahead_m, units) + " ahead" if ahead_m >= 0.0 else "passed"
+    lines.append(f"At {format_distance(poi.distance_m, units)} · {where}")
+    return "\n".join(lines)

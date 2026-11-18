@@ -4,8 +4,8 @@ from collections.abc import Callable
 
 from opencycletrainer.core.dfa.pipeline import DfaRecord
 
-from .ride_format import format_distance, format_speed
-from .tile_config import DISTANCE_TILE_KEY, SPEED_TILE_KEY
+from .ride_format import format_distance, format_elevation, format_speed
+from .tile_config import DISTANCE_TILE_KEY, ELEVATION_GAIN_TILE_KEY, SPEED_TILE_KEY
 
 
 class TileComputation:
@@ -24,6 +24,7 @@ class TileComputation:
         dfa_source: Callable[[], DfaRecord | None] | None = None,
         speed_source: Callable[[], float | None] | None = None,
         distance_source: Callable[[], float | None] | None = None,
+        elevation_gain_source: Callable[[], tuple[float, float] | None] | None = None,
     ) -> None:
         self._power_history = power_history
         self._cadence_history = cadence_history
@@ -36,6 +37,7 @@ class TileComputation:
         self._dfa_source = dfa_source
         self._speed_source = speed_source
         self._distance_source = distance_source
+        self._elevation_gain_source = elevation_gain_source
         self.kj_workout_source: str = "calculated"
 
     def compute(self, key: str, snapshot, settings) -> str:  # noqa: ARG002
@@ -105,6 +107,13 @@ class TileComputation:
         if key == DISTANCE_TILE_KEY:
             distance = self._distance_source() if self._distance_source is not None else None
             return format_distance(distance, settings.display_units) if distance is not None else "--"
+        if key == ELEVATION_GAIN_TILE_KEY:
+            gain = self._elevation_gain_source() if self._elevation_gain_source is not None else None
+            if gain is None:
+                return "--"
+            gained_m, to_go_m = gain
+            units = settings.display_units
+            return f"{format_elevation(gained_m, units)} · {format_elevation(to_go_m, units)} to go"
         return "--"
 
     def available_kj_sources(self) -> list[str]:

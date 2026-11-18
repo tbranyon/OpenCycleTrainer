@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 GRADE_WINDOW_METERS = 50.0
 """Length of road the reported grade is averaged over, which smooths elevation noise."""
@@ -21,18 +21,35 @@ class CoursePoint:
 
 
 @dataclass(frozen=True)
+class CoursePoi:
+    """A point of interest along a course, such as a summit, a water stop or a hazard.
+
+    *kind* is what the course file calls it (e.g. "Summit"), empty for a generic point;
+    *name* and *notes* are whatever the file says about it, and may be empty.
+    """
+
+    distance_m: float
+    name: str = ""
+    notes: str = ""
+    kind: str = ""
+
+
+@dataclass(frozen=True)
 class Course:
     """A distance-based route with an elevation profile, ridden from start to end.
 
     *lap_starts_m* marks where each lap begins; a plain course is a single lap. Where
     one lap hands over to the next, the finish of one and the start of the next may
     share a distance: the rider jumps straight back to the start, elevation and all.
+    *pois* are the course's points of interest, kept in order along it.
     """
 
     name: str
     points: tuple[CoursePoint, ...]
     lap_starts_m: tuple[float, ...] = (0.0,)
+    pois: tuple[CoursePoi, ...] = ()
     _distances: tuple[float, ...] = field(init=False, repr=False, compare=False)
+    _ascent_to_point: tuple[float, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if len(self.points) < _MIN_COURSE_POINTS:
@@ -51,6 +68,12 @@ class Course:
         if laps[-1] >= distances[-1]:
             raise ValueError("Every lap must begin before the end of the course.")
         object.__setattr__(self, "_distances", distances)
+        climbed = [0.0]
+        for earlier, later in zip(self.points, self.points[1:]):
+            gain = max(0.0, later.elevation_m - earlier.elevation_m) if later.distance_m > earlier.distance_m else 0.0
+            climbed.append(climbed[-1] + gain)
+        object.__setattr__(self, "_ascent_to_point", tuple(climbed))
+        object.__setattr__(self, "pois", tuple(sorted(self.pois, key=lambda poi: poi.distance_m)))
 
     @property
     def total_distance_m(self) -> float:
@@ -67,11 +90,26 @@ class Course:
     @property
     def total_ascent_m(self) -> float:
         """Sum of every elevation gain along the course; the jump back to the start between laps is not climbing."""
-        return sum(
-            max(0.0, later.elevation_m - earlier.elevation_m)
-            for earlier, later in zip(self.points, self.points[1:])
-            if later.distance_m > earlier.distance_m
-        )
+        return self.ascent_between(self._distances[0], self._distances[-1])
+
+    def ascent_between(self, start_m: float, end_m: float) -> float:
+        """Return the climbing from *start_m* to *end_m* along the course, without the jumps between laps."""
+        first = min(max(float(start_m), self._distances[0]), self._distances[-1])
+        last = min(max(float(end_m), first), self._distances[-1])
+        if last <= first:
+            return 0.0
+        return self._ascent_to(last, from_before=True) - self._ascent_to(first)
+
+    def _ascent_to(self, distance_m: float, from_before: bool = False) -> float:
+        """Return the climbing from the start of the course to *distance_m*.
+
+        Within a segment the road climbs or falls evenly, so the part of it ridden adds
+        whatever it rises above the segment's first point.
+        """
+        upper = self._upper_index(distance_m, from_before)
+        earlier = self.points[upper - 1]
+        rise = self.elevation_at(distance_m, from_before=from_before) - earlier.elevation_m
+        return self._ascent_to_point[upper - 1] + max(0.0, rise)
 
     @property
     def min_elevation_m(self) -> float:
@@ -154,6 +192,11 @@ class Course:
             name=self.name if name is None else name,
             points=tuple(points),
             lap_starts_m=(0.0,) + lap_changes,
+            pois=tuple(
+                replace(poi, distance_m=poi.distance_m - start)
+                for poi in self.pois
+                if start <= poi.distance_m <= end
+            ),
         )
 
     def laps(self, count: int, name: str | None = None) -> Course:
@@ -168,15 +211,18 @@ class Course:
         lap_length_m = self.total_distance_m - first_m
         points = list(self.points)
         lap_starts = list(self.lap_starts_m)
+        pois = list(self.pois)
         for lap in range(1, count):
             offset_m = lap * lap_length_m
             points.extend(_shifted(point, offset_m) for point in self.points)
             lap_starts.append(first_m + offset_m)
             lap_starts.extend(lap_start + offset_m for lap_start in self.lap_starts_m[1:])
+            pois.extend(replace(poi, distance_m=poi.distance_m + offset_m) for poi in self.pois)
         return Course(
             name=self.name if name is None else name,
             points=tuple(points),
             lap_starts_m=tuple(lap_starts),
+            pois=tuple(pois),
         )
 
     def _point_at(self, distance_m: float, offset_m: float, from_before: bool = False) -> CoursePoint:
@@ -198,14 +244,18 @@ class Course:
         with *from_before* the pair before it.
         """
         clamped = min(max(float(distance_m), self._distances[0]), self._distances[-1])
-        if from_before:
-            upper = max(1, min(bisect_left(self._distances, clamped), len(self.points) - 1))
-        else:
-            upper = min(bisect_right(self._distances, clamped), len(self.points) - 1)
+        upper = self._upper_index(clamped, from_before)
         earlier = self.points[upper - 1]
         later = self.points[upper]
         ratio = (clamped - earlier.distance_m) / (later.distance_m - earlier.distance_m)
         return earlier, later, ratio
+
+    def _upper_index(self, distance_m: float, from_before: bool) -> int:
+        """Return the index of the point that ends the segment *distance_m* lies in (see _bracket)."""
+        clamped = min(max(float(distance_m), self._distances[0]), self._distances[-1])
+        if from_before:
+            return max(1, min(bisect_left(self._distances, clamped), len(self.points) - 1))
+        return max(1, min(bisect_right(self._distances, clamped), len(self.points) - 1))
 
 
 def _shifted(point: CoursePoint, by_m: float) -> CoursePoint:

@@ -11,9 +11,11 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QToolButton, QWidget
 
-from opencycletrainer.core.course_model import Course
+from opencycletrainer.core.course_model import Course, CoursePoi
+from opencycletrainer.storage.settings import DISPLAY_UNITS_METRIC
 
 from . import map_tiles
+from .ride_format import format_poi_tooltip
 from .map_tiles import (
     OPENSTREETMAP,
     TileKey,
@@ -46,6 +48,19 @@ _MARKER_SIZE = 10
 _START_BRUSH = (34, 197, 94)
 _FINISH_BRUSH = (15, 23, 42)
 _MARKER_PEN = (255, 255, 255)
+
+# Points of interest: a small icon each, shaped and coloured by what the file calls them.
+_POI_ICON_SIZE = 14
+_POI_ICON_HOVER_SIZE = 18
+_POI_ICON_PEN = (255, 255, 255)
+_POI_ICON_STYLES: tuple[tuple[tuple[str, ...], str, tuple[int, int, int]], ...] = (
+    (("summit", "climb"), "t1", (234, 88, 12)),                      # orange peak
+    (("valley",), "t", (234, 88, 12)),
+    (("water", "drink", "food", "gel", "aid", "store", "service",
+      "rest", "toilet", "shower", "shelter", "campsite"), "o", (37, 99, 235)),  # blue: supplies and stops
+    (("danger", "alert", "obstacle", "steep", "curve", "crossing"), "d", (202, 138, 4)),  # amber: take care
+)
+_POI_ICON_DEFAULT_STYLE = ("s", (124, 58, 237))                       # violet: anything else
 
 _BACKGROUND_LIGHT = (241, 245, 249)
 _BACKGROUND_DARK = (30, 41, 59)
@@ -117,6 +132,8 @@ class CourseMapWidget(QWidget):
         self._rider_xy: tuple[float, float] = (0.0, 0.0)
         self._following = True
         self._zoom_level = DEFAULT_FOLLOW_ZOOM
+        self._display_units = DISPLAY_UNITS_METRIC
+        self._poi_lap: int | None = None
 
         self._plot = pg.PlotWidget()
         self._plot.hideAxis("left")
@@ -140,8 +157,16 @@ class CourseMapWidget(QWidget):
             pen=pg.mkPen(color=_RIDER_DOT_PEN, width=2),
             brush=pg.mkBrush(_RIDER_DOT_BRUSH),
         )
+        self._poi_icons = pg.ScatterPlotItem(
+            size=_POI_ICON_SIZE,
+            pen=pg.mkPen(_POI_ICON_PEN, width=1.5),
+            hoverable=True,
+            hoverSize=_POI_ICON_HOVER_SIZE,
+            tip=self._poi_tip,
+        )
         for item in (
-            self._ahead_item, self._ridden_item, self._start_marker, self._finish_marker, self._dot,
+            self._ahead_item, self._ridden_item, self._start_marker, self._finish_marker,
+            self._poi_icons, self._dot,
         ):
             self._plot.addItem(item)
 
@@ -181,6 +206,14 @@ class CourseMapWidget(QWidget):
         """Tile zoom level used while following the rider."""
         return self._zoom_level
 
+    @property
+    def display_units(self) -> str:
+        """Units ("metric" or "imperial") the points of interest give their distances in."""
+        return self._display_units
+
+    def set_display_units(self, units: str) -> None:
+        self._display_units = units
+
     def load_course(self, course: Course) -> None:
         """Draw *course*'s route with the rider at its start; a course without coordinates draws nothing."""
         self.clear()
@@ -206,8 +239,10 @@ class CourseMapWidget(QWidget):
         self._ys = np.array([], dtype=float)
         self._lap_bounds = []
         self._position_m = 0.0
+        self._poi_lap = None
         for item in (
-            self._ahead_item, self._ridden_item, self._start_marker, self._finish_marker, self._dot,
+            self._ahead_item, self._ridden_item, self._start_marker, self._finish_marker,
+            self._poi_icons, self._dot,
         ):
             item.setData([], [])
         self._show_tiles([])
@@ -223,7 +258,10 @@ class CourseMapWidget(QWidget):
         self._rider_xy = mercator_xy(latitude, longitude)
         self._dot.setData([self._rider_xy[0]], [self._rider_xy[1]])
 
-        first, past = self._lap_bounds[course.lap_number_at(distance) - 1]
+        lap = course.lap_number_at(distance)
+        if lap != self._poi_lap:
+            self._show_pois(course, lap)
+        first, past = self._lap_bounds[lap - 1]
         lap_distances = self._distances[first:past]
         split = first + int(np.searchsorted(lap_distances, distance, side="right"))
         rider_x, rider_y = self._rider_xy
@@ -257,6 +295,27 @@ class CourseMapWidget(QWidget):
             rider=self._rider_xy,
             tile_source=self._tiles.source,
         )
+
+    def _show_pois(self, course: Course, lap: int) -> None:
+        """Put an icon on each point of interest of the lap being ridden (laps share the road)."""
+        self._poi_lap = lap
+        starts = course.lap_starts_m
+        lap_start = starts[lap - 1]
+        lap_end = starts[lap] if lap < len(starts) else course.total_distance_m
+        pois = [
+            poi for poi in course.pois
+            if lap_start <= poi.distance_m < lap_end or (lap == len(starts) and poi.distance_m == lap_end)
+        ]
+        spots = []
+        for poi in pois:
+            latitude, longitude = course.position_at(poi.distance_m)
+            x, y = mercator_xy(latitude, longitude)
+            symbol, color = _poi_icon_style(poi)
+            spots.append({"pos": (x, y), "data": poi, "symbol": symbol, "brush": pg.mkBrush(color)})
+        self._poi_icons.setData(spots=spots)
+
+    def _poi_tip(self, x: float, y: float, data: CoursePoi) -> str:  # noqa: ARG002 (pyqtgraph's tip signature)
+        return format_poi_tooltip(data, self._position_m, self._display_units)
 
     def set_following(self, following: bool) -> None:
         """Follow the rider at the current zoom level, or show the whole route."""
@@ -401,6 +460,15 @@ class CourseMapWidget(QWidget):
         return bounds
 
 
+def _poi_icon_style(poi: CoursePoi) -> tuple[str, tuple[int, int, int]]:
+    """Return the icon (symbol, colour) for a point of interest, from what kind of point it is."""
+    kind = poi.kind.casefold()
+    for keywords, symbol, color in _POI_ICON_STYLES:
+        if any(keyword in kind for keyword in keywords):
+            return symbol, color
+    return _POI_ICON_DEFAULT_STYLE
+
+
 def _item_xy(item: pg.PlotDataItem) -> tuple[np.ndarray, np.ndarray]:
     """Return a drawn line's points as (xs, ys) arrays, empty when nothing is drawn."""
     xs, ys = item.getData()
@@ -471,6 +539,9 @@ class CourseMapPanel(QWidget):
 
     def set_tile_source(self, source: TileSource) -> None:
         self.map_widget.set_tile_source(source)
+
+    def set_display_units(self, units: str) -> None:
+        self.map_widget.set_display_units(units)
 
     def apply_color_theme(self, color_theme: str) -> None:
         self.map_widget.apply_color_theme(color_theme)
