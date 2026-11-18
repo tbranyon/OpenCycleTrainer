@@ -86,6 +86,18 @@ DEFAULT_COURSE_ZOOM_SPAN = 1.0
 MIN_COURSE_ZOOM_SPAN = 0.1
 MAX_COURSE_ZOOM_SPAN = 50.0
 
+MAP_TILE_SOURCE_OPENSTREETMAP = "openstreetmap"
+MAP_TILE_SOURCE_CYCLOSM = "cyclosm"
+MAP_TILE_SOURCE_OPENTOPOMAP = "opentopomap"
+MAP_TILE_SOURCE_THUNDERFOREST_CYCLE = "thunderforest_cycle"
+DEFAULT_MAP_TILE_SOURCE = MAP_TILE_SOURCE_OPENSTREETMAP
+SUPPORTED_MAP_TILE_SOURCES = (
+    MAP_TILE_SOURCE_OPENSTREETMAP,
+    MAP_TILE_SOURCE_CYCLOSM,
+    MAP_TILE_SOURCE_OPENTOPOMAP,
+    MAP_TILE_SOURCE_THUNDERFOREST_CYCLE,
+)
+
 
 def _clamped_float(raw: Any, default: float, minimum: float, maximum: float) -> float:
     """Return *raw* as a float within [minimum, maximum], or *default* if it is not a number."""
@@ -94,6 +106,13 @@ def _clamped_float(raw: Any, default: float, minimum: float, maximum: float) -> 
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, value))
+
+
+def _restore_width_px(value: object) -> int | None:
+    """Return a stored pixel width, or None if it is missing or not a positive whole number."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _resolve_jog_persistence_mode(data: dict[str, Any]) -> JogPersistenceMode:
@@ -145,6 +164,14 @@ class AppSettings:
     course_zoom_span: float = DEFAULT_COURSE_ZOOM_SPAN
     # Colour climbs on the course profile by how steep they are.
     course_grade_colors: bool = True
+    # Show the map beside the plots on course rides, drawn over tiles from this source.
+    course_map_enabled: bool = True
+    map_tile_source: str = DEFAULT_MAP_TILE_SOURCE
+    # The rider's own key for Thunderforest tiles, which need one.
+    thunderforest_api_key: str = ""
+    # Map panel width the rider last dragged it to; None leaves it at its default share.
+    course_map_width_px: int | None = None
+    course_map_collapsed: bool = False
 
     @property
     def total_mass_kg(self) -> float:
@@ -177,6 +204,11 @@ class AppSettings:
             "road_surface": self.road_surface,
             "course_zoom_span": self.course_zoom_span,
             "course_grade_colors": self.course_grade_colors,
+            "course_map_enabled": self.course_map_enabled,
+            "map_tile_source": self.map_tile_source,
+            "thunderforest_api_key": self.thunderforest_api_key,
+            "course_map_width_px": self.course_map_width_px,
+            "course_map_collapsed": self.course_map_collapsed,
         }
 
     @classmethod
@@ -200,6 +232,10 @@ class AppSettings:
         road_surface = str(data.get("road_surface", DEFAULT_ROAD_SURFACE))
         if road_surface not in SUPPORTED_ROAD_SURFACES:
             road_surface = DEFAULT_ROAD_SURFACE
+
+        map_tile_source = str(data.get("map_tile_source", DEFAULT_MAP_TILE_SOURCE))
+        if map_tile_source not in SUPPORTED_MAP_TILE_SOURCES:
+            map_tile_source = DEFAULT_MAP_TILE_SOURCE
 
         return cls(
             ftp=int(data.get("ftp", 250)),
@@ -250,6 +286,11 @@ class AppSettings:
                 MAX_COURSE_ZOOM_SPAN,
             ),
             course_grade_colors=bool(data.get("course_grade_colors", True)),
+            course_map_enabled=bool(data.get("course_map_enabled", True)),
+            map_tile_source=map_tile_source,
+            thunderforest_api_key=str(data.get("thunderforest_api_key", "")).strip(),
+            course_map_width_px=_restore_width_px(data.get("course_map_width_px")),
+            course_map_collapsed=bool(data.get("course_map_collapsed", False)),
         )
 
 

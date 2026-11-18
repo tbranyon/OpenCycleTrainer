@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QToolButton, QWi
 from opencycletrainer.core.course_model import Course
 
 from . import map_tiles
-from .map_tiles import TileKey, tile_bounds, tile_zoom_for, visible_tiles
+from .map_tiles import OPENSTREETMAP, TileKey, TileSource, tile_bounds, tile_zoom_for, visible_tiles
 
 # Web Mercator (EPSG:3857), the projection map tiles are drawn in.
 _EARTH_RADIUS_M = 6_378_137.0
@@ -61,6 +61,7 @@ _ATTRIBUTION_STYLE = (
 _ATTRIBUTION_FONT_SIZE_DELTA = -2
 
 _COLLAPSE_BUTTON_WIDTH_PX = 16
+_QWIDGETSIZE_MAX = (1 << 24) - 1  # Qt's "no maximum" widget size
 _COLLAPSE_TEXT = "›"  # › tucks the map away to the right
 _EXPAND_TEXT = "‹"    # ‹ brings it back
 _COLLAPSE_TOOLTIP = "Hide the map"
@@ -83,14 +84,20 @@ class CourseMapWidget(QWidget):
     """Top-down map of a course: the road still to ride in red, the ridden road in green.
 
     The route is drawn from the course's own coordinates, so it needs no network; map
-    tiles from *tile_provider* (OpenStreetMap by default) are drawn underneath as they
-    arrive. The view either follows the rider at a tile zoom level or shows the whole route.
+    tiles from *tile_provider* (by default one for *tile_source*) are drawn underneath as
+    they arrive. The view either follows the rider at a tile zoom level or shows the whole route.
     """
 
-    def __init__(self, parent: QWidget | None = None, *, tile_provider=None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        tile_provider=None,
+        tile_source: TileSource = OPENSTREETMAP,
+    ) -> None:
         super().__init__(parent)
         self._tiles = (
-            tile_provider if tile_provider is not None else map_tiles.create_default_tile_provider()
+            tile_provider if tile_provider is not None else map_tiles.create_tile_provider(tile_source)
         )
         self._tiles.tile_ready.connect(self._on_tile_ready)
         self._tile_items: dict[TileKey, pg.ImageItem] = {}
@@ -234,6 +241,21 @@ class CourseMapWidget(QWidget):
         self._update_zoom_buttons()
         self._apply_view()
 
+    def set_tile_source(self, source: TileSource) -> None:
+        """Draw the map from *source*'s tiles instead, dropping the tiles already shown."""
+        if source == self._tiles.source:
+            return
+        self._tiles.set_wanted([])
+        self._tiles.tile_ready.disconnect(self._on_tile_ready)
+        for item in self._tile_items.values():
+            self._plot.removeItem(item)
+        self._tile_items.clear()
+        self._tiles = map_tiles.create_tile_provider(source)
+        self._tiles.tile_ready.connect(self._on_tile_ready)
+        self.attribution_label.setText(source.attribution)
+        self._place_overlay_buttons()
+        self._apply_view()
+
     def apply_color_theme(self, color_theme: str) -> None:
         """Match the map's background to the light or dark theme."""
         dark = color_theme == _COLOR_THEME_DARK
@@ -372,7 +394,13 @@ class CourseMapPanel(QWidget):
 
     collapsed_changed = Signal(bool)
 
-    def __init__(self, parent: QWidget | None = None, *, tile_provider=None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        tile_provider=None,
+        tile_source: TileSource = OPENSTREETMAP,
+    ) -> None:
         super().__init__(parent)
         self._collapsed = False
         self.collapse_button = QToolButton(self)
@@ -380,7 +408,7 @@ class CourseMapPanel(QWidget):
         self.collapse_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.collapse_button.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
-        self.map_widget = CourseMapWidget(self, tile_provider=tile_provider)
+        self.map_widget = CourseMapWidget(self, tile_provider=tile_provider, tile_source=tile_source)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -412,10 +440,15 @@ class CourseMapPanel(QWidget):
     def clear(self) -> None:
         self.map_widget.clear()
 
+    def set_tile_source(self, source: TileSource) -> None:
+        self.map_widget.set_tile_source(source)
+
     def apply_color_theme(self, color_theme: str) -> None:
         self.map_widget.apply_color_theme(color_theme)
 
     def _show_collapsed_state(self) -> None:
+        """Narrow the panel to its edge button while collapsed, so the plots take the room."""
+        self.setMaximumWidth(_COLLAPSE_BUTTON_WIDTH_PX if self._collapsed else _QWIDGETSIZE_MAX)
         self.map_widget.setVisible(not self._collapsed)
         self.collapse_button.setText(_EXPAND_TEXT if self._collapsed else _COLLAPSE_TEXT)
         self.collapse_button.setToolTip(_EXPAND_TOOLTIP if self._collapsed else _COLLAPSE_TOOLTIP)

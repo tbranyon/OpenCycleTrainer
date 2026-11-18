@@ -285,13 +285,21 @@ def test_panel_starts_expanded_and_collapses_to_its_button():
 _screens: list = []
 
 
-def _screen():
+def _screen(settings=None):
     _qapp()
     from opencycletrainer.storage.settings import AppSettings
     from opencycletrainer.ui.workout_screen import WorkoutScreen
 
-    screen = WorkoutScreen(settings=AppSettings())
+    screen = WorkoutScreen(settings=settings if settings is not None else AppSettings())
     _screens.append(screen)
+    return screen
+
+
+def _shown(screen):
+    """Lay the screen out at a desktop size, so the map's width is real."""
+    screen.resize(1200, 800)
+    screen.show()
+    _qapp().processEvents()
     return screen
 
 
@@ -356,12 +364,122 @@ def test_leaving_course_mode_hides_the_map():
     assert not screen.course_map_panel.map_widget.has_route
 
 
+def test_the_map_stays_hidden_when_turned_off_in_settings():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _screen(AppSettings(course_map_enabled=False))
+
+    screen.load_course_chart(_course())
+
+    assert not screen.course_map_panel.isVisibleTo(screen)
+    assert not screen.course_map_panel.has_route
+
+
+def test_turning_the_map_on_mid_ride_shows_the_rider_where_they_are():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _screen(AppSettings(course_map_enabled=False))
+    screen.load_course_chart(_course())
+    screen.update_course_position(650.0)
+
+    screen.apply_settings(AppSettings(course_map_enabled=True))
+
+    assert screen.course_map_panel.isVisibleTo(screen)
+    assert _series(screen.course_map_panel.map_widget._dot) == pytest.approx([_xy(45.004, 7.0035)])
+
+
+def test_turning_the_map_off_mid_ride_hides_it():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _screen()
+    screen.load_course_chart(_course())
+
+    screen.apply_settings(AppSettings(course_map_enabled=False))
+
+    assert not screen.course_map_panel.isVisibleTo(screen)
+    assert not screen.course_map_panel.has_route
+
+
+def test_turning_the_map_on_outside_a_course_ride_shows_nothing():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _screen(AppSettings(course_map_enabled=False))
+    screen.load_course_chart(_course())
+    screen.set_course_mode(False)
+
+    screen.apply_settings(AppSettings(course_map_enabled=True))
+
+    assert not screen.course_map_panel.isVisibleTo(screen)
+
+
+def test_the_map_uses_the_tile_source_chosen_in_settings():
+    from opencycletrainer.storage.settings import AppSettings
+    from opencycletrainer.ui.map_tiles import CYCLOSM, thunderforest_cycle
+
+    screen = _screen(AppSettings(map_tile_source="cyclosm"))
+    attribution = screen.course_map_panel.map_widget.attribution_label
+
+    assert attribution.text() == CYCLOSM.attribution
+
+    screen.apply_settings(
+        AppSettings(map_tile_source="thunderforest_cycle", thunderforest_api_key="abc123")
+    )
+
+    assert attribution.text() == thunderforest_cycle("abc123").attribution
+
+
+def test_the_map_opens_at_its_remembered_width():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _shown(_screen(AppSettings(course_map_width_px=300)))
+
+    screen.load_course_chart(_course())
+    _qapp().processEvents()
+
+    assert screen.course_map_panel.width() == 300
+
+
+def test_the_map_opens_collapsed_if_it_was_left_collapsed():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _screen(AppSettings(course_map_collapsed=True))
+
+    screen.load_course_chart(_course())
+
+    assert screen.course_map_panel.isVisibleTo(screen)
+    assert screen.course_map_panel.collapsed
+
+
+def test_the_map_keeps_the_width_the_rider_drags_it_to():
+    screen = _shown(_screen())
+    screen.load_course_chart(_course())
+    _qapp().processEvents()
+    splitter = screen.chart_splitter
+
+    splitter.moveSplitter(splitter.width() - 350, 1)
+    dragged_width = screen.course_map_panel.width()
+
+    assert screen.course_map_layout() == (dragged_width, False)
+
+    screen.course_map_panel.set_collapsed(True)
+    _qapp().processEvents()
+
+    assert screen.course_map_layout() == (dragged_width, True)
+    assert screen.course_map_panel.width() < dragged_width
+
+    screen.course_map_panel.set_collapsed(False)
+    _qapp().processEvents()
+
+    assert screen.course_map_panel.width() == dragged_width
+
+
 # ── Map tiles ─────────────────────────────────────────────────────────────────
 
 from PySide6.QtCore import QObject, Signal  # noqa: E402
 from PySide6.QtGui import QImage  # noqa: E402
 
 from opencycletrainer.ui.map_tiles import (  # noqa: E402
+    CYCLOSM,
     OPENSTREETMAP,
     tile_bounds,
     tile_zoom_for,
@@ -374,9 +492,9 @@ class _FakeTiles(QObject):
 
     tile_ready = Signal(int, int, int)
 
-    def __init__(self) -> None:
+    def __init__(self, source=OPENSTREETMAP) -> None:
         super().__init__()
-        self.source = OPENSTREETMAP
+        self.source = source
         self.wanted: list[tuple[int, int, int]] = []
         self._images: dict[tuple[int, int, int], QImage] = {}
 
@@ -508,3 +626,32 @@ def test_a_course_without_coordinates_asks_for_no_tiles():
     widget.load_course(course)
 
     assert tiles.wanted == []
+
+
+def test_switching_tile_source_redraws_the_map_from_the_new_server(monkeypatch):
+    from opencycletrainer.ui import map_tiles
+
+    widget, old_tiles = _tiled()
+    shown = list(old_tiles.wanted)
+    old_tiles.deliver(shown[0])
+    created: list[_FakeTiles] = []
+
+    def _create(source):
+        created.append(_FakeTiles(source))
+        return created[-1]
+
+    monkeypatch.setattr(map_tiles, "create_tile_provider", _create)
+
+    widget.set_tile_source(CYCLOSM)
+
+    (new_tiles,) = created
+    assert widget.attribution_label.text() == CYCLOSM.attribution
+    assert widget._tile_items == {}
+    assert old_tiles.wanted == []
+    assert new_tiles.wanted == shown
+
+    old_tiles.deliver(shown[1])
+    assert widget._tile_items == {}
+
+    widget.set_tile_source(CYCLOSM)
+    assert len(created) == 1

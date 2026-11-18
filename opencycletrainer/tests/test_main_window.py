@@ -289,3 +289,16 @@ def test_main_window_forwards_monotonic_receipt_time_with_power(qapp):
         assert bike_calls == [(220, 43.5)]
     finally:
         _close_window(window, qapp)
+
+
+def test_closing_the_window_remembers_the_course_map_layout(qapp, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    save_settings(AppSettings(), settings_path)
+    window = MainWindow(settings=AppSettings(), settings_path=settings_path, backend=MockDeviceBackend())
+    window.workout_screen.course_map_panel.set_collapsed(True)
+
+    _close_window(window, qapp)
+
+    saved = load_settings(settings_path)
+    assert saved.course_map_collapsed is True
+    assert saved.course_map_width_px is None

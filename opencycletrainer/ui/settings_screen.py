@@ -52,6 +52,10 @@ from opencycletrainer.storage.settings import (
     DISPLAY_UNITS_IMPERIAL,
     DISPLAY_UNITS_METRIC,
     JogPersistenceMode,
+    MAP_TILE_SOURCE_CYCLOSM,
+    MAP_TILE_SOURCE_OPENSTREETMAP,
+    MAP_TILE_SOURCE_OPENTOPOMAP,
+    MAP_TILE_SOURCE_THUNDERFOREST_CYCLE,
     MAX_BIKE_WEIGHT_KG,
     MAX_COURSE_ZOOM_SPAN,
     MAX_RIDER_WEIGHT_KG,
@@ -106,6 +110,22 @@ COURSE_ZOOM_SPAN_TOOLTIP = (
 COURSE_GRADE_COLORS_TOOLTIP = (
     "Colour climbs on the course profile: yellow from 3% to 6%, red above 6% to 10%, "
     "dark red above 10%"
+)
+
+COURSE_MAP_TOOLTIP = (
+    "Show a map of the route beside the plots on course rides. Map tiles are downloaded "
+    "as you ride; the route itself is drawn without internet"
+)
+MAP_TILE_SOURCE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("OpenStreetMap", MAP_TILE_SOURCE_OPENSTREETMAP),
+    ("CyclOSM (cycling)", MAP_TILE_SOURCE_CYCLOSM),
+    ("OpenTopoMap (terrain)", MAP_TILE_SOURCE_OPENTOPOMAP),
+    ("Thunderforest OpenCycleMap", MAP_TILE_SOURCE_THUNDERFOREST_CYCLE),
+)
+MAP_TILE_SOURCE_TOOLTIP = "Which map the route is drawn over"
+THUNDERFOREST_API_KEY_TOOLTIP = (
+    "Thunderforest maps need your own API key, free for hobby use from "
+    "thunderforest.com. Without one the map uses OpenStreetMap"
 )
 
 SPINBOX_MAX_WIDTH = 100
@@ -432,6 +452,28 @@ class SettingsScreen(QWidget):
         self.course_zoom_span_spinbox.setToolTip(COURSE_ZOOM_SPAN_TOOLTIP)
         charts_layout.addRow(self.course_zoom_span_label, self.course_zoom_span_spinbox)
         self._label_course_zoom_span()
+
+        self.course_map_checkbox = ToggleSwitch("Show map on course rides", charts_group)
+        self.course_map_checkbox.setChecked(self._settings.course_map_enabled)
+        self.course_map_checkbox.setToolTip(COURSE_MAP_TOOLTIP)
+        charts_layout.addRow(self.course_map_checkbox)
+        self.map_tile_source_combo = QComboBox(charts_group)
+        for label, value in MAP_TILE_SOURCE_OPTIONS:
+            self.map_tile_source_combo.addItem(label, value)
+        self.map_tile_source_combo.setCurrentIndex(
+            max(self.map_tile_source_combo.findData(self._settings.map_tile_source), 0)
+        )
+        self.map_tile_source_combo.setMaximumWidth(COMBO_MAX_WIDTH)
+        self.map_tile_source_combo.setToolTip(MAP_TILE_SOURCE_TOOLTIP)
+        charts_layout.addRow("Map Tiles", self.map_tile_source_combo)
+        self.thunderforest_api_key_edit = QLineEdit(charts_group)
+        self.thunderforest_api_key_edit.setMaximumWidth(TEXT_FIELD_MAX_WIDTH)
+        self.thunderforest_api_key_edit.setEchoMode(QLineEdit.Password)
+        self.thunderforest_api_key_edit.setPlaceholderText("Paste your Thunderforest API key")
+        self.thunderforest_api_key_edit.setText(self._settings.thunderforest_api_key)
+        self.thunderforest_api_key_edit.setToolTip(THUNDERFOREST_API_KEY_TOOLTIP)
+        charts_layout.addRow("Thunderforest API Key", self.thunderforest_api_key_edit)
+        self._update_map_source_controls()
         root_layout.addWidget(charts_group)
 
         strava_group = QGroupBox("Strava", self)
@@ -553,6 +595,9 @@ class SettingsScreen(QWidget):
             road_surface=str(self.road_surface_combo.currentData()),
             course_zoom_span=self.course_zoom_span_spinbox.value(),
             course_grade_colors=self.course_grade_colors_checkbox.isChecked(),
+            course_map_enabled=self.course_map_checkbox.isChecked(),
+            map_tile_source=str(self.map_tile_source_combo.currentData()),
+            thunderforest_api_key=self.thunderforest_api_key_edit.text().strip(),
         )
 
     def _selected_display_units(self) -> str:
@@ -620,6 +665,30 @@ class SettingsScreen(QWidget):
         self._settings = replace(self._settings, intervals_icu_declined_ftp=watts)
         self._autosave()
 
+    def set_course_map_layout(self, *, width_px: int | None, collapsed: bool) -> None:
+        """Remember the map panel's width and whether it is collapsed, for the next course ride."""
+        if (width_px, collapsed) == (
+            self._settings.course_map_width_px,
+            self._settings.course_map_collapsed,
+        ):
+            return
+        self._settings = replace(
+            self._settings, course_map_width_px=width_px, course_map_collapsed=collapsed
+        )
+        save_settings(self._settings, self._settings_path)
+
+    def _update_map_source_controls(self) -> None:
+        """Offer the map options only while the map is on, and the API key only for Thunderforest."""
+        map_on = self.course_map_checkbox.isChecked()
+        self.map_tile_source_combo.setEnabled(map_on)
+        self.thunderforest_api_key_edit.setEnabled(
+            map_on and self.map_tile_source_combo.currentData() == MAP_TILE_SOURCE_THUNDERFOREST_CYCLE
+        )
+
+    def _on_map_setting_changed(self) -> None:
+        self._update_map_source_controls()
+        self._autosave()
+
     def connected_intervals_icu_api_key(self) -> str | None:
         """Return the validated intervals.icu API key, or None when not connected."""
         return self._intervals_icu_api_key if self._intervals_icu_connected else None
@@ -666,6 +735,9 @@ class SettingsScreen(QWidget):
         self.show_interval_plot_checkbox.toggled.connect(self._autosave)
         self.course_grade_colors_checkbox.toggled.connect(self._autosave)
         self.course_zoom_span_spinbox.valueChanged.connect(self._autosave)
+        self.course_map_checkbox.toggled.connect(self._on_map_setting_changed)
+        self.map_tile_source_combo.currentIndexChanged.connect(self._on_map_setting_changed)
+        self.thunderforest_api_key_edit.editingFinished.connect(self._autosave)
         self.rider_weight_spinbox.valueChanged.connect(self._on_rider_weight_edited)
         self.bike_weight_spinbox.valueChanged.connect(self._on_bike_weight_edited)
         self.simulation_difficulty_spinbox.valueChanged.connect(self._autosave)

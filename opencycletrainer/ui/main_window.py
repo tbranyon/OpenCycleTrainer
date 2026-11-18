@@ -248,6 +248,8 @@ class MainWindow(QMainWindow):
         self.workout_screen.apply_color_theme(self._effective_theme_mode)
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
+        width_px, collapsed = self.workout_screen.course_map_layout()
+        self.settings_screen.set_course_map_layout(width_px=width_px, collapsed=collapsed)
         self.ftp_sync.shutdown()
         self.workout_controller.shutdown()
         self.devices_screen.backend.shutdown()

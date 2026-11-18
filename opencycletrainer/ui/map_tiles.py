@@ -17,6 +17,11 @@ from PySide6.QtNetwork import (
 
 from opencycletrainer import __version__
 from opencycletrainer.storage.paths import ensure_dir, get_map_tile_cache_dir
+from opencycletrainer.storage.settings import (
+    MAP_TILE_SOURCE_CYCLOSM,
+    MAP_TILE_SOURCE_OPENTOPOMAP,
+    MAP_TILE_SOURCE_THUNDERFOREST_CYCLE,
+)
 
 TileKey = tuple[int, int, int]
 """A map tile as (zoom, x, y), in the standard XYZ ("slippy map") numbering."""
@@ -88,6 +93,23 @@ def thunderforest_cycle(api_key: str) -> TileSource:
         attribution=f"Maps © Thunderforest, data {_OSM_ATTRIBUTION}",
         max_zoom=22,
     )
+
+
+_SOURCE_BY_SETTING = {
+    MAP_TILE_SOURCE_CYCLOSM: CYCLOSM,
+    MAP_TILE_SOURCE_OPENTOPOMAP: OPENTOPOMAP,
+}
+
+
+def tile_source_for(setting: str, *, thunderforest_api_key: str = "") -> TileSource:
+    """Return the tile server a ``map_tile_source`` setting names.
+
+    Thunderforest needs the rider's API key; without one the map uses OpenStreetMap.
+    """
+    if setting == MAP_TILE_SOURCE_THUNDERFOREST_CYCLE:
+        api_key = thunderforest_api_key.strip()
+        return thunderforest_cycle(api_key) if api_key else OPENSTREETMAP
+    return _SOURCE_BY_SETTING.get(setting, OPENSTREETMAP)
 
 
 def _tile_size_m(zoom: int) -> float:
@@ -233,6 +255,6 @@ class NetworkTileProvider(QObject):
             self._images.popitem(last=False)
 
 
-def create_default_tile_provider() -> NetworkTileProvider:
-    """Return the provider the map uses: OpenStreetMap tiles, cached on disk."""
-    return NetworkTileProvider(OPENSTREETMAP, cache_dir=get_map_tile_cache_dir())
+def create_tile_provider(source: TileSource) -> NetworkTileProvider:
+    """Return a provider of *source*'s tiles, cached on disk."""
+    return NetworkTileProvider(source, cache_dir=get_map_tile_cache_dir())

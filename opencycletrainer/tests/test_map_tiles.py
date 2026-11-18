@@ -17,6 +17,7 @@ from opencycletrainer.ui.map_tiles import (
     TileSource,
     thunderforest_cycle,
     tile_bounds,
+    tile_source_for,
     tile_zoom_for,
     visible_tiles,
 )
@@ -183,3 +184,24 @@ def test_downloads_are_limited_and_unwanted_ones_dropped_from_the_queue(qapp, tm
     fetched = [key for key in keys if provider.image(key) is not None]
     assert set(keys[:3]) <= set(fetched)
     assert len(fetched) < len(keys)
+
+
+# ── Choosing a source ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "setting, expected",
+    [("openstreetmap", OPENSTREETMAP), ("cyclosm", CYCLOSM), ("opentopomap", OPENTOPOMAP)],
+)
+def test_each_tile_source_setting_picks_its_server(setting, expected):
+    assert tile_source_for(setting) == expected
+
+
+def test_thunderforest_tiles_are_fetched_with_the_riders_api_key():
+    source = tile_source_for("thunderforest_cycle", thunderforest_api_key=" abc123 ")
+
+    assert source.tile_url(3, 4, 5) == "https://tile.thunderforest.com/cycle/3/4/5.png?apikey=abc123"
+
+
+@pytest.mark.parametrize("api_key", ["", "   "])
+def test_thunderforest_without_an_api_key_falls_back_to_openstreetmap(api_key):
+    assert tile_source_for("thunderforest_cycle", thunderforest_api_key=api_key) == OPENSTREETMAP

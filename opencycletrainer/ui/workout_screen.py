@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -25,6 +26,7 @@ from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaRecord, Si
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.settings import AppSettings, THEME_MODE_LIGHT, load_settings
 from .course_map import CourseMapPanel
+from .map_tiles import TileSource, tile_source_for
 from .hotkeys import WorkoutHotkeys
 from .mode_state import MODE_SIMULATION
 from .ride_format import format_grade_percent
@@ -36,10 +38,9 @@ MODE_OPTIONS = ("ERG", "Resistance", "Hybrid", MODE_SIMULATION)
 
 _INTERVAL_REMAINING_TILE_TITLE = "Interval Time/Work Remaining"
 _REMAINING_TILE_TITLE = "Time Remaining"
-_CHART_STRETCH = 3
-_COURSE_MAP_STRETCH = 2
-"""The map takes two fifths of the chart row's width beside the plots."""
-_CHART_ROW_SPACING_PX = 4
+_COURSE_MAP_DEFAULT_SHARE = 0.4
+"""Until the rider drags it wider or narrower, the map takes two fifths of the chart row."""
+_CHART_SPLITTER_HANDLE_PX = 4
 _COURSE_GRADE_TILE_TITLE = "Grade"
 _COURSE_REMAINING_TILE_TITLE = "Distance Remaining"
 
@@ -542,6 +543,7 @@ class WorkoutScreen(QWidget):
         return list(self._selected_tiles)
 
     def apply_settings(self, settings: AppSettings) -> None:
+        map_was_enabled = self._settings.course_map_enabled
         self._settings = settings
         self._selected_tiles = normalize_tile_selections(settings.tile_selections)
         self._kj_mode_active = settings.default_workout_behavior == "kj_mode"
@@ -551,6 +553,13 @@ class WorkoutScreen(QWidget):
         self.chart_widget.set_display_units(settings.display_units)
         self.chart_widget.set_course_zoom_span(settings.course_zoom_span)
         self.chart_widget.set_course_grade_colors(settings.course_grade_colors)
+        self.course_map_panel.set_tile_source(_map_tile_source(settings))
+        if settings.course_map_enabled != map_was_enabled:
+            self._show_course_map()
+
+    def course_map_layout(self) -> tuple[int | None, bool]:
+        """Return the map's width as the rider last dragged it (None if never) and whether it is collapsed."""
+        return self._course_map_width_px, self.course_map_panel.collapsed
 
     def apply_color_theme(self, color_theme: str) -> None:
         self._theme_mode = color_theme
@@ -825,13 +834,16 @@ class WorkoutScreen(QWidget):
     def load_course_chart(self, course: Course) -> None:
         """Show *course*'s elevation profile above an open-ended power chart, and its map beside them."""
         self.chart_widget.load_course(course)
-        self.course_map_panel.load_course(course)
-        self.course_map_panel.setVisible(self.course_map_panel.has_route)
+        self._course = course
+        self._course_position_m = 0.0
+        self._show_course_map()
 
     def update_course_position(self, distance_m: float) -> None:
         """Move the rider's marker along the course profile and on the map."""
         self.chart_widget.set_course_position(distance_m)
-        self.course_map_panel.set_position(distance_m)
+        self._course_position_m = distance_m
+        if self.course_map_panel.has_route:
+            self.course_map_panel.set_position(distance_m)
 
     def set_course_mode(self, active: bool) -> None:
         """Turn the interval and time-remaining tiles into grade and distance-remaining tiles.
@@ -846,8 +858,21 @@ class WorkoutScreen(QWidget):
         )
         if not active:
             self.chart_widget.clear_course()
-            self.course_map_panel.clear()
-            self.course_map_panel.setVisible(False)
+            self._course = None
+            self._show_course_map()
+
+    def _show_course_map(self) -> None:
+        """Show the course being ridden on the map, unless there is none or the map is turned off."""
+        panel = self.course_map_panel
+        if self._course is None or not self._settings.course_map_enabled:
+            panel.clear()
+            panel.setVisible(False)
+            return
+        panel.load_course(self._course)
+        panel.set_position(self._course_position_m)
+        panel.setVisible(panel.has_route)
+        if panel.has_route:
+            self._restore_course_map_width()
 
     def set_free_ride_mode(self, active: bool) -> None:
         """Enable or disable inline ERG target editing on the target power tile."""
@@ -868,22 +893,58 @@ class WorkoutScreen(QWidget):
         self.erg_target_entered.emit(watts)
 
     def _build_chart_scaffolding(self, root_layout: QVBoxLayout) -> None:
-        """Lay out the plots, with the course map to their right on course rides."""
-        self._chart_row = QHBoxLayout()
-        self._chart_row.setSpacing(_CHART_ROW_SPACING_PX)
+        """Lay out the plots, with the course map to their right on course rides.
+
+        The rider can drag the edge between them; the map keeps that width when the
+        window is resized, and the plots take up the difference.
+        """
+        self._course: Course | None = None
+        self._course_position_m = 0.0
+        self._course_map_width_px = self._settings.course_map_width_px
+        self._course_map_width_pending = False
         self.chart_widget = WorkoutChartWidget(self)
-        self.course_map_panel = CourseMapPanel(self)
+        self.course_map_panel = CourseMapPanel(self, tile_source=_map_tile_source(self._settings))
         self.course_map_panel.setVisible(False)
+        self.course_map_panel.set_collapsed(self._settings.course_map_collapsed)
         self.course_map_panel.collapsed_changed.connect(self._on_course_map_collapsed)
-        self._chart_row.addWidget(self.chart_widget, _CHART_STRETCH)
-        self._chart_row.addWidget(self.course_map_panel, _COURSE_MAP_STRETCH)
-        root_layout.addLayout(self._chart_row, stretch=1)
+        self.chart_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.chart_splitter.setChildrenCollapsible(False)
+        self.chart_splitter.setHandleWidth(_CHART_SPLITTER_HANDLE_PX)
+        self.chart_splitter.addWidget(self.chart_widget)
+        self.chart_splitter.addWidget(self.course_map_panel)
+        self.chart_splitter.setStretchFactor(0, 1)
+        self.chart_splitter.setStretchFactor(1, 0)
+        self.chart_splitter.splitterMoved.connect(self._on_chart_splitter_moved)
+        root_layout.addWidget(self.chart_splitter, stretch=1)
+
+    def _on_chart_splitter_moved(self, _position: int, _index: int) -> None:
+        if not self.course_map_panel.collapsed:
+            self._course_map_width_px = self.course_map_panel.width()
 
     def _on_course_map_collapsed(self, collapsed: bool) -> None:
-        """Give the plots the map's width while it is tucked away."""
-        self._chart_row.setStretchFactor(
-            self.course_map_panel, 0 if collapsed else _COURSE_MAP_STRETCH
-        )
+        """Bring the map back at the width it had before it was tucked away."""
+        if not collapsed:
+            self._restore_course_map_width()
+
+    def _restore_course_map_width(self) -> None:
+        """Give the map its remembered width, or its default share before the rider has chosen one."""
+        if self.course_map_panel.collapsed:
+            return
+        total = sum(self.chart_splitter.sizes())
+        if total <= 0:
+            # Not laid out yet: try again once the screen is shown.
+            self._course_map_width_pending = True
+            return
+        self._course_map_width_pending = False
+        width = self._course_map_width_px
+        if width is None:
+            width = round(total * _COURSE_MAP_DEFAULT_SHARE)
+        self.chart_splitter.setSizes([max(total - width, 0), width])
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().showEvent(event)
+        if self._course_map_width_pending and self.course_map_panel.isVisible():
+            self._restore_course_map_width()
 
     def set_trainer_controls_visible(self, visible: bool) -> None:
         """Show or hide the trainer mode and OpenTrueUp footer controls."""
@@ -1138,3 +1199,10 @@ class WorkoutScreen(QWidget):
         else:
             self.pause_button.click()
         self.pause_resume_requested.emit()
+
+
+def _map_tile_source(settings: AppSettings) -> TileSource:
+    """The tile server the map draws from, as chosen in *settings*."""
+    return tile_source_for(
+        settings.map_tile_source, thunderforest_api_key=settings.thunderforest_api_key
+    )

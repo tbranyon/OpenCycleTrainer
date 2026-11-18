@@ -446,3 +446,47 @@ def test_course_grade_colors_default_on_and_round_trip():
     save_settings(AppSettings(course_grade_colors=False), settings_file)
 
     assert load_settings(settings_file).course_grade_colors is False
+
+
+# ── Course map ────────────────────────────────────────────────────────────────
+
+
+def test_course_map_settings_round_trip_through_serialization():
+    settings_file = _settings_file()
+    save_settings(
+        AppSettings(
+            course_map_enabled=False,
+            map_tile_source="thunderforest_cycle",
+            thunderforest_api_key="abc123",
+            course_map_width_px=340,
+            course_map_collapsed=True,
+        ),
+        settings_file,
+    )
+
+    loaded = load_settings(settings_file)
+
+    assert loaded.course_map_enabled is False
+    assert loaded.map_tile_source == "thunderforest_cycle"
+    assert loaded.thunderforest_api_key == "abc123"
+    assert loaded.course_map_width_px == 340
+    assert loaded.course_map_collapsed is True
+
+
+def test_course_map_settings_missing_keys_show_an_openstreetmap_map_at_its_default_width():
+    loaded = AppSettings.from_dict({"ftp": 280})
+
+    assert loaded.course_map_enabled is True
+    assert loaded.map_tile_source == "openstreetmap"
+    assert loaded.thunderforest_api_key == ""
+    assert loaded.course_map_width_px is None
+    assert loaded.course_map_collapsed is False
+
+
+def test_unknown_map_tile_source_falls_back_to_openstreetmap():
+    assert AppSettings.from_dict({"map_tile_source": "atlas"}).map_tile_source == "openstreetmap"
+
+
+@pytest.mark.parametrize("stored", ["wide", -5, 0, None, True])
+def test_unusable_course_map_width_is_forgotten(stored):
+    assert AppSettings.from_dict({"course_map_width_px": stored}).course_map_width_px is None

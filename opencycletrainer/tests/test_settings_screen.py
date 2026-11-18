@@ -891,3 +891,78 @@ def test_course_grade_colors_toggle_reflects_saved_setting_and_autosaves():
     screen.course_grade_colors_checkbox.setChecked(False)
 
     assert load_settings(settings_path).course_grade_colors is False
+
+
+# ── Course map ────────────────────────────────────────────────────────────────
+
+
+def _select(combo, data) -> None:
+    combo.setCurrentIndex(combo.findData(data))
+
+
+def test_course_map_settings_reflect_saved_settings_and_autosave():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(course_map_enabled=True, map_tile_source="cyclosm"), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+    combo = screen.map_tile_source_combo
+
+    assert screen.course_map_checkbox.isChecked()
+    assert [combo.itemData(i) for i in range(combo.count())] == [
+        "openstreetmap", "cyclosm", "opentopomap", "thunderforest_cycle",
+    ]
+    assert combo.currentData() == "cyclosm"
+
+    _select(combo, "opentopomap")
+    screen.course_map_checkbox.setChecked(False)
+
+    saved = load_settings(settings_path)
+    assert saved.map_tile_source == "opentopomap"
+    assert saved.course_map_enabled is False
+
+
+def test_map_source_options_are_disabled_while_the_map_is_off():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(course_map_enabled=False), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert not screen.map_tile_source_combo.isEnabled()
+
+    screen.course_map_checkbox.setChecked(True)
+
+    assert screen.map_tile_source_combo.isEnabled()
+
+
+def test_thunderforest_api_key_is_editable_only_for_thunderforest_and_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert not screen.thunderforest_api_key_edit.isEnabled()
+
+    _select(screen.map_tile_source_combo, "thunderforest_cycle")
+    assert screen.thunderforest_api_key_edit.isEnabled()
+    screen.thunderforest_api_key_edit.setText("  abc123 ")
+    screen.thunderforest_api_key_edit.editingFinished.emit()
+
+    assert load_settings(settings_path).thunderforest_api_key == "abc123"
+
+    screen.course_map_checkbox.setChecked(False)
+    assert not screen.thunderforest_api_key_edit.isEnabled()
+
+
+def test_course_map_layout_is_saved_and_kept_by_later_edits():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(ftp=260), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    screen.set_course_map_layout(width_px=320, collapsed=True)
+    screen.ftp_spinbox.setValue(270)
+
+    saved = load_settings(settings_path)
+    assert saved.course_map_width_px == 320
+    assert saved.course_map_collapsed is True
+    assert saved.ftp == 270
