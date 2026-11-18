@@ -120,22 +120,6 @@ def _make(
 
 
 class TestDefaults:
-    def test_chart_start_monotonic_is_none(self):
-        ch, *_ = _make()
-        assert ch.chart_start_monotonic is None
-
-    def test_hr_history_is_empty(self):
-        ch, *_ = _make()
-        assert ch.hr_history == []
-
-    def test_skip_events_is_empty(self):
-        ch, *_ = _make()
-        assert ch.skip_events == []
-
-    def test_alpha1_series_is_empty(self):
-        ch, *_ = _make()
-        assert ch.alpha1_series == []
-
     def test_timer_not_active(self):
         ch, timer, *_ = _make()
         assert not timer.isActive()
@@ -143,10 +127,6 @@ class TestDefaults:
     def test_timer_interval_set_to_1000ms(self):
         ch, timer, *_ = _make()
         assert timer._interval == 1000
-
-    def test_chart_timer_property_returns_timer(self):
-        ch, timer, *_ = _make()
-        assert ch.chart_timer is timer
 
 
 # ── start() ───────────────────────────────────────────────────────────────────

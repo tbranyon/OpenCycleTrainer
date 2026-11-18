@@ -74,39 +74,26 @@ def _make_interval_result(
 # ---------------------------------------------------------------------------
 
 
-def test_compute_tss_returns_100_for_one_hour_at_ftp():
-    """One hour at exactly FTP should yield TSS of 100."""
-    ftp = 250
-    result = compute_tss(np_watts=250, ftp_watts=ftp, elapsed_seconds=3600.0)
-    assert result is not None
-    assert abs(result - 100.0) < 0.01
+@pytest.mark.parametrize(
+    ("np_watts", "ftp_watts", "elapsed_seconds", "expected_tss"),
+    [
+        (250, 250, 3600.0, 100.0),  # one hour at FTP
+        (250, 250, 1800.0, 50.0),  # half hour at FTP
+        (400, 200, 3600.0, 400.0),  # one hour at 2x FTP
+    ],
+)
+def test_compute_tss_scales_with_duration_and_intensity(np_watts, ftp_watts, elapsed_seconds, expected_tss):
+    result = compute_tss(np_watts=np_watts, ftp_watts=ftp_watts, elapsed_seconds=elapsed_seconds)
+    assert result == pytest.approx(expected_tss, abs=0.01)
 
 
-def test_compute_tss_returns_50_for_half_hour_at_ftp():
-    ftp = 250
-    result = compute_tss(np_watts=250, ftp_watts=ftp, elapsed_seconds=1800.0)
-    assert result is not None
-    assert abs(result - 50.0) < 0.01
-
-
-def test_compute_tss_scales_with_intensity():
-    """Riding at 2× FTP for 1 hour should give TSS of 400."""
-    ftp = 200
-    result = compute_tss(np_watts=400, ftp_watts=ftp, elapsed_seconds=3600.0)
-    assert result is not None
-    assert abs(result - 400.0) < 0.01
-
-
-def test_compute_tss_returns_none_when_np_is_none():
-    assert compute_tss(np_watts=None, ftp_watts=250, elapsed_seconds=3600.0) is None
-
-
-def test_compute_tss_returns_none_when_ftp_is_zero():
-    assert compute_tss(np_watts=200, ftp_watts=0, elapsed_seconds=3600.0) is None
-
-
-def test_compute_tss_returns_none_when_elapsed_is_zero():
-    assert compute_tss(np_watts=200, ftp_watts=250, elapsed_seconds=0.0) is None
+@pytest.mark.parametrize(
+    ("np_watts", "ftp_watts", "elapsed_seconds"),
+    [(None, 250, 3600.0), (200, 0, 3600.0), (200, 250, 0.0)],
+    ids=["no_np", "zero_ftp", "zero_elapsed"],
+)
+def test_compute_tss_returns_none_for_missing_inputs(np_watts, ftp_watts, elapsed_seconds):
+    assert compute_tss(np_watts=np_watts, ftp_watts=ftp_watts, elapsed_seconds=elapsed_seconds) is None
 
 
 # ---------------------------------------------------------------------------

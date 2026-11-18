@@ -70,44 +70,16 @@ def test_strava_section_shows_not_connected_by_default():
     assert "Not connected" in screen.strava_status_label.text()
 
 
-def test_strava_auto_sync_checkbox_disabled_when_not_connected():
+@pytest.mark.parametrize("connected", [False, True])
+def test_strava_sync_controls_enabled_only_when_connected(connected):
     _get_or_create_qapp()
     settings_path = _test_settings_path()
     save_settings(AppSettings(), settings_path)
 
-    screen = SettingsScreen(settings_path=settings_path)
+    screen = SettingsScreen(settings_path=settings_path, strava_connected=connected)
 
-    assert not screen.strava_auto_sync_checkbox.isEnabled()
-
-
-def test_strava_sync_now_button_disabled_when_not_connected():
-    _get_or_create_qapp()
-    settings_path = _test_settings_path()
-    save_settings(AppSettings(), settings_path)
-
-    screen = SettingsScreen(settings_path=settings_path)
-
-    assert not screen.strava_sync_now_button.isEnabled()
-
-
-def test_strava_auto_sync_checkbox_enabled_when_connected():
-    _get_or_create_qapp()
-    settings_path = _test_settings_path()
-    save_settings(AppSettings(), settings_path)
-
-    screen = SettingsScreen(settings_path=settings_path, strava_connected=True)
-
-    assert screen.strava_auto_sync_checkbox.isEnabled()
-
-
-def test_strava_sync_now_button_enabled_when_connected():
-    _get_or_create_qapp()
-    settings_path = _test_settings_path()
-    save_settings(AppSettings(), settings_path)
-
-    screen = SettingsScreen(settings_path=settings_path, strava_connected=True)
-
-    assert screen.strava_sync_now_button.isEnabled()
+    assert screen.strava_auto_sync_checkbox.isEnabled() is connected
+    assert screen.strava_sync_now_button.isEnabled() is connected
 
 
 def test_strava_auto_sync_persists_on_save():
