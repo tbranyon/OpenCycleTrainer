@@ -27,6 +27,14 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * Lightweight application, fast loading of workouts, no account, subscription, or internet access required!
 * No telemetry or privacy invasions required!
 
+## Building installers
+Run one command from the repository root; it fetches its own tools, updates dependencies, runs the tests and writes the installer to `dist/`:
+
+* Windows MSI: `scripts\build_windows.cmd`
+* Linux Flatpak: `scripts/build_linux.sh`
+
+Add `-Upgrade` / `--upgrade` to move dependencies to their newest allowed versions. See [packaging/README.md](packaging/README.md) for prerequisites and options.
+
 ## Future possibilities
 * Import additional filetypes
 * More configurability of data fields and app behavior
