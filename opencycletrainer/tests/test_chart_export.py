@@ -118,6 +118,27 @@ def test_export_leaves_the_live_chart_as_it_was(tmp_path):
     assert widget.size() == size_before
 
 
+def test_export_leaves_no_windows_behind(tmp_path):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    from shiboken6 import getCppPointer, isValid
+
+    def open_windows() -> dict[int, str]:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        return {
+            getCppPointer(w)[0]: type(w).__name__
+            for w in QApplication.topLevelWidgets() if isValid(w)
+        }
+
+    widget = _free_ride_widget()
+    before = open_windows()
+
+    widget.export_image(tmp_path / "ride.png")
+    widget.export_image(tmp_path / "again.png")
+
+    assert [name for key, name in open_windows().items() if key not in before] == []
+
+
 def test_export_before_any_samples_still_writes_an_image(tmp_path):
     from opencycletrainer.ui.chart_export import EXPORT_HEIGHT, EXPORT_WIDTH
     from opencycletrainer.ui.workout_chart import WorkoutChartWidget

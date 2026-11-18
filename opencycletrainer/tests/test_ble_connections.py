@@ -362,6 +362,24 @@ def test_dropped_device_shows_reconnecting_then_comes_back(monkeypatch, tmp_path
         backend.shutdown()
 
 
+def test_connected_device_is_never_reported_as_still_connecting(monkeypatch, tmp_path):
+    radio = _FakeRadio()
+    radio.reachable.add("T1")
+    backend = _backend(monkeypatch, tmp_path, radio, paired=[("T1", "Trainer", "trainer")])
+    reported = []
+    backend.devices_changed_callback = lambda: reported.append(_paired(backend, "T1"))
+    try:
+        backend.connect_device("T1").result(timeout=_WAIT_SECONDS)
+        backend._runner.submit(_call_soon(radio.clients[-1].drop)).result(timeout=_WAIT_SECONDS)
+        assert _wait_for(lambda: len(radio.connect_calls) >= 2 and _paired(backend, "T1").connected)
+
+        connected = [device for device in reported if device.connected]
+        assert connected
+        assert not [device for device in connected if device.connecting or device.reconnecting]
+    finally:
+        backend.shutdown()
+
+
 def test_reconnect_keeps_trying_beyond_a_short_outage(monkeypatch, tmp_path):
     radio = _FakeRadio()
     radio.reachable.add("T1")

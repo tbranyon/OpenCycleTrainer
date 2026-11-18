@@ -480,6 +480,8 @@ class BleakDeviceBackend(DeviceManager):
             refreshed = self._get_device(device_id)
             self._clients[device_id] = client
             self._devices[device_id] = replace(refreshed, connected=True)
+            self._connecting_ids.discard(device_id)
+            self._reconnecting_ids.discard(device_id)
         self._start_battery_monitor(device_id, client)
         self._notify_devices_changed()
 
@@ -600,10 +602,11 @@ class BleakDeviceBackend(DeviceManager):
                 self._fire_connection_changed(device_id, True)
                 return
         finally:
-            with self._lock:
-                self._reconnecting_ids.discard(device_id)
+            # A newer loop may have started once the connect cleared the flag; leave its flag alone.
             if self._reconnect_tasks.get(device_id) is current:
                 del self._reconnect_tasks[device_id]
+                with self._lock:
+                    self._reconnecting_ids.discard(device_id)
             self._notify_devices_changed()
 
     @staticmethod

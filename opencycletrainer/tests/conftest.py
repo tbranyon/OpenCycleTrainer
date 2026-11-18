@@ -148,15 +148,20 @@ def dispose_new_windows():
     pyqtgraph creates for each plot, which outlive the plot. Left alive, pyqtgraph plots
     crash Qt when the garbage collector frees them, or when freed in bulk at the end of
     the run. Widgets inside a parent go with their parent.
-    """
-    from shiboken6 import isValid  # noqa: PLC0415
 
-    existing = {id(widget) for widget in QApplication.topLevelWidgets() if isValid(widget)}
+    Windows are told apart by their C++ address: Python's id() is no use, because a
+    window with no Python object of its own gets a fresh wrapper on every lookup.
+    """
+    from shiboken6 import getCppPointer, isValid  # noqa: PLC0415
+
+    existing = {
+        getCppPointer(widget)[0] for widget in QApplication.topLevelWidgets() if isValid(widget)
+    }
     yield
     _delete_windows(
         widget
         for widget in QApplication.topLevelWidgets()
-        if isValid(widget) and id(widget) not in existing
+        if isValid(widget) and getCppPointer(widget)[0] not in existing
     )
 
 
