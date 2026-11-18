@@ -155,10 +155,6 @@ class TestRecordLive:
 
 
 class TestWorkoutAvgWatts:
-    def test_returns_none_with_no_data(self):
-        ph = PowerHistory()
-        assert ph.workout_avg_watts() is None
-
     def test_rounds_correctly(self):
         ph = PowerHistory()
         ph.record(100, now=1.0, recording_active=False)

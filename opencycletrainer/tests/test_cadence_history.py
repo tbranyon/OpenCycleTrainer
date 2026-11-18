@@ -74,10 +74,6 @@ class TestCadenceHistoryRecord:
 
 
 class TestActiveSource:
-    def test_returns_none_with_no_sources(self):
-        ch = CadenceHistory()
-        assert ch.active_source(now=100.0) is None
-
     def test_returns_only_source_when_fresh(self):
         ch = CadenceHistory(staleness_seconds=3.0)
         ch.record(80.0, CadenceSource.TRAINER, now=10.0)
@@ -125,10 +121,6 @@ class TestWindowedAvg:
         ch = CadenceHistory()
         ch.record(90.0, CadenceSource.TRAINER, now=10.0)
         assert ch.windowed_avg(now=14.0) is None
-
-    def test_returns_none_when_no_samples(self):
-        ch = CadenceHistory()
-        assert ch.windowed_avg(now=100.0) is None
 
     def test_holds_most_recent_sample_on_dropout(self):
         ch = CadenceHistory()

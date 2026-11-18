@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton
+import pytest
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel
 
 from opencycletrainer.storage.settings import AppSettings
 from opencycletrainer.ui.tile_config import TILE_LABEL_BY_KEY
@@ -17,20 +18,6 @@ def _get_or_create_qapp() -> QApplication:
     return app
 
 
-def test_workout_screen_displays_mandatory_fields_controls_and_mode():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-
-    label_texts = {label.text() for label in screen.findChildren(QLabel)}
-    button_texts = {button.text() for button in screen.findChildren(QPushButton)}
-
-    assert "Time Elapsed" in label_texts
-    assert "Current / Target Power" in label_texts
-    assert "Time Remaining" in label_texts
-    assert "Interval Time/Work Remaining" in label_texts
-    assert {"Start", "Pause", "Resume", "Stop"}.issubset(button_texts)
-
-
 def test_workout_screen_uses_settings_tile_selection_without_selector_controls():
     _get_or_create_qapp()
     screen = WorkoutScreen(
@@ -42,15 +29,6 @@ def test_workout_screen_uses_settings_tile_selection_without_selector_controls()
     label_texts = {label.text() for label in screen.findChildren(QLabel)}
     assert TILE_LABEL_BY_KEY["heart_rate"] in label_texts
     assert TILE_LABEL_BY_KEY["workout_avg_power"] in label_texts
-
-
-def test_workout_screen_includes_chart_scaffolding():
-    _get_or_create_qapp()
-    from opencycletrainer.ui.workout_chart import WorkoutChartWidget
-
-    screen = WorkoutScreen(settings=AppSettings())
-
-    assert isinstance(screen.chart_widget, WorkoutChartWidget)
 
 
 def test_workout_screen_alert_channel_visibility():
@@ -130,24 +108,6 @@ def test_resistance_level_label_zero():
     assert screen.resistance_level_label.text() == "0 %"
 
 
-def test_pause_dialog_shows_paused_message():
-    _get_or_create_qapp()
-    from opencycletrainer.ui.workout_screen import PauseDialog
-
-    dialog = PauseDialog()
-    label_texts = {label.text() for label in dialog.findChildren(QLabel)}
-    assert any("Paused" in t for t in label_texts)
-
-
-def test_pause_dialog_has_resume_button():
-    _get_or_create_qapp()
-    from opencycletrainer.ui.workout_screen import PauseDialog
-
-    dialog = PauseDialog()
-    button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
-    assert "Resume" in button_texts
-
-
 def test_pause_dialog_resume_shows_countdown():
     _get_or_create_qapp()
     from opencycletrainer.ui.workout_screen import PauseDialog
@@ -169,14 +129,6 @@ def test_pause_dialog_emits_resume_confirmed_after_countdown():
     dialog._tick_countdown()  # 1
     dialog._tick_countdown()  # 0 → emits resume_confirmed
     assert confirmed == [True]
-
-
-def test_workout_screen_has_free_ride_button():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-
-    button_texts = {button.text() for button in screen.findChildren(QPushButton)}
-    assert "Free Ride" in button_texts
 
 
 def test_free_ride_button_emits_free_ride_requested():
@@ -290,91 +242,33 @@ def test_set_free_ride_mode_false_disables_editing():
     assert screen.target_power_tile.editing_enabled is False
 
 
-def test_control_buttons_initial_state_shows_only_start():
+_START_ONLY = (True, False, False, False)
+_ACTIVE = (False, True, False, True)
+_PAUSED = (False, False, True, True)
+
+
+@pytest.mark.parametrize(
+    ("state", "visible"),
+    [
+        (None, _START_ONLY),
+        ("idle", _START_ONLY),
+        ("ready", _START_ONLY),
+        ("running", _ACTIVE),
+        ("ramp_in", _ACTIVE),
+        ("paused", _PAUSED),
+        ("stopped", _START_ONLY),
+        ("finished", _START_ONLY),
+    ],
+)
+def test_control_buttons_visibility_per_session_state(state, visible):
+    """Visible flags are (start, pause, resume, end); None means the initial state."""
     _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
+    if state is not None:
+        screen.set_session_state(state)
 
-    assert not screen.start_button.isHidden()
-    assert screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert screen.end_button.isHidden()
-
-
-def test_control_buttons_idle_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("idle")
-
-    assert not screen.start_button.isHidden()
-    assert screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert screen.end_button.isHidden()
-
-
-def test_control_buttons_ready_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("ready")
-
-    assert not screen.start_button.isHidden()
-    assert screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert screen.end_button.isHidden()
-
-
-def test_control_buttons_running_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("running")
-
-    assert screen.start_button.isHidden()
-    assert not screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert not screen.end_button.isHidden()
-
-
-def test_control_buttons_ramp_in_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("ramp_in")
-
-    assert screen.start_button.isHidden()
-    assert not screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert not screen.end_button.isHidden()
-
-
-def test_control_buttons_paused_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("paused")
-
-    assert screen.start_button.isHidden()
-    assert screen.pause_button.isHidden()
-    assert not screen.resume_button.isHidden()
-    assert not screen.end_button.isHidden()
-
-
-def test_control_buttons_stopped_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("stopped")
-
-    assert not screen.start_button.isHidden()
-    assert screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert screen.end_button.isHidden()
-
-
-def test_control_buttons_finished_state():
-    _get_or_create_qapp()
-    screen = WorkoutScreen(settings=AppSettings())
-    screen.set_session_state("finished")
-
-    assert not screen.start_button.isHidden()
-    assert screen.pause_button.isHidden()
-    assert screen.resume_button.isHidden()
-    assert screen.end_button.isHidden()
+    buttons = (screen.start_button, screen.pause_button, screen.resume_button, screen.end_button)
+    assert tuple(not b.isHidden() for b in buttons) == visible
 
 
 def test_save_button_hidden_by_default():

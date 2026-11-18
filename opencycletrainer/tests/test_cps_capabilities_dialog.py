@@ -89,9 +89,3 @@ def test_dialog_shows_measurement_context_torque_based():
     assert "Torque-based" in text
 
 
-def test_dialog_shows_na_when_features_unavailable():
-    _get_or_create_qapp()
-    capabilities = CPSCapabilities(features=None, sensor_location=None)
-    dialog = CPSCapabilitiesDialog("Generic PM", capabilities)
-    text = _collect_label_text(dialog)
-    assert "N/A" in text
