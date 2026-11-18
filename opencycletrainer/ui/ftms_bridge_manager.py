@@ -162,10 +162,13 @@ class FTMSBridgeManager:
         snapshot: WorkoutEngineSnapshot,
         workout: Workout | None,
     ) -> None:
-        """Submit a snapshot to the bridge to update trainer targets."""
-        self.submit_action(
-            lambda bridge: self._apply_snapshot(bridge, snapshot, workout)
-        )
+        """Submit a snapshot to the bridge to update trainer targets.
+
+        Mode and targets are read now, on the caller's thread, rather than when the bridge
+        thread gets to the snapshot: by then a ride that ended may have left Simulation
+        mode or cleared its grade, and a queued snapshot would be applied with them.
+        """
+        self.submit_action(self._snapshot_action(snapshot, workout))
 
     def submit_power_sample(
         self,
@@ -200,46 +203,58 @@ class FTMSBridgeManager:
 
         executor.submit(_run)
 
-    def _apply_snapshot(
+    def _snapshot_action(
         self,
-        bridge: WorkoutEngineFTMSBridge,
         snapshot: WorkoutEngineSnapshot,
         workout: Workout | None,
-    ) -> None:
+    ) -> Callable[[WorkoutEngineFTMSBridge], None]:
+        """Capture the current mode and targets for *snapshot* into a bridge action."""
         active_mode = self._mode_state.active_control_mode(snapshot, workout)
         if active_mode == MODE_SIMULATION:
-            bridge.set_mode_simulation()
             road_surface = getattr(self._settings, "road_surface", DEFAULT_ROAD_SURFACE)
-            bridge.apply_simulation_grade(
-                snapshot,
-                self._mode_state.simulation_grade_percent(),
-                rolling_resistance_for_surface(road_surface),
-            )
-            return
+            grade_percent = self._mode_state.simulation_grade_percent()
+            rolling_resistance = rolling_resistance_for_surface(road_surface)
 
+            def _apply_simulation(bridge: WorkoutEngineFTMSBridge) -> None:
+                bridge.set_mode_simulation()
+                bridge.apply_simulation_grade(snapshot, grade_percent, rolling_resistance)
+
+            return _apply_simulation
+
+        resistance_percent = self._mode_state.resistance_target_percent()
         if getattr(self._mode_state, "is_free_ride", False):
             if active_mode == "Resistance":
-                bridge.set_mode_resistance()
-                bridge.apply_manual_resistance_level(
-                    self._mode_state.resistance_target_percent()
-                )
-            else:
+
+                def _apply_free_ride_resistance(bridge: WorkoutEngineFTMSBridge) -> None:
+                    bridge.set_mode_resistance()
+                    bridge.apply_manual_resistance_level(resistance_percent)
+
+                return _apply_free_ride_resistance
+
+            target_watts = getattr(self._mode_state, "free_ride_erg_target", None)
+
+            def _apply_free_ride_erg(bridge: WorkoutEngineFTMSBridge) -> None:
                 bridge.set_mode_erg()
-                target_watts = getattr(self._mode_state, "free_ride_erg_target", None)
                 if target_watts is not None:
                     bridge.apply_manual_erg_target(target_watts)
-            return
+
+            return _apply_free_ride_erg
 
         if active_mode == "Resistance":
-            bridge.set_mode_resistance()
-            bridge.on_engine_snapshot(
-                snapshot,
-                workout,
-                manual_resistance_level=self._mode_state.resistance_target_percent(),
-            )
-        else:
+
+            def _apply_resistance(bridge: WorkoutEngineFTMSBridge) -> None:
+                bridge.set_mode_resistance()
+                bridge.on_engine_snapshot(
+                    snapshot, workout, manual_resistance_level=resistance_percent
+                )
+
+            return _apply_resistance
+
+        def _apply_erg(bridge: WorkoutEngineFTMSBridge) -> None:
             bridge.set_mode_erg()
             bridge.on_engine_snapshot(snapshot, workout)
+
+        return _apply_erg
 
     def _resistance_range_for(
         self,
