@@ -6,15 +6,13 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
-import gc
+import sys
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
-# One application for the whole run, held here until the interpreter exits. Many test
-# modules create it from a helper and drop the only Python reference; with nothing
-# holding it, widgets still alive at interpreter exit crash Qt during teardown.
+# One application for the whole run. Many test modules create it from a helper and
+# drop the only Python reference; held here, it outlives every widget a test creates.
 _APP = QApplication.instance() or QApplication([])
 
 
@@ -23,22 +21,27 @@ def qapp():
     return _APP
 
 
-@pytest.fixture(scope="session", autouse=True)
-def tear_down_qt_at_session_end():
-    """Destroy leftover windows on the main thread before the interpreter shuts down.
+_session: pytest.Session | None = None
 
-    Otherwise they are freed during interpreter teardown, after parts of Qt are gone,
-    and the process segfaults even though every test passed.
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    global _session  # noqa: PLW0603
+    _session = session
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config: pytest.Config) -> None:  # noqa: ARG001
+    """End the process once pytest has finished, skipping interpreter teardown.
+
+    The run keeps every screen it creates alive (see detach_workout_hotkeys), and
+    pyqtgraph plots among them cannot be destroyed safely in bulk: freeing them during
+    interpreter teardown, or deleting their windows from C++, segfaults the process
+    after every test has passed. Results are already reported and written by now.
     """
-    yield
-    from shiboken6 import isValid  # noqa: PLC0415
-
-    for widget in QApplication.topLevelWidgets():
-        # Deleting one window can take others with it, so skip any already gone.
-        if isValid(widget):
-            widget.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-    gc.collect()
+    exit_status = int(_session.exitstatus) if _session is not None else 0
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_status)
 
 
 @pytest.fixture(autouse=True)
