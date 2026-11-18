@@ -242,3 +242,277 @@ def test_smoothing_keeps_dropouts_as_gaps():
     assert inside_gap.any()
     assert np.isnan(smooth_watts[inside_gap]).all()
     assert np.isfinite(smooth_watts[~((smooth_t > 3990) & (smooth_t < 4610))]).all()
+
+
+# ── Course map ────────────────────────────────────────────────────────────────
+
+_ROUTE_RED = (220, 38, 38)
+_TILE_MAGENTA = (255, 0, 255)
+_MAP_LEFT_FRACTION = 0.615  # on course rides the map takes the right part of the image
+_WAIT_SECONDS = 2.0
+_CREDIT_TEXT = (30, 41, 59)
+_CREDIT_BAND_PX = 40
+
+
+def _has_colour(pixels: np.ndarray, rgb: tuple[int, int, int]) -> bool:
+    return bool((np.abs(pixels.astype(int) - np.array(rgb)) <= _COLOUR_TOLERANCE).all(axis=-1).any())
+
+# An L-shaped route: 4 legs north, then 4 legs east, each leg 100 m along the course.
+_ROUTE = [(45.000 + 0.001 * i, 7.000) for i in range(5)] + [
+    (45.004, 7.000 + 0.0014 * i) for i in range(1, 5)
+]
+
+
+def _course():
+    from opencycletrainer.core.course_model import Course, CoursePoint
+
+    return Course(
+        name="Map Course",
+        points=tuple(
+            CoursePoint(distance_m=100.0 * i, elevation_m=100.0, latitude_deg=lat, longitude_deg=lon)
+            for i, (lat, lon) in enumerate(_ROUTE)
+        ),
+    )
+
+
+def _course_map():
+    """The L route ridden as far as its corner."""
+    from opencycletrainer.ui.course_map import mercator_xy
+    from opencycletrainer.ui.map_export import CourseMapExportData
+    from opencycletrainer.ui.map_tiles import OPENSTREETMAP
+
+    xs, ys = (np.array(axis, dtype=float) for axis in zip(*(mercator_xy(*p) for p in _ROUTE)))
+    return CourseMapExportData(
+        ridden=(xs[:5], ys[:5]),
+        ahead=(xs[4:], ys[4:]),
+        start=(xs[0], ys[0]),
+        finish=(xs[-1], ys[-1]),
+        rider=(xs[4], ys[4]),
+        tile_source=OPENSTREETMAP,
+    )
+
+
+def _ride(course_map=None):
+    from opencycletrainer.ui.chart_export import ChartExportData
+
+    t = np.arange(0.0, 601.0)
+    empty = (np.array([]), np.array([]))
+    return ChartExportData(
+        title="Course", power=(t, np.full(len(t), 210.0)), heart_rate=empty, target=empty,
+        course_map=course_map,
+    )
+
+
+def _tile_image():
+    from PySide6.QtGui import QColor, QImage
+
+    image = QImage(256, 256, QImage.Format.Format_RGB32)
+    image.fill(QColor(*_TILE_MAGENTA))
+    return image
+
+
+class _Tiles:
+    """A tile provider that hands over tiles when the test says so (or holds them all)."""
+
+    def __init__(self, source=None, *, hold_all: bool = False) -> None:
+        from PySide6.QtCore import QObject, Signal
+
+        class _Signals(QObject):
+            tile_ready = Signal(int, int, int)
+
+        self._signals = _Signals()
+        self.tile_ready = self._signals.tile_ready
+        self.source = source
+        self.wanted: list[tuple[int, int, int]] = []
+        self.asked = False
+        self._hold_all = hold_all
+        self._images: dict = {}
+
+    def set_wanted(self, tiles) -> None:
+        self.asked = self.asked or bool(tiles)
+        self.wanted = list(tiles)
+
+    def image(self, key):
+        return _tile_image() if self._hold_all else self._images.get(key)
+
+    def deliver(self, key) -> None:
+        self._images[key] = _tile_image()
+        self.tile_ready.emit(*key)
+
+
+def _wait_until(predicate) -> bool:
+    import time
+
+    from PySide6.QtCore import QCoreApplication
+
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_course_ride_image_draws_the_route_map_right_of_the_chart(tmp_path):
+    from opencycletrainer.ui.chart_export import save_chart_image
+
+    _qapp()
+    pixels = _pixels(save_chart_image(_ride(_course_map()), tmp_path / "ride.png"))
+
+    map_left = pixels.shape[1] * _MAP_LEFT_FRACTION
+    route_ahead = _columns_with(pixels, _ROUTE_RED)
+    assert route_ahead.size and route_ahead.min() >= map_left
+    assert (_columns_with(pixels, _POWER_GREEN) >= map_left).any()  # the ridden road
+    power = _columns_with(pixels, _POWER_GREEN)
+    assert power[power < map_left].max() >= pixels.shape[1] * 0.5  # the chart fills its share
+
+
+def test_map_tiles_are_drawn_beneath_the_route(tmp_path):
+    from opencycletrainer.ui.chart_export import save_chart_image
+
+    _qapp()
+    tiled = _pixels(save_chart_image(
+        _ride(_course_map()), tmp_path / "tiled.png", tile_image=lambda _key: _tile_image(),
+    ))
+    plain = _pixels(save_chart_image(_ride(_course_map()), tmp_path / "plain.png"))
+
+    tile_columns = _columns_with(tiled, _TILE_MAGENTA)
+    assert tile_columns.size and tile_columns.min() >= tiled.shape[1] * _MAP_LEFT_FRACTION
+    assert _columns_with(tiled, _ROUTE_RED).size
+    assert _columns_with(plain, _TILE_MAGENTA).size == 0
+
+    # The tile source is credited along the map's bottom edge, only where its tiles are drawn.
+    magenta = (np.abs(tiled.astype(int) - np.array(_TILE_MAGENTA)) <= _COLOUR_TOLERANCE).all(axis=2)
+    map_bottom = int(np.flatnonzero(magenta.any(axis=1)).max())
+    credit_band = (slice(map_bottom - _CREDIT_BAND_PX, map_bottom + 1), slice(int(tile_columns.min()), None))
+    assert _has_colour(tiled[credit_band], _CREDIT_TEXT)
+    assert not _has_colour(plain[credit_band], _CREDIT_TEXT)
+
+
+def test_course_ride_image_is_saved_once_its_map_tiles_arrive(tmp_path):
+    from opencycletrainer.ui.chart_export import ChartImageExport
+
+    _qapp()
+    tiles = _Tiles()
+    path = tmp_path / "ride.png"
+    export = ChartImageExport(_ride(_course_map()), path, tile_provider=tiles)
+    saved = []
+    export.finished.connect(saved.append)
+
+    export.start()
+
+    assert tiles.wanted and len({zoom for zoom, _, _ in tiles.wanted}) == 1
+    assert not path.exists()
+    for key in list(tiles.wanted):
+        tiles.deliver(key)
+    assert saved == [path]
+    assert _columns_with(_pixels(path), _TILE_MAGENTA).size
+    assert tiles.wanted == []
+
+
+@pytest.mark.parametrize("course_map", [True, False], ids=["tiles-at-hand", "no-map"])
+def test_ride_image_is_saved_straight_away_when_there_is_nothing_to_wait_for(tmp_path, course_map):
+    from opencycletrainer.ui.chart_export import ChartImageExport
+
+    _qapp()
+    tiles = _Tiles(hold_all=True)
+    path = tmp_path / "ride.png"
+    export = ChartImageExport(_ride(_course_map() if course_map else None), path, tile_provider=tiles)
+
+    export.start()
+
+    assert path.is_file()
+    assert (_columns_with(_pixels(path), _TILE_MAGENTA).size > 0) is course_map
+    assert tiles.wanted == []
+
+
+def test_missing_tiles_stop_holding_up_the_image_after_a_short_wait(tmp_path):
+    from opencycletrainer.ui.chart_export import ChartImageExport
+
+    _qapp()
+    tiles = _Tiles()
+    path = tmp_path / "ride.png"
+    export = ChartImageExport(_ride(_course_map()), path, tile_provider=tiles, wait_seconds=0.05)
+    export.start()
+    tiles.deliver(tiles.wanted[len(tiles.wanted) // 2])  # one from the middle of the map
+
+    assert not path.exists()
+    assert _wait_until(path.exists)
+    assert _columns_with(_pixels(path), _TILE_MAGENTA).size
+    assert tiles.wanted == []
+
+
+def test_finishing_now_saves_the_image_with_the_tiles_at_hand(tmp_path):
+    from opencycletrainer.ui.chart_export import ChartImageExport
+
+    _qapp()
+    tiles = _Tiles()
+    path = tmp_path / "ride.png"
+    export = ChartImageExport(_ride(_course_map()), path, tile_provider=tiles)
+    saved = []
+    export.finished.connect(saved.append)
+    export.start()
+
+    export.finish_now()
+    export.finish_now()
+
+    assert saved == [path] and path.is_file()
+
+
+def _course_screen(monkeypatch, settings=None, *, tiles_at_hand=True):
+    from opencycletrainer.storage.settings import AppSettings
+    from opencycletrainer.ui import map_tiles
+    from opencycletrainer.ui.workout_screen import WorkoutScreen
+
+    _qapp()
+    if tiles_at_hand:
+        monkeypatch.setattr(map_tiles, "create_tile_provider", lambda source: _Tiles(source, hold_all=True))
+    screen = WorkoutScreen(settings=settings if settings is not None else AppSettings())
+    screen.load_course_chart(_course())
+    screen.update_course_position(400.0)
+    return screen
+
+
+def test_course_ride_image_shows_the_map_with_the_road_ridden(monkeypatch, tmp_path):
+    screen = _course_screen(monkeypatch)
+
+    pixels = _pixels(screen.export_chart_image(tmp_path / "ride.png", "Course"))
+
+    map_left = pixels.shape[1] * _MAP_LEFT_FRACTION
+    assert _columns_with(pixels, _TILE_MAGENTA).min() >= map_left
+    assert (_columns_with(pixels, _POWER_GREEN) >= map_left).any()
+    assert (_columns_with(pixels, _ROUTE_RED) >= map_left).any()
+
+
+def test_ride_image_has_no_map_when_the_map_is_turned_off(monkeypatch, tmp_path):
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _course_screen(monkeypatch, AppSettings(course_map_enabled=False))
+
+    pixels = _pixels(screen.export_chart_image(tmp_path / "ride.png", "Course"))
+
+    assert _columns_with(pixels, _TILE_MAGENTA).size == 0
+    assert _columns_with(pixels, _ROUTE_RED).size == 0
+
+
+def test_screen_saves_a_ride_image_still_waiting_for_tiles_when_asked_to_finish(monkeypatch, tmp_path):
+    screen = _course_screen(monkeypatch, tiles_at_hand=False)
+
+    path = screen.export_chart_image(tmp_path / "ride.png", "Course")
+    assert not path.exists()
+    screen.finish_chart_exports()
+
+    assert path.is_file()
+
+
+def test_a_ride_after_a_course_ride_saves_its_image_without_that_map(monkeypatch, tmp_path):
+    screen = _course_screen(monkeypatch)
+    screen.set_course_mode(False)
+    kept = _pixels(screen.export_chart_image(tmp_path / "course.png", "Course"))
+
+    screen.load_free_ride_chart()
+    later = _pixels(screen.export_chart_image(tmp_path / "free.png", "Free ride"))
+
+    assert _columns_with(kept, _TILE_MAGENTA).size
+    assert _columns_with(later, _TILE_MAGENTA).size == 0

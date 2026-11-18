@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import time
 
+import numpy as np
 from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtNetwork import (
@@ -40,6 +41,9 @@ _MEMORY_CACHE_TILES = 256
 _DISK_CACHE_BYTES = 100 * 1024 * 1024
 
 _OSM_ATTRIBUTION = "© OpenStreetMap contributors"
+
+_WHOLE_ROUTE_PADDING_RATIO = 0.08  # margin around the route when it is shown whole
+_MIN_WHOLE_ROUTE_SPAN_M = 200.0    # a tiny route still gets a sensible view
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,26 @@ def tile_zoom_for(metres_per_px: float, max_zoom: int) -> int:
     """Return the tile zoom whose pixels come closest to *metres_per_px* on screen, within 0..max_zoom."""
     exact = math.log2(2.0 * _HALF_WORLD_M / (TILE_SIZE_PX * metres_per_px))
     return min(max(int(math.floor(exact + 0.5)), 0), max_zoom)
+
+
+def fit_view(
+    xs: np.ndarray, ys: np.ndarray, width_px: float, height_px: float,
+) -> tuple[tuple[float, float, float, float], float]:
+    """Frame every point in a *width_px* × *height_px* view, with a margin, keeping the map's shape.
+
+    Returns the view (x_min, x_max, y_min, y_max) in Web Mercator metres and the metres
+    each pixel covers.
+    """
+    span_x = max(float(np.ptp(xs)), _MIN_WHOLE_ROUTE_SPAN_M)
+    span_y = max(float(np.ptp(ys)), _MIN_WHOLE_ROUTE_SPAN_M)
+    padded = 1.0 + 2.0 * _WHOLE_ROUTE_PADDING_RATIO
+    metres_per_px = max(span_x * padded / width_px, span_y * padded / height_px)
+    centre_x = (float(np.min(xs)) + float(np.max(xs))) / 2.0
+    centre_y = (float(np.min(ys)) + float(np.max(ys))) / 2.0
+    half_width = width_px * metres_per_px / 2.0
+    half_height = height_px * metres_per_px / 2.0
+    view = (centre_x - half_width, centre_x + half_width, centre_y - half_height, centre_y + half_height)
+    return view, metres_per_px
 
 
 class NetworkTileProvider(QObject):

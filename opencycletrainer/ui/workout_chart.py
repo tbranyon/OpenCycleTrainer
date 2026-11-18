@@ -719,11 +719,17 @@ class WorkoutChartWidget(QWidget):
         window, so it is sharp at any window size and its time axis ends where the ride
         did. The live chart is not touched.
         """
-        from .chart_export import ChartExportData, save_chart_image
+        from .chart_export import save_chart_image
+
+        return save_chart_image(self.export_data(title), path)
+
+    def export_data(self, title: str | None = None):
+        """Return the finished ride as the export draws it, headed by *title* (default: the workout name)."""
+        from .chart_export import ChartExportData
 
         if title is None:
             title = self._workout.name if self._workout is not None else ""
-        data = ChartExportData(
+        return ChartExportData(
             title=title,
             power=_series_of(self._workout_actual),
             heart_rate=_series_of(self._workout_hr),
@@ -735,7 +741,6 @@ class WorkoutChartWidget(QWidget):
             ftp_watts=self._ftp_watts if self._workout is not None else None,
             color_theme=self._color_theme,
         )
-        return save_chart_image(data, path)
 
     def clear(self) -> None:
         """Reset to idle state. Call before loading a new workout."""

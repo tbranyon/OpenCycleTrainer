@@ -38,8 +38,11 @@ their cache headers, and never download tiles in bulk ahead of time.
 3. **Settings.** *(Done in v0.14.0.)* "Show map on course rides" toggle, tile source choice and
    Thunderforest API key in Settings → Charts; the panel's edge can be dragged, and its width
    and whether it is collapsed are remembered between rides.
-4. **Later.** Draw the map into the saved ride PNG; show points of interest if FIT course
-   import happens.
+4. **Map in the ride image.** *(Done in v0.15.0.)* On course rides the saved ride PNG has the
+   whole route beside the chart, ridden road in green and any left in red. Its tiles are
+   fetched when the ride ends and the image is written once they arrive (or after a few
+   seconds with those that did; straight away if the app is closing).
+5. **Later.** Show points of interest if FIT course import happens.
 
 ## Import FIT for POIs?
 

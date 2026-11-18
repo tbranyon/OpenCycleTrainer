@@ -291,6 +291,30 @@ def test_main_window_forwards_monotonic_receipt_time_with_power(qapp):
         _close_window(window, qapp)
 
 
+def test_closing_the_window_saves_a_ride_image_still_waiting_for_map_tiles(qapp, tmp_path):
+    from opencycletrainer.core.course_model import Course, CoursePoint
+
+    course = Course(
+        name="Map Course",
+        points=tuple(
+            CoursePoint(
+                distance_m=100.0 * i, elevation_m=100.0, latitude_deg=45.0 + 0.001 * i, longitude_deg=7.0,
+            )
+            for i in range(5)
+        ),
+    )
+    window = MainWindow(
+        settings=AppSettings(), settings_path=tmp_path / "settings.json", backend=MockDeviceBackend(),
+    )
+    window.workout_screen.load_course_chart(course)
+    path = window.workout_screen.export_chart_image(tmp_path / "ride.png", "Course")
+    assert not path.exists()  # no test map tile ever arrives
+
+    _close_window(window, qapp)
+
+    assert path.is_file()
+
+
 def test_closing_the_window_remembers_the_course_map_layout(qapp, tmp_path):
     settings_path = tmp_path / "settings.json"
     save_settings(AppSettings(), settings_path)

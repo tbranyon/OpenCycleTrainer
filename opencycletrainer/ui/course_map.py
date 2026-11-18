@@ -14,7 +14,15 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QToolButton, QWi
 from opencycletrainer.core.course_model import Course
 
 from . import map_tiles
-from .map_tiles import OPENSTREETMAP, TileKey, TileSource, tile_bounds, tile_zoom_for, visible_tiles
+from .map_tiles import (
+    OPENSTREETMAP,
+    TileKey,
+    TileSource,
+    fit_view,
+    tile_bounds,
+    tile_zoom_for,
+    visible_tiles,
+)
 
 # Web Mercator (EPSG:3857), the projection map tiles are drawn in.
 _EARTH_RADIUS_M = 6_378_137.0
@@ -27,8 +35,6 @@ MIN_FOLLOW_ZOOM = 10
 MAX_FOLLOW_ZOOM = 18
 
 _FALLBACK_VIEW_SIZE_PX = (300.0, 400.0)  # used until the map has been laid out
-_WHOLE_ROUTE_PADDING_RATIO = 0.08         # margin around the route in the whole-route view
-_MIN_WHOLE_ROUTE_SPAN_M = 200.0           # a tiny route still gets a sensible view
 
 _AHEAD_PEN = (220, 38, 38)        # red: road still to ride
 _RIDDEN_PEN = (34, 197, 94)       # green: road already ridden
@@ -234,6 +240,24 @@ class CourseMapWidget(QWidget):
         if self._following:
             self._apply_view()
 
+    def export_data(self):
+        """Return the route as drawn now (road ridden, road ahead, rider) for the saved ride image.
+
+        Returns None while no course with coordinates is loaded.
+        """
+        from .map_export import CourseMapExportData  # noqa: PLC0415 (map_export draws with this module's colours)
+
+        if self._course is None:
+            return None
+        return CourseMapExportData(
+            ridden=_item_xy(self._ridden_item),
+            ahead=_item_xy(self._ahead_item),
+            start=(float(self._xs[0]), float(self._ys[0])),
+            finish=(float(self._xs[-1]), float(self._ys[-1])),
+            rider=self._rider_xy,
+            tile_source=self._tiles.source,
+        )
+
     def set_following(self, following: bool) -> None:
         """Follow the rider at the current zoom level, or show the whole route."""
         self._following = bool(following)
@@ -294,16 +318,13 @@ class CourseMapWidget(QWidget):
         if self._following:
             metres_per_px = _mercator_metres_per_pixel(self._zoom_level)
             centre_x, centre_y = self._rider_xy
+            half_width = width_px * metres_per_px / 2.0
+            half_height = height_px * metres_per_px / 2.0
+            view = (
+                centre_x - half_width, centre_x + half_width, centre_y - half_height, centre_y + half_height,
+            )
         else:
-            span_x = max(float(np.ptp(self._xs)), _MIN_WHOLE_ROUTE_SPAN_M)
-            span_y = max(float(np.ptp(self._ys)), _MIN_WHOLE_ROUTE_SPAN_M)
-            padded = 1.0 + 2.0 * _WHOLE_ROUTE_PADDING_RATIO
-            metres_per_px = max(span_x * padded / width_px, span_y * padded / height_px)
-            centre_x = (float(np.min(self._xs)) + float(np.max(self._xs))) / 2.0
-            centre_y = (float(np.min(self._ys)) + float(np.max(self._ys))) / 2.0
-        half_width = width_px * metres_per_px / 2.0
-        half_height = height_px * metres_per_px / 2.0
-        view = (centre_x - half_width, centre_x + half_width, centre_y - half_height, centre_y + half_height)
+            view, metres_per_px = fit_view(self._xs, self._ys, width_px, height_px)
         self._plot.setRange(xRange=view[:2], yRange=view[2:], padding=0)
         max_zoom = self._tiles.source.max_zoom
         if self._following:
@@ -378,6 +399,14 @@ class CourseMapWidget(QWidget):
                 past = len(distances)
             bounds.append((first, past))
         return bounds
+
+
+def _item_xy(item: pg.PlotDataItem) -> tuple[np.ndarray, np.ndarray]:
+    """Return a drawn line's points as (xs, ys) arrays, empty when nothing is drawn."""
+    xs, ys = item.getData()
+    if xs is None or ys is None:
+        return np.array([], dtype=float), np.array([], dtype=float)
+    return np.asarray(xs, dtype=float).copy(), np.asarray(ys, dtype=float).copy()
 
 
 def _rgba_rows_south_first(image: QImage) -> np.ndarray:

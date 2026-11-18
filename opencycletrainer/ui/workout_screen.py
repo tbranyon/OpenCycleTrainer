@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
@@ -25,6 +26,7 @@ from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaRecord, SignalQuality
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.settings import AppSettings, THEME_MODE_LIGHT, load_settings
+from .chart_export import ChartImageExport
 from .course_map import CourseMapPanel
 from .map_tiles import TileSource, tile_source_for
 from .hotkeys import WorkoutHotkeys
@@ -784,6 +786,7 @@ class WorkoutScreen(QWidget):
 
     def load_workout_chart(self, workout: Workout, ftp_watts: int) -> None:
         self.chart_widget.load_workout(workout, ftp_watts)
+        self._ended_course_map = None
 
     def update_charts(
         self,
@@ -805,8 +808,35 @@ class WorkoutScreen(QWidget):
         self.chart_widget.rebuild_target_series(interval_durations)
 
     def export_chart_image(self, path: Path, title: str | None = None) -> Path:
-        """Save the finished ride's chart as a PNG at *path*, headed by *title*."""
-        return self.chart_widget.export_image(path, title)
+        """Save the finished ride's chart as a PNG at *path*, headed by *title*.
+
+        On a course ride with the map on, the route map is drawn beside the chart (also
+        once course mode has ended, until the next chart loads), and the file is written
+        once the map's tiles have arrived, or a few seconds later with those that did; the
+        chart itself is drawn before this returns.
+        """
+        data = self.chart_widget.export_data(title)
+        course_map = self.course_map_panel.map_widget.export_data()
+        if course_map is None:
+            course_map = self._ended_course_map
+        if course_map is not None:
+            data = replace(data, course_map=course_map)
+        export = ChartImageExport(data, path, parent=self)
+        self._chart_exports.append(export)
+        export.finished.connect(self._on_chart_export_finished)
+        export.start()
+        return path
+
+    def finish_chart_exports(self) -> None:
+        """Write any ride image still waiting for map tiles now, with the tiles at hand."""
+        for export in list(self._chart_exports):
+            export.finish_now()
+
+    def _on_chart_export_finished(self, _path: Path | None) -> None:
+        export = self.sender()
+        if export in self._chart_exports:
+            self._chart_exports.remove(export)
+            export.deleteLater()
 
     def clear_charts(self) -> None:
         self.chart_widget.clear()
@@ -818,6 +848,7 @@ class WorkoutScreen(QWidget):
     def load_free_ride_chart(self) -> None:
         """Prepare the chart widget for a free ride (no target series, dynamic x-axis)."""
         self.chart_widget.load_free_ride()
+        self._ended_course_map = None
 
     def update_free_ride_charts(
         self,
@@ -834,6 +865,7 @@ class WorkoutScreen(QWidget):
     def load_course_chart(self, course: Course) -> None:
         """Show *course*'s elevation profile above an open-ended power chart, and its map beside them."""
         self.chart_widget.load_course(course)
+        self._ended_course_map = None
         self._course = course
         self._course_position_m = 0.0
         self._show_course_map()
@@ -857,6 +889,9 @@ class WorkoutScreen(QWidget):
             _COURSE_REMAINING_TILE_TITLE if active else _REMAINING_TILE_TITLE
         )
         if not active:
+            if self._course is not None:
+                # The ride's image is saved after course mode ends, so keep the map for it.
+                self._ended_course_map = self.course_map_panel.map_widget.export_data()
             self.chart_widget.clear_course()
             self._course = None
             self._show_course_map()
@@ -902,6 +937,8 @@ class WorkoutScreen(QWidget):
         self._course_position_m = 0.0
         self._course_map_width_px = self._settings.course_map_width_px
         self._course_map_width_pending = False
+        self._chart_exports: list[ChartImageExport] = []
+        self._ended_course_map = None  # the map as the last course ride left it, until the next chart loads
         self.chart_widget = WorkoutChartWidget(self)
         self.course_map_panel = CourseMapPanel(self, tile_source=_map_tile_source(self._settings))
         self.course_map_panel.setVisible(False)

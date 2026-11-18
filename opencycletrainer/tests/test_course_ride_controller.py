@@ -609,6 +609,26 @@ def test_stopping_a_course_ride_early_leaves_course_mode(session, tmp_path):
     assert s.screen.mode_selector.currentText() == "ERG"
 
 
+def test_the_saved_ride_image_shows_the_course_map(monkeypatch, session, tmp_path):
+    from opencycletrainer.storage.paths import get_workout_png_dir
+    from opencycletrainer.ui import map_tiles
+
+    from .test_chart_export import _TILE_MAGENTA, _Tiles, _columns_with, _pixels
+
+    monkeypatch.setattr(map_tiles, "create_tile_provider", lambda source: _Tiles(source, hold_all=True))
+    s = session()
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+    s.ride(5.0, 200)
+
+    s.screen.end_button.click()
+    s.app.processEvents()
+
+    image = get_workout_png_dir(tmp_path) / "Course_20260311_1200.png"
+    assert image.is_file()
+    assert _columns_with(_pixels(image), _TILE_MAGENTA).size
+
+
 def test_course_can_be_ridden_again_from_the_start(session, tmp_path):
     s = session()
     gpx = _write_gpx(tmp_path, _constant_grade(0.0))

@@ -252,5 +252,6 @@ class MainWindow(QMainWindow):
         self.settings_screen.set_course_map_layout(width_px=width_px, collapsed=collapsed)
         self.ftp_sync.shutdown()
         self.workout_controller.shutdown()
+        self.workout_screen.finish_chart_exports()
         self.devices_screen.backend.shutdown()
         super().closeEvent(event)
