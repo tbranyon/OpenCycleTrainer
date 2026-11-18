@@ -37,6 +37,7 @@ class SensorSnapshot:
     grade_percent: float | None = None
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    lap_number: int | None = None
 
 
 class RecorderIntegration:

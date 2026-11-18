@@ -272,3 +272,56 @@ def test_laps_keep_the_course_name_unless_given_one():
 def test_lap_count_must_be_at_least_one(count):
     with pytest.raises(ValueError):
         _loop().laps(count)
+
+
+# ── Lap numbers ───────────────────────────────────────────────────────────────
+
+def test_a_course_is_a_single_lap():
+    course = _climb_then_descent()
+
+    assert course.lap_count == 1
+    assert course.lap_number_at(0.0) == 1
+    assert course.lap_number_at(course.total_distance_m) == 1
+
+
+def test_laps_number_each_repeat_of_a_loop():
+    loop = _loop()
+    lap_m = loop.total_distance_m
+
+    laps = loop.laps(3)
+
+    assert laps.lap_count == 3
+    assert laps.lap_number_at(0.0) == 1
+    assert laps.lap_number_at(lap_m - 1.0) == 1
+    assert laps.lap_number_at(lap_m + 1.0) == 2
+    assert laps.lap_number_at(2 * lap_m + 1.0) == 3
+    assert laps.lap_number_at(laps.total_distance_m) == 3
+
+
+def test_the_ride_back_to_the_start_belongs_to_the_lap_before_it():
+    out_and_away = Course(
+        name="Point to point",
+        points=(
+            CoursePoint(distance_m=0.0, elevation_m=100.0, latitude_deg=45.0, longitude_deg=7.0),
+            CoursePoint(distance_m=111.195, elevation_m=110.0, latitude_deg=45.001, longitude_deg=7.0),
+        ),
+    )
+
+    laps = out_and_away.laps(2)
+
+    assert laps.lap_number_at(150.0) == 1
+    assert laps.lap_number_at(2 * 111.195 + 1.0) == 2
+
+
+def test_a_section_of_laps_is_a_single_lap():
+    assert _loop().laps(3).section(100.0, 900.0).lap_count == 1
+
+
+def test_lap_starts_must_begin_at_the_start_and_lie_on_the_course():
+    points = _climb_then_descent().points
+    with pytest.raises(ValueError):
+        Course(name="Bad", points=points, lap_starts_m=(500.0,))
+    with pytest.raises(ValueError):
+        Course(name="Bad", points=points, lap_starts_m=(0.0, 2000.0, 1000.0))
+    with pytest.raises(ValueError):
+        Course(name="Bad", points=points, lap_starts_m=(0.0, 3000.0))

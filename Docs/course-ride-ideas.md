@@ -13,11 +13,6 @@ designed yet.
   internet access required". Drawing just the route outline offline (on a plain background,
   or pyqtgraph like the other charts) avoids that. A basemap could be optional.
 
-## FIT laps for lapped courses
-
-- Riding a course as laps (from the import dialog) builds one long course; the FIT export still
-  writes a single lap. Each course lap could become a FIT lap.
-
 ## Import FIT for POIs?
 
 - FIT course files carry course points (climbs, sprints, food, turns) that GPX usually

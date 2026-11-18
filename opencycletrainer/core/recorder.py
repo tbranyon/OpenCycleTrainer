@@ -43,9 +43,12 @@ class RecorderSample:
     grade_percent: float | None = None
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    lap_number: int | None = None
 
 
-COURSE_SAMPLE_FIELDS = ("distance_m", "altitude_m", "grade_percent", "latitude_deg", "longitude_deg")
+COURSE_SAMPLE_FIELDS = (
+    "distance_m", "altitude_m", "grade_percent", "latitude_deg", "longitude_deg", "lap_number",
+)
 """Names of the RecorderSample fields that describe the rider's place on a course."""
 
 

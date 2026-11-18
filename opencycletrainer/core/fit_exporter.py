@@ -40,6 +40,17 @@ class FitExportSample:
     grade_percent: float | None = None
     latitude_deg: float | None = None
     longitude_deg: float | None = None
+    lap_number: int | None = None
+
+
+@dataclass(frozen=True)
+class _LapSpan:
+    """The stretch of a ride that one FIT lap message covers."""
+
+    start_utc: datetime
+    end_utc: datetime
+    sample_count: int
+    distance_m: float | None
 
 
 class FitWriterBackend(Protocol):
@@ -190,16 +201,27 @@ class _FitToolWriterBackend:
         # A ride along a course is a virtual ride; anything else is plain indoor cycling.
         sub_sport = SubSport.VIRTUAL_ACTIVITY if has_positions else SubSport.INDOOR_CYCLING
 
-        lap = LapMessage()
-        _set_field(lap, ("timestamp",), finish_ts_ms)
-        _set_field(lap, ("start_time", "startTime"), start_ts_ms)
-        _set_field(lap, ("total_elapsed_time", "totalElapsedTime"), elapsed_seconds)
-        _set_field(lap, ("total_timer_time", "totalTimerTime"), timer_seconds)
-        if total_distance_m is not None:
-            _set_field(lap, ("total_distance", "totalDistance"), total_distance_m)
-        _set_field(lap, ("event",), _enum_value(Event.LAP))
-        _set_field(lap, ("event_type", "eventType"), _enum_value(EventType.STOP))
-        builder.add(lap)
+        lap_spans = _lap_spans(samples, started_at_utc, finished_at_utc)
+        for index, span in enumerate(lap_spans):
+            lap = LapMessage()
+            _set_field(lap, ("message_index", "messageIndex"), index)
+            _set_field(lap, ("timestamp",), _to_fit_timestamp_ms(span.end_utc))
+            _set_field(lap, ("start_time", "startTime"), _to_fit_timestamp_ms(span.start_utc))
+            _set_field(
+                lap,
+                ("total_elapsed_time", "totalElapsedTime"),
+                (span.end_utc - span.start_utc).total_seconds(),
+            )
+            _set_field(
+                lap,
+                ("total_timer_time", "totalTimerTime"),
+                float(span.sample_count) * _RECORD_INTERVAL_SECONDS,
+            )
+            if span.distance_m is not None:
+                _set_field(lap, ("total_distance", "totalDistance"), span.distance_m)
+            _set_field(lap, ("event",), _enum_value(Event.LAP))
+            _set_field(lap, ("event_type", "eventType"), _enum_value(EventType.STOP))
+            builder.add(lap)
 
         session = SessionMessage()
         _set_field(session, ("timestamp",), finish_ts_ms)
@@ -215,7 +237,7 @@ class _FitToolWriterBackend:
             _set_field(session, ("total_descent", "totalDescent"), total_descent_m)
         _set_field(session, ("event",), _enum_value(Event.SESSION))
         _set_field(session, ("event_type", "eventType"), _enum_value(EventType.STOP_DISABLE_ALL))
-        _set_field(session, ("num_laps", "numLaps"), 1)
+        _set_field(session, ("num_laps", "numLaps"), len(lap_spans))
         builder.add(session)
 
         activity = ActivityMessage()
@@ -236,6 +258,45 @@ def _total_distance_m(samples: list[FitExportSample]) -> float | None:
     """Return the distance covered by the last sample that has one, or None if none do."""
     distances = [sample.distance_m for sample in samples if sample.distance_m is not None]
     return float(distances[-1]) if distances else None
+
+
+def _lap_spans(
+    samples: list[FitExportSample], started_at_utc: datetime, finished_at_utc: datetime
+) -> list[_LapSpan]:
+    """Split the ride into laps wherever the samples' lap number changes.
+
+    Samples without a lap number stay in the lap they follow, so a ride with no lap
+    numbers is a single lap. A lap runs until the next one starts, and its distance is
+    measured from the end of the lap before it.
+    """
+    groups: list[list[FitExportSample]] = []
+    current_lap: int | None = None
+    for sample in samples:
+        starts_new_lap = (
+            sample.lap_number is not None
+            and current_lap is not None
+            and sample.lap_number != current_lap
+        )
+        if not groups or starts_new_lap:
+            groups.append([])
+        groups[-1].append(sample)
+        if sample.lap_number is not None:
+            current_lap = sample.lap_number
+    if not groups:
+        return [_LapSpan(started_at_utc, finished_at_utc, 0, None)]
+
+    spans: list[_LapSpan] = []
+    previous_distance_m = 0.0
+    for index, group in enumerate(groups):
+        start_utc = started_at_utc if index == 0 else group[0].timestamp_utc
+        end_utc = groups[index + 1][0].timestamp_utc if index + 1 < len(groups) else finished_at_utc
+        last_distance_m = _total_distance_m(group)
+        distance_m = None
+        if last_distance_m is not None:
+            distance_m = last_distance_m - previous_distance_m
+            previous_distance_m = last_distance_m
+        spans.append(_LapSpan(start_utc, end_utc, len(group), distance_m))
+    return spans
 
 
 def _total_ascent_descent_m(samples: list[FitExportSample]) -> tuple[int | None, int | None]:
@@ -365,6 +426,7 @@ class JsonFitWriterBackend:
                     "grade_percent": sample.grade_percent,
                     "latitude_deg": sample.latitude_deg,
                     "longitude_deg": sample.longitude_deg,
+                    "lap_number": sample.lap_number,
                 }
                 for sample in samples
             ],

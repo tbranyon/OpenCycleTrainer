@@ -140,7 +140,7 @@ class OneSecondAggregator:
         self._last_total_kj: float | None = None
         self._last_dfa_alpha1: float | None = None
         self._last_dfa_quality: str | None = None
-        self._last_course: dict[str, float | None] = dict.fromkeys(COURSE_SAMPLE_FIELDS)
+        self._last_course: dict[str, float | int | None] = dict.fromkeys(COURSE_SAMPLE_FIELDS)
 
     def set_recording_active(self, active: bool) -> None:
         """Update the aggregator's recording state.

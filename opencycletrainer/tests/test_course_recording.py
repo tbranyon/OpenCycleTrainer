@@ -207,3 +207,83 @@ def test_fit_session_stays_indoor_cycling_without_a_course(tmp_path):
     assert session.total_distance is None
     assert records[0].position_lat is None
     assert records[0].distance is None
+
+
+# ── Course laps ───────────────────────────────────────────────────────────────
+
+def _lapped_samples(laps: list[int]) -> list[FitExportSample]:
+    """One FIT sample per second at 10 m/s, in the given lap numbers."""
+    return [
+        to_fit_export_sample(_course_sample(second, lap_number=lap))
+        for second, lap in enumerate(laps)
+    ]
+
+
+def test_aggregator_keeps_the_lap_number():
+    aggregator = OneSecondAggregator()
+    aggregator.set_recording_active(True)
+
+    aggregator.feed(_course_sample(0.1, lap_number=2))
+    completed = aggregator.feed(_course_sample(1.1, lap_number=2))
+
+    assert completed[0].lap_number == 2
+
+
+def test_recorder_sample_converts_its_lap_number_for_fit_export():
+    assert to_fit_export_sample(_course_sample(0, lap_number=3)).lap_number == 3
+
+
+def test_recorder_writes_the_lap_number_to_the_samples_file(tmp_path):
+    recorder = WorkoutRecorder(
+        data_dir=tmp_path,
+        flush_batch_size=1,
+        fit_exporter=FitExporter(writer_backend=JsonFitWriterBackend()),
+    )
+    recorder.start("Col", started_at_utc=_START)
+    recorder.record_sample(_course_sample(0, lap_number=2))
+
+    summary = recorder.stop(finished_at_utc=_START + timedelta(seconds=1))
+
+    rows = [
+        json.loads(line)
+        for line in summary.samples_file_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[0]["lap_number"] == 2
+
+
+def test_fit_export_writes_a_lap_per_course_lap(tmp_path):
+    from fit_tool.profile.messages.lap_message import LapMessage
+    from fit_tool.profile.messages.session_message import SessionMessage
+
+    messages = _export(tmp_path, _lapped_samples([1, 1, 1, 2, 2, 3, 3, 3, 3]))
+
+    laps = [message for message in messages if isinstance(message, LapMessage)]
+    session = next(message for message in messages if isinstance(message, SessionMessage))
+    assert len(laps) == 3
+    assert session.num_laps == 3
+    assert [lap.total_timer_time for lap in laps] == pytest.approx([3.0, 2.0, 4.0])
+
+
+def test_each_fit_lap_covers_its_own_distance_and_time(tmp_path):
+    from fit_tool.profile.messages.lap_message import LapMessage
+
+    messages = _export(tmp_path, _lapped_samples([1, 1, 1, 2, 2, 3, 3, 3, 3]))
+
+    laps = [message for message in messages if isinstance(message, LapMessage)]
+    # Samples sit 10 m apart; a lap runs from the previous lap's last sample to its own.
+    assert [lap.total_distance for lap in laps] == pytest.approx([20.0, 20.0, 40.0], abs=0.01)
+    start_seconds = [(lap.start_time - laps[0].start_time) / 1000.0 for lap in laps]
+    assert start_seconds == pytest.approx([0.0, 3.0, 5.0])
+    assert [lap.total_elapsed_time for lap in laps] == pytest.approx([3.0, 2.0, 4.0])
+
+
+def test_fit_export_without_lap_numbers_writes_a_single_lap(tmp_path):
+    from fit_tool.profile.messages.lap_message import LapMessage
+    from fit_tool.profile.messages.session_message import SessionMessage
+
+    messages = _export(tmp_path, [to_fit_export_sample(_course_sample(second)) for second in range(4)])
+
+    laps = [message for message in messages if isinstance(message, LapMessage)]
+    session = next(message for message in messages if isinstance(message, SessionMessage))
+    assert len(laps) == 1
+    assert session.num_laps == 1

@@ -264,8 +264,10 @@ def test_the_chosen_course_is_the_one_loaded(session, tmp_path):
 
     assert s.state == EngineState.READY
     assert s.screen.title_label.text() == "River Road x3"
+    # The test track runs straight north, so each lap after the first rides back to the start.
+    lap_m = 4 * _POINT_SPACING_METERS
     assert s.controller.course_ride.course.total_distance_m == pytest.approx(
-        12 * _POINT_SPACING_METERS, rel=1e-3
+        3 * lap_m + 2 * lap_m, rel=1e-3
     )
 
 
@@ -468,6 +470,30 @@ def test_recorded_samples_place_the_rider_on_the_course(session, tmp_path):
     assert distances == sorted(distances)
 
 
+def test_recorded_samples_number_the_course_lap_being_ridden(session, tmp_path):
+    s = session(course_chooser=lambda course, units, parent: course.laps(3))
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=2)))
+    s.start()
+
+    s.ride(45.0, 250)
+
+    ride = s.controller.course_ride
+    laps = [sample.lap_number for sample in s.recorder.samples]
+    assert laps == sorted(laps)
+    assert {1, 2} <= set(laps)
+    assert laps[-1] == ride.course.lap_number_at(s.recorder.samples[-1].distance_m)
+
+
+def test_recorded_samples_of_a_single_course_are_all_lap_one(session, tmp_path):
+    s = session()
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+
+    s.ride(10.0, 250)
+
+    assert {sample.lap_number for sample in s.recorder.samples} == {1}
+
+
 def test_recorded_samples_have_no_course_fields_outside_a_course(session):
     s = session()
     s.load(DATA_DIR / "step_only.mrc")
@@ -478,6 +504,7 @@ def test_recorded_samples_have_no_course_fields_outside_a_course(session):
     assert s.recorder.samples
     assert all(sample.distance_m is None for sample in s.recorder.samples)
     assert all(sample.latitude_deg is None for sample in s.recorder.samples)
+    assert all(sample.lap_number is None for sample in s.recorder.samples)
 
 
 def test_paused_course_ride_does_not_advance(session, tmp_path):

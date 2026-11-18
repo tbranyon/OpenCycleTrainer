@@ -358,7 +358,7 @@ class WorkoutSessionController(QObject):
             self._last_speed_mps, self._last_speed_received_at, float(self._monotonic_clock())
         )
 
-    def _course_readings(self) -> dict[str, float | None]:
+    def _course_readings(self) -> dict[str, float | int | None]:
         """Return the rider's place on the course for the recorder; empty outside a course."""
         ride = self._course_ride
         if ride is None:
@@ -370,6 +370,7 @@ class WorkoutSessionController(QObject):
             "grade_percent": ride.grade_percent,
             "latitude_deg": latitude,
             "longitude_deg": longitude,
+            "lap_number": ride.course.lap_number_at(ride.distance_m),
         }
 
     def _course_distance_m(self) -> float | None:

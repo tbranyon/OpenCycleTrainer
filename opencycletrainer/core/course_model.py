@@ -26,10 +26,14 @@ class CoursePoint:
 
 @dataclass(frozen=True)
 class Course:
-    """A distance-based route with an elevation profile, ridden from start to end."""
+    """A distance-based route with an elevation profile, ridden from start to end.
+
+    *lap_starts_m* marks where each lap begins; a plain course is a single lap.
+    """
 
     name: str
     points: tuple[CoursePoint, ...]
+    lap_starts_m: tuple[float, ...] = (0.0,)
     _distances: tuple[float, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -38,11 +42,26 @@ class Course:
         distances = tuple(point.distance_m for point in self.points)
         if any(later <= earlier for earlier, later in zip(distances, distances[1:])):
             raise ValueError("Course point distances must be strictly increasing.")
+        laps = self.lap_starts_m
+        if not laps or laps[0] > distances[0]:
+            raise ValueError("The first lap must begin at the start of the course.")
+        if any(later <= earlier for earlier, later in zip(laps, laps[1:])):
+            raise ValueError("Lap starts must be strictly increasing.")
+        if laps[-1] >= distances[-1]:
+            raise ValueError("Every lap must begin before the end of the course.")
         object.__setattr__(self, "_distances", distances)
 
     @property
     def total_distance_m(self) -> float:
         return self._distances[-1]
+
+    @property
+    def lap_count(self) -> int:
+        return len(self.lap_starts_m)
+
+    def lap_number_at(self, distance_m: float) -> int:
+        """Return the 1-based lap that *distance_m* falls in, clamped to the first and last lap."""
+        return max(1, bisect_right(self.lap_starts_m, float(distance_m)))
 
     @property
     def total_ascent_m(self) -> float:
@@ -129,7 +148,11 @@ class Course:
         points = list(self.points)
         for lap in range(1, count):
             points.extend(_shifted(point, lap * lap_length_m) for point in repeated_points)
-        return Course(name=self.name if name is None else name, points=tuple(points))
+        return Course(
+            name=self.name if name is None else name,
+            points=tuple(points),
+            lap_starts_m=tuple(lap * lap_length_m for lap in range(count)),
+        )
 
     def _closing_gap_m(self) -> float:
         """Straight-line distance from the course's end back to its start, 0 without coordinates."""
