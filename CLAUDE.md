@@ -24,7 +24,16 @@ Comment classes and methods succinctly. Do not comment method code inline unless
 - Tests should reflect the intended behavior and interface, not the implementation
 - Get tests failing for the right reason before writing code to pass them
 - For larger features, write tests incrementally — one behavior at a time
+- "One behavior at a time" means one behavior per test, not one assertion per test; related checks of the same behavior belong together.
 - Ask clarifying questions if a feature or request is insufficiently defined and there is no clear logical interpretation that can be inferred.
+
+## Writing Tests
+- Test observable behavior, not construction. Skip tests that only check a freshly built object's defaults, dataclass field access, or that a widget/label exists. A test that clicks a button and checks the result covers its existence too.
+- Search the existing tests before adding one; extend or parametrize rather than duplicate.
+- Use `@pytest.mark.parametrize` when cases differ only in inputs and expected values.
+- Keep tests deterministic. Prefer injected/fake clocks and explicit synchronisation (e.g. an Event that blocks a worker) over sleeps and timed polling. If a test must "let a thread catch up" before changing state, suspect a race in the code, not the test.
+- Qt tests must not leak app-wide state: dispose screens/dialogs a test creates when it can, and never leave event filters installed on the QApplication (see `tests/conftest.py`).
+- Keep the full suite fast (about a minute). If a change makes it noticeably slower, find out why.
 
 ## Documentation
 When implementing items from TODOs.md, **always** clean them from the list (delete the line then renumber existing items as needed) once completed and passing tests.
