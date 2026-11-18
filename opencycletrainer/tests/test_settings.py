@@ -4,6 +4,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from opencycletrainer.storage.settings import (
     AppSettings,
     JogPersistenceMode,
@@ -416,3 +418,31 @@ def test_road_surface_missing_key_defaults_to_smooth_road():
 
 def test_road_surface_invalid_value_defaults_to_smooth_road():
     assert AppSettings.from_dict({"road_surface": "moon dust"}).road_surface == "smooth_road"
+
+
+# ── Course chart ──────────────────────────────────────────────────────────────
+
+
+def test_course_zoom_span_defaults_to_one_distance_unit():
+    assert AppSettings().course_zoom_span == 1.0
+
+
+def test_course_zoom_span_round_trips_through_serialization():
+    settings_file = _settings_file()
+    save_settings(AppSettings(course_zoom_span=2.5), settings_file)
+
+    assert load_settings(settings_file).course_zoom_span == 2.5
+
+
+@pytest.mark.parametrize("stored, expected", [(0.0, 0.1), (-3.0, 0.1), (500.0, 50.0), ("x", 1.0)])
+def test_course_zoom_span_is_kept_within_limits(stored, expected):
+    assert AppSettings.from_dict({"course_zoom_span": stored}).course_zoom_span == expected
+
+
+def test_course_grade_colors_default_on_and_round_trip():
+    settings_file = _settings_file()
+    assert AppSettings().course_grade_colors is True
+
+    save_settings(AppSettings(course_grade_colors=False), settings_file)
+
+    assert load_settings(settings_file).course_grade_colors is False

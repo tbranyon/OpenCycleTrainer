@@ -21,13 +21,6 @@ designed yet.
   "next POI in X km" tile.
 - Could also accept a FIT course as the course itself, not just for POIs.
 
-## Zoomed-in segment profile, configurable?
-
-- A second, zoomed elevation plot for the road just ahead, like the interval plot does for
-  workouts. The elevation profile currently shows the whole course only.
-- Configurable: how far ahead it looks (e.g. next 1 / 2 / 5 km), and maybe whether to show it
-  at all, like the existing "Show interval plot" toggle.
-
 ## Change units on an already loaded course when settings change
 
 - Switching units in Settings while a course is loaded doesn't fully update what's on screen.

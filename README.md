@@ -15,6 +15,7 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * Simulation mode which has the trainer simulate a road grade (FTMS indoor bike simulation), adjustable via the jog hotkeys
 * Ride a GPX course: the trainer follows the course's grade while your power drives a virtual speed along its elevation profile
 * Ride a whole course, just part of it (from/to a chosen distance), or several laps of it, with each lap recorded as a FIT lap
+* Course elevation profile with a zoomed-in view of the road ahead (configurable span) and climbs coloured by grade
 * Selectable road surface (smooth road to loose gravel) that sets rolling resistance for simulated rides
 * Metric or imperial units for speed, distance, elevation and weight
 * Jog current power target or resistance in 1 or 5% steps via hotkeys

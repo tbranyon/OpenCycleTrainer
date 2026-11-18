@@ -876,3 +876,46 @@ def test_road_surface_dropdown_autosaves_and_notifies():
 
     assert load_settings(settings_path).road_surface == "gravel"
     assert applied[-1].road_surface == "gravel"
+
+
+# ── Course chart ──────────────────────────────────────────────────────────────
+
+
+def test_course_zoom_span_reflects_saved_setting_and_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(course_zoom_span=2.0), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.course_zoom_span_spinbox.value() == 2.0
+
+    screen.course_zoom_span_spinbox.setValue(3.5)
+
+    assert load_settings(settings_path).course_zoom_span == 3.5
+
+
+def test_course_zoom_span_is_labelled_in_the_chosen_distance_unit():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.course_zoom_span_label.text() == "Zoomed Course Span (km)"
+
+    screen.imperial_units_checkbox.setChecked(True)
+
+    assert screen.course_zoom_span_label.text() == "Zoomed Course Span (mi)"
+    assert screen.course_zoom_span_spinbox.value() == 1.0
+
+
+def test_course_grade_colors_toggle_reflects_saved_setting_and_autosaves():
+    _get_or_create_qapp()
+    settings_path = _test_settings_path()
+    save_settings(AppSettings(course_grade_colors=True), settings_path)
+    screen = SettingsScreen(settings_path=settings_path)
+
+    assert screen.course_grade_colors_checkbox.isChecked()
+
+    screen.course_grade_colors_checkbox.setChecked(False)
+
+    assert load_settings(settings_path).course_grade_colors is False

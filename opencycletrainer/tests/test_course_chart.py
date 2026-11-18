@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from opencycletrainer.core.course_model import Course, CoursePoint
-from opencycletrainer.ui.workout_chart import WorkoutChartWidget
+from opencycletrainer.ui.workout_chart import WorkoutChartWidget, course_grade_band
 
 
 def _qapp():
@@ -227,3 +227,262 @@ def test_units_can_be_set_before_any_course_is_loaded():
     widget.set_display_units("imperial")
 
     assert not widget.course_plot_shown
+
+
+# ── Zoomed view ───────────────────────────────────────────────────────────────
+
+_METERS_PER_MILE = 1609.344
+
+
+def _long_course() -> Course:
+    """A 5 km course sampled every 50 m: 2 km flat at 100 m, then a steady +5 % climb."""
+    points = []
+    for index in range(101):
+        distance = index * 50.0
+        elevation = 100.0 if distance <= 2000.0 else 100.0 + (distance - 2000.0) * 0.05
+        points.append(CoursePoint(distance_m=distance, elevation_m=elevation))
+    return Course(name="Long Course", points=tuple(points))
+
+
+def _x_range(widget: WorkoutChartWidget) -> tuple[float, float]:
+    (x_min, x_max), _ = widget._course_plot.getViewBox().viewRange()
+    return x_min, x_max
+
+
+def _y_range(widget: WorkoutChartWidget) -> tuple[float, float]:
+    _, (y_min, y_max) = widget._course_plot.getViewBox().viewRange()
+    return y_min, y_max
+
+
+def _zoomed(units: str = "metric") -> WorkoutChartWidget:
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.set_display_units(units)
+    widget.load_course(_long_course())
+    widget.course_zoom_button.click()
+    return widget
+
+
+def test_course_starts_in_the_full_view_with_a_zoom_button():
+    _qapp()
+    widget = WorkoutChartWidget()
+
+    widget.load_course(_long_course())
+
+    assert not widget.course_zoomed
+    assert widget.course_zoom_button.isVisibleTo(widget._course_plot)
+    assert _x_range(widget) == pytest.approx((0.0, 5000.0))
+
+
+def test_zoomed_view_shows_one_kilometre_from_the_rider_by_default():
+    widget = _zoomed()
+
+    assert widget.course_zoomed
+    assert _x_range(widget) == pytest.approx((0.0, 1000.0))
+
+
+def test_zoomed_view_shows_one_mile_with_imperial_units():
+    widget = _zoomed(units="imperial")
+
+    assert _x_range(widget) == pytest.approx((0.0, _METERS_PER_MILE))
+
+
+def test_zoom_span_is_configurable():
+    widget = _zoomed()
+
+    widget.set_course_zoom_span(2.5)
+
+    assert _x_range(widget) == pytest.approx((0.0, 2500.0))
+
+
+def test_zoomed_view_holds_still_until_the_rider_nears_its_right_edge():
+    widget = _zoomed()
+
+    widget.set_course_position(940.0)
+
+    assert _x_range(widget) == pytest.approx((0.0, 1000.0))
+
+
+def test_zoomed_view_moves_the_rider_back_to_the_left_at_95_percent():
+    widget = _zoomed()
+
+    widget.set_course_position(950.0)
+
+    assert _x_range(widget) == pytest.approx((950.0, 1950.0))
+
+    widget.set_course_position(1800.0)
+
+    assert _x_range(widget) == pytest.approx((950.0, 1950.0))
+
+
+def test_zoomed_view_draws_the_road_in_full_detail():
+    widget = _zoomed()
+
+    distances, _ = widget._course_profile.getOriginalDataset()
+
+    assert list(distances[:3]) == pytest.approx([0.0, 50.0, 100.0])
+
+
+def test_zoomed_view_scales_elevation_to_the_road_in_view():
+    widget = _zoomed()
+    flat_low, flat_high = _y_range(widget)
+
+    widget.set_course_position(3000.0)
+    climb_low, climb_high = _y_range(widget)
+
+    # Flat at 100 m in the first window; 150 m to 200 m in the window from 3 km.
+    assert flat_low <= 100.0 <= flat_high
+    assert flat_high - flat_low < 30.0
+    assert climb_low <= 150.0 and climb_high >= 200.0
+    assert climb_low > 120.0
+    assert climb_high - climb_low < 100.0
+
+
+def test_zoom_button_returns_to_the_full_view():
+    widget = _zoomed()
+    widget.set_course_position(3000.0)
+
+    widget.course_zoom_button.click()
+
+    assert not widget.course_zoomed
+    assert _x_range(widget) == pytest.approx((0.0, 5000.0))
+    _, (y_min, y_max) = widget._course_plot.getViewBox().viewRange()
+    assert y_min <= 100.0 and y_max >= 250.0
+
+
+def test_zooming_in_mid_ride_starts_the_view_at_the_rider():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_long_course())
+    widget.set_course_position(2200.0)
+
+    widget.course_zoom_button.click()
+
+    assert _x_range(widget) == pytest.approx((2200.0, 3200.0))
+
+
+def test_reloading_a_course_starts_the_zoomed_view_at_the_start():
+    widget = _zoomed()
+    widget.set_course_position(3000.0)
+
+    widget.load_course(_long_course())
+
+    assert widget.course_zoomed
+    assert _x_range(widget) == pytest.approx((0.0, 1000.0))
+
+
+def test_ridden_road_is_highlighted_in_the_zoomed_view():
+    widget = _zoomed()
+
+    widget.set_course_position(1200.0)
+    widget.set_course_position(1500.0)
+
+    distances, _ = widget._course_ridden.getOriginalDataset()
+    assert distances[-1] == pytest.approx(1500.0)
+
+
+def test_zoom_button_sits_top_right_unless_the_road_climbs_into_that_corner():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_course())  # ends on a descent at the right
+    assert widget.course_zoom_button_corner == "right"
+
+    widget.load_course(_long_course())  # climbs to its highest point at the right
+    assert widget.course_zoom_button_corner == "left"
+
+
+# ── Position dot ──────────────────────────────────────────────────────────────
+
+def _dot(widget: WorkoutChartWidget) -> tuple[float, float]:
+    x, y = widget._course_dot.getData()
+    return float(x[0]), float(y[0])
+
+
+def test_position_dot_sits_on_the_profile_at_the_rider():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_course())
+
+    assert _dot(widget) == pytest.approx((0.0, 100.0))
+
+    widget.set_course_position(1500.0)
+
+    assert _dot(widget) == pytest.approx((1500.0, 140.0))
+
+
+def test_position_dot_follows_the_rider_in_the_zoomed_view():
+    widget = _zoomed()
+
+    widget.set_course_position(2500.0)
+
+    assert _dot(widget) == pytest.approx((2500.0, 125.0))
+
+
+# ── Grade colours ─────────────────────────────────────────────────────────────
+
+def _graded_course() -> Course:
+    """1 km each of flat, +4.5 %, +8 %, +12 % and -12 %."""
+    profile = ((0.0, 0.0), (1000.0, 0.0), (2000.0, 45.0), (3000.0, 125.0), (4000.0, 245.0), (5000.0, 125.0))
+    return Course(
+        name="Graded",
+        points=tuple(CoursePoint(distance_m=d, elevation_m=e) for d, e in profile),
+    )
+
+
+def _band_segments(widget: WorkoutChartWidget, band: str) -> list[tuple[float, float]]:
+    """(start, end) distances of the profile segments coloured as *band*."""
+    distances, _ = widget._course_grade_items[band].getOriginalDataset()
+    if distances is None:
+        return []
+    return [(float(a), float(b)) for a, b in zip(distances[::2], distances[1::2])]
+
+
+@pytest.mark.parametrize(
+    "grade, band",
+    [
+        (-12.0, None), (0.0, None), (2.9, None),
+        (3.0, "moderate"), (6.0, "moderate"),
+        (6.1, "steep"), (10.0, "steep"),
+        (10.1, "very_steep"), (20.0, "very_steep"),
+    ],
+)
+def test_grade_bands(grade, band):
+    assert course_grade_band(grade) == band
+
+
+def test_climbs_are_coloured_by_grade():
+    _qapp()
+    widget = WorkoutChartWidget()
+
+    widget.load_course(_graded_course())
+
+    assert _band_segments(widget, "moderate") == [(1000.0, 2000.0)]
+    assert _band_segments(widget, "steep") == [(2000.0, 3000.0)]
+    assert _band_segments(widget, "very_steep") == [(3000.0, 4000.0)]
+
+
+def test_grade_colours_can_be_turned_off():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_graded_course())
+
+    widget.set_course_grade_colors(False)
+
+    for band in ("moderate", "steep", "very_steep"):
+        assert _band_segments(widget, band) == []
+
+    widget.set_course_grade_colors(True)
+
+    assert _band_segments(widget, "steep") == [(2000.0, 3000.0)]
+
+
+def test_grade_colours_follow_the_zoomed_view():
+    _qapp()
+    widget = WorkoutChartWidget()
+    widget.load_course(_graded_course())
+    widget.course_zoom_button.click()
+
+    widget.set_course_position(2000.0)
+
+    assert _band_segments(widget, "steep") == [(2000.0, 3000.0)]
+    assert _band_segments(widget, "moderate") == []

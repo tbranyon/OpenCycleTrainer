@@ -855,3 +855,34 @@ def test_changing_surface_mid_ride_takes_effect(session, tmp_path):
     assert s.state == EngineState.RUNNING
     assert s.controller.course_ride.speed_mps < smooth_speed - 0.5
     assert _wait_until(s.app, lambda: _simulation_rolling_resistances(transport)[-1:] == [0.012])
+
+
+# ── Course chart settings ─────────────────────────────────────────────────────
+
+def test_course_chart_uses_the_zoom_span_and_grade_colour_settings(session, tmp_path):
+    s = session(settings=AppSettings(course_zoom_span=0.5, course_grade_colors=False))
+    s.load(_write_gpx(tmp_path, _constant_grade(8.0)))
+    chart = s.screen.chart_widget
+
+    chart.course_zoom_button.click()
+
+    (x_min, x_max), _ = chart._course_plot.getViewBox().viewRange()
+    assert x_max - x_min == pytest.approx(500.0)
+    steep, _ = chart._course_grade_items["steep"].getOriginalDataset()
+    assert steep is None or len(steep) == 0
+
+
+def test_changed_course_chart_settings_apply_to_the_course_shown(session, tmp_path):
+    from dataclasses import replace
+
+    s = session()
+    s.load(_write_gpx(tmp_path, _constant_grade(8.0)))
+    chart = s.screen.chart_widget
+    chart.course_zoom_button.click()
+
+    s.screen.apply_settings(replace(s.settings, course_zoom_span=2.0, course_grade_colors=False))
+
+    (x_min, x_max), _ = chart._course_plot.getViewBox().viewRange()
+    assert x_max - x_min == pytest.approx(2000.0)
+    steep, _ = chart._course_grade_items["steep"].getOriginalDataset()
+    assert steep is None or len(steep) == 0

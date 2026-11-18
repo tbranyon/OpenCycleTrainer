@@ -81,6 +81,11 @@ DEFAULT_SIMULATION_DIFFICULTY_PERCENT = 100
 MIN_SIMULATION_DIFFICULTY_PERCENT = 0
 MAX_SIMULATION_DIFFICULTY_PERCENT = 100
 
+DEFAULT_COURSE_ZOOM_SPAN = 1.0
+"""Default width of the zoomed course view, in display distance units (km or mi)."""
+MIN_COURSE_ZOOM_SPAN = 0.1
+MAX_COURSE_ZOOM_SPAN = 50.0
+
 
 def _clamped_float(raw: Any, default: float, minimum: float, maximum: float) -> float:
     """Return *raw* as a float within [minimum, maximum], or *default* if it is not a number."""
@@ -136,6 +141,10 @@ class AppSettings:
     simulation_difficulty_percent: int = DEFAULT_SIMULATION_DIFFICULTY_PERCENT
     # Surface being ridden, which sets the rolling resistance of a simulated ride.
     road_surface: str = DEFAULT_ROAD_SURFACE
+    # Width of the zoomed course view, in display distance units (km or mi).
+    course_zoom_span: float = DEFAULT_COURSE_ZOOM_SPAN
+    # Colour climbs on the course profile by how steep they are.
+    course_grade_colors: bool = True
 
     @property
     def total_mass_kg(self) -> float:
@@ -166,6 +175,8 @@ class AppSettings:
             "bike_weight_kg": self.bike_weight_kg,
             "simulation_difficulty_percent": self.simulation_difficulty_percent,
             "road_surface": self.road_surface,
+            "course_zoom_span": self.course_zoom_span,
+            "course_grade_colors": self.course_grade_colors,
         }
 
     @classmethod
@@ -232,6 +243,13 @@ class AppSettings:
                 )
             ),
             road_surface=road_surface,
+            course_zoom_span=_clamped_float(
+                data.get("course_zoom_span"),
+                DEFAULT_COURSE_ZOOM_SPAN,
+                MIN_COURSE_ZOOM_SPAN,
+                MAX_COURSE_ZOOM_SPAN,
+            ),
+            course_grade_colors=bool(data.get("course_grade_colors", True)),
         )
 
 

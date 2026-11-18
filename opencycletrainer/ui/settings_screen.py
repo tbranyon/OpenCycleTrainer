@@ -53,9 +53,11 @@ from opencycletrainer.storage.settings import (
     DISPLAY_UNITS_METRIC,
     JogPersistenceMode,
     MAX_BIKE_WEIGHT_KG,
+    MAX_COURSE_ZOOM_SPAN,
     MAX_RIDER_WEIGHT_KG,
     MAX_SIMULATION_DIFFICULTY_PERCENT,
     MIN_BIKE_WEIGHT_KG,
+    MIN_COURSE_ZOOM_SPAN,
     MIN_RIDER_WEIGHT_KG,
     MIN_SIMULATION_DIFFICULTY_PERCENT,
     ROAD_SURFACE_AGED_ASPHALT,
@@ -70,7 +72,7 @@ from opencycletrainer.storage.settings import (
     load_settings,
     save_settings,
 )
-from .ride_format import kilograms_per_weight_unit, weight_unit_label
+from .ride_format import distance_unit_label, kilograms_per_weight_unit, weight_unit_label
 from .tile_config import MAX_CONFIGURABLE_TILES, TILE_OPTIONS, normalize_tile_selections
 from .toggle_switch import ToggleSwitch
 
@@ -96,6 +98,15 @@ WEIGHT_STEP_LB = 1.0
 # a weight entered in pounds reads back as the same number of pounds.
 STORED_WEIGHT_DECIMALS = 2
 SIMULATION_DIFFICULTY_STEP_PERCENT = 5
+COURSE_ZOOM_SPAN_DECIMALS = 1
+COURSE_ZOOM_SPAN_STEP = 0.5
+COURSE_ZOOM_SPAN_TOOLTIP = (
+    "How much road the zoomed-in course view shows ahead of you, in kilometres or miles"
+)
+COURSE_GRADE_COLORS_TOOLTIP = (
+    "Colour climbs on the course profile: yellow from 3% to 6%, red above 6% to 10%, "
+    "dark red above 10%"
+)
 
 SPINBOX_MAX_WIDTH = 100
 COMBO_MAX_WIDTH = 180
@@ -407,6 +418,20 @@ class SettingsScreen(QWidget):
         self.show_interval_plot_checkbox = ToggleSwitch("Show interval plot", charts_group)
         self.show_interval_plot_checkbox.setChecked(self._settings.show_interval_plot)
         charts_layout.addRow(self.show_interval_plot_checkbox)
+        self.course_grade_colors_checkbox = ToggleSwitch("Colour climbs by grade", charts_group)
+        self.course_grade_colors_checkbox.setChecked(self._settings.course_grade_colors)
+        self.course_grade_colors_checkbox.setToolTip(COURSE_GRADE_COLORS_TOOLTIP)
+        charts_layout.addRow(self.course_grade_colors_checkbox)
+        self.course_zoom_span_label = QLabel("", charts_group)
+        self.course_zoom_span_spinbox = QDoubleSpinBox(charts_group)
+        self.course_zoom_span_spinbox.setDecimals(COURSE_ZOOM_SPAN_DECIMALS)
+        self.course_zoom_span_spinbox.setRange(MIN_COURSE_ZOOM_SPAN, MAX_COURSE_ZOOM_SPAN)
+        self.course_zoom_span_spinbox.setSingleStep(COURSE_ZOOM_SPAN_STEP)
+        self.course_zoom_span_spinbox.setValue(self._settings.course_zoom_span)
+        self.course_zoom_span_spinbox.setMaximumWidth(SPINBOX_MAX_WIDTH)
+        self.course_zoom_span_spinbox.setToolTip(COURSE_ZOOM_SPAN_TOOLTIP)
+        charts_layout.addRow(self.course_zoom_span_label, self.course_zoom_span_spinbox)
+        self._label_course_zoom_span()
         root_layout.addWidget(charts_group)
 
         strava_group = QGroupBox("Strava", self)
@@ -526,6 +551,8 @@ class SettingsScreen(QWidget):
             simulation_difficulty_percent=self.simulation_difficulty_spinbox.value(),
             display_units=self._selected_display_units(),
             road_surface=str(self.road_surface_combo.currentData()),
+            course_zoom_span=self.course_zoom_span_spinbox.value(),
+            course_grade_colors=self.course_grade_colors_checkbox.isChecked(),
         )
 
     def _selected_display_units(self) -> str:
@@ -576,7 +603,13 @@ class SettingsScreen(QWidget):
 
     def _on_units_toggled(self) -> None:
         self._show_weights_in_display_units()
+        self._label_course_zoom_span()
         self._autosave()
+
+    def _label_course_zoom_span(self) -> None:
+        """Name the zoomed course span's unit; the number keeps its value in either unit."""
+        unit = distance_unit_label(self._selected_display_units())
+        self.course_zoom_span_label.setText(f"Zoomed Course Span ({unit})")
 
     def set_ftp(self, watts: int) -> None:
         """Set FTP from code (not typed by the rider); saved and applied like any edit."""
@@ -631,6 +664,8 @@ class SettingsScreen(QWidget):
         self.strava_auto_sync_checkbox.toggled.connect(self._autosave)
         self.intervals_icu_auto_sync_checkbox.toggled.connect(self._autosave)
         self.show_interval_plot_checkbox.toggled.connect(self._autosave)
+        self.course_grade_colors_checkbox.toggled.connect(self._autosave)
+        self.course_zoom_span_spinbox.valueChanged.connect(self._autosave)
         self.rider_weight_spinbox.valueChanged.connect(self._on_rider_weight_edited)
         self.bike_weight_spinbox.valueChanged.connect(self._on_bike_weight_edited)
         self.simulation_difficulty_spinbox.valueChanged.connect(self._autosave)

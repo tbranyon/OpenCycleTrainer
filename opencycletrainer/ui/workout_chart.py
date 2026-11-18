@@ -9,11 +9,11 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
 
-from opencycletrainer.core.course_model import Course
+from opencycletrainer.core.course_model import GRADE_WINDOW_METERS, Course
 from opencycletrainer.core.workout_model import Workout
-from opencycletrainer.storage.settings import DISPLAY_UNITS_METRIC
+from opencycletrainer.storage.settings import DEFAULT_COURSE_ZOOM_SPAN, DISPLAY_UNITS_METRIC
 
 from .ride_format import (
     distance_unit_label,
@@ -73,6 +73,30 @@ _COURSE_RIDDEN_FILL = (34, 197, 94, 120)  # green under the road already ridden
 _COURSE_Y_PADDING_RATIO = 0.1             # headroom above/below the profile, as a share of its height
 _COURSE_MIN_Y_SPAN_METERS = 20.0          # a dead-flat course still gets a visible band
 _COURSE_MAX_PLOT_POINTS = 2000            # longer profiles are thinned for drawing
+_COURSE_ZOOM_MIN_Y_SPAN_METERS = 10.0     # the zoomed view exaggerates small rises, but not road noise
+_COURSE_ZOOM_SCROLL_RATIO = 0.95          # the zoomed view moves on once the rider is this far across it
+_COURSE_DOT_SIZE = 8                      # px; small marker on the profile at the rider
+_COURSE_DOT_PEN = (30, 41, 59)            # dark slate outline
+_COURSE_DOT_BRUSH = (255, 255, 255)
+_COURSE_GRADE_PEN_WIDTH = 3
+# Climbs coloured by grade: (band, lowest grade %, highest grade %, colour). Each band
+# includes its upper bound; grades below the first band keep the plain profile colour.
+GRADE_BAND_MODERATE = "moderate"
+GRADE_BAND_STEEP = "steep"
+GRADE_BAND_VERY_STEEP = "very_steep"
+_COURSE_GRADE_BANDS: tuple[tuple[str, float, float, tuple[int, int, int]], ...] = (
+    (GRADE_BAND_MODERATE, 3.0, 6.0, (234, 179, 8)),        # yellow
+    (GRADE_BAND_STEEP, 6.0, 10.0, (220, 38, 38)),          # red
+    (GRADE_BAND_VERY_STEEP, 10.0, float("inf"), (127, 29, 29)),  # dark red
+)
+_ZOOM_BUTTON_MARGIN_PX = 4
+_ZOOM_BUTTON_HEIGHT_RATIO = 0.25          # share of the plot's height the zoom button may cover
+_ZOOM_BUTTON_WIDTH_RATIO = 0.2            # share of the plot's width the zoom button may cover
+_ZOOM_BUTTON_ZOOM_TEXT = "Zoom"
+_ZOOM_BUTTON_FULL_TEXT = "Full"
+_ZOOM_BUTTON_TOOLTIP = "Switch between the whole course and a close-up of the road ahead"
+_CORNER_LEFT = "left"
+_CORNER_RIGHT = "right"
 _COURSE_PLOT_STRETCH = 4
 _COURSE_RIDE_PLOT_STRETCH = 6
 _INTERVAL_PLOT_STRETCH = 6
@@ -139,9 +163,17 @@ class WorkoutChartWidget(QWidget):
         self._color_theme: str = _COLOR_THEME_LIGHT
 
         self._course: Course | None = None
+        # Every point of the course, and the points drawn in the current view.
+        self._course_all_distances = np.array([], dtype=float)
+        self._course_all_elevations = np.array([], dtype=float)
         self._course_distances = np.array([], dtype=float)
         self._course_elevations = np.array([], dtype=float)
         self._course_ridden_drawn_m: float = 0.0
+        self._course_zoomed: bool = False
+        self._course_zoom_span: float = DEFAULT_COURSE_ZOOM_SPAN
+        self._course_window_start_m: float = 0.0
+        self._course_grade_colors: bool = True
+        self._course_zoom_button_corner: str = _CORNER_RIGHT
         self._interval_plot_wanted: bool = True
         self._display_units: str = DISPLAY_UNITS_METRIC
 
@@ -151,6 +183,9 @@ class WorkoutChartWidget(QWidget):
         self._course_profile: pg.PlotDataItem | None = None
         self._course_ridden: pg.PlotDataItem | None = None
         self._course_pos: pg.InfiniteLine | None = None
+        self._course_dot: pg.ScatterPlotItem | None = None
+        self._course_grade_items: dict[str, pg.PlotDataItem] = {}
+        self._course_zoom_button: QToolButton | None = None
 
         self._interval_plot = _make_plot()
         self._workout_plot  = _make_plot()
@@ -224,10 +259,50 @@ class WorkoutChartWidget(QWidget):
         """Distance along the course the position marker currently sits at."""
         return float(self._course_pos.value()) if self._course_pos is not None else 0.0
 
+    @property
+    def course_zoomed(self) -> bool:
+        """True while the course plot shows a close-up of the road ahead, not the whole course."""
+        return self._course_zoomed
+
+    @property
+    def course_zoom_button(self) -> QToolButton | None:
+        """The on-plot button that switches between the whole course and the close-up."""
+        return self._course_zoom_button
+
+    @property
+    def course_zoom_button_corner(self) -> str:
+        """Top corner ("left" or "right") the zoom button sits in, chosen to keep the road clear."""
+        return self._course_zoom_button_corner
+
     def set_display_units(self, units: str) -> None:
         """Show course distance and elevation in metric (km, m) or imperial (mi, ft) units."""
         self._display_units = units
         self._apply_course_units()
+        if self._course_zoomed:
+            self._redraw_course_view()
+
+    def set_course_zoomed(self, zoomed: bool) -> None:
+        """Show the whole course, or a close-up that starts at the rider."""
+        self._course_zoomed = bool(zoomed)
+        if self._course_zoom_button is not None:
+            self._course_zoom_button.setChecked(self._course_zoomed)
+            self._course_zoom_button.setText(
+                _ZOOM_BUTTON_FULL_TEXT if self._course_zoomed else _ZOOM_BUTTON_ZOOM_TEXT
+            )
+        if self._course is not None:
+            self._course_window_start_m = self._window_start_for(self.course_position_m)
+        self._redraw_course_view()
+
+    def set_course_zoom_span(self, span: float) -> None:
+        """Set how much road the close-up shows, in display distance units (km or mi)."""
+        self._course_zoom_span = float(span)
+        if self._course_zoomed:
+            self._redraw_course_view()
+
+    def set_course_grade_colors(self, enabled: bool) -> None:
+        """Colour climbs on the course profile by grade, or draw the profile in one colour."""
+        self._course_grade_colors = bool(enabled)
+        self._redraw_course_grades()
 
     def _apply_course_units(self) -> None:
         """Label and scale the course plot's axes for the display units; no-op until it is built.
@@ -249,32 +324,124 @@ class WorkoutChartWidget(QWidget):
         self.load_free_ride()
         self._ensure_course_plot()
         self._course = course
-        stride = max(1, -(-len(course.points) // _COURSE_MAX_PLOT_POINTS))
-        drawn = list(course.points[::stride])
-        if drawn[-1] is not course.points[-1]:
-            drawn.append(course.points[-1])
-        self._course_distances = np.array([point.distance_m for point in drawn], dtype=float)
-        self._course_elevations = np.array([point.elevation_m for point in drawn], dtype=float)
-
-        floor, ceiling = _course_y_range(course)
-        for item in (self._course_profile, self._course_ridden):
-            item.setFillLevel(floor)
-        self._course_profile.setData(self._course_distances, self._course_elevations)
-        self._course_ridden.setData([], [])
-        self._course_ridden_drawn_m = 0.0
+        self._course_all_distances = np.array([point.distance_m for point in course.points], dtype=float)
+        self._course_all_elevations = np.array([point.elevation_m for point in course.points], dtype=float)
+        self._course_window_start_m = 0.0
         self._course_pos.setValue(0.0)
-        self._course_plot.setXRange(0.0, float(course.total_distance_m), padding=0)
-        self._course_plot.setYRange(floor, ceiling, padding=0)
+        self._move_course_dot(0.0)
+        self._redraw_course_view()
         self._apply_plot_layout()
 
     def set_course_position(self, distance_m: float) -> None:
-        """Move the rider's marker to *distance_m* and shade the road behind it."""
+        """Move the rider's marker to *distance_m* and shade the road behind it.
+
+        The close-up holds still until the rider is most of the way across it, then
+        moves on so the rider is back at its left edge.
+        """
         if self._course is None:
             return
         distance = min(max(0.0, float(distance_m)), float(self._course.total_distance_m))
         self._course_pos.setValue(distance)
-        redraw_step = self._course.total_distance_m / _COURSE_MAX_PLOT_POINTS
-        if abs(distance - self._course_ridden_drawn_m) < redraw_step:
+        self._move_course_dot(distance)
+        if self._course_zoomed:
+            start = self._course_window_start_m
+            scroll_at = start + _COURSE_ZOOM_SCROLL_RATIO * self._course_zoom_span_m()
+            if distance < start or distance >= scroll_at:
+                new_start = self._window_start_for(distance)
+                if new_start != start:
+                    self._course_window_start_m = new_start
+                    self._redraw_course_view()
+                    return
+        self._draw_course_ridden(distance)
+
+    def clear_course(self) -> None:
+        """Remove the course profile and give its space back to the workout charts."""
+        self._course = None
+        self._course_all_distances = np.array([], dtype=float)
+        self._course_all_elevations = np.array([], dtype=float)
+        self._course_distances = np.array([], dtype=float)
+        self._course_elevations = np.array([], dtype=float)
+        if self._course_plot is not None:
+            self._course_profile.setData([], [])
+            self._course_ridden.setData([], [])
+            self._course_pos.setValue(0.0)
+            self._course_dot.setData([], [])
+            for item in self._course_grade_items.values():
+                item.setData([], [])
+        self._apply_plot_layout()
+
+    def _course_zoom_span_m(self) -> float:
+        return self._course_zoom_span * meters_per_distance_unit(self._display_units)
+
+    def _window_start_for(self, distance_m: float) -> float:
+        """Start of a close-up with the rider at its left edge, kept from running past the finish."""
+        if self._course is None:
+            return 0.0
+        last_start = max(0.0, self._course.total_distance_m - self._course_zoom_span_m())
+        return min(max(0.0, distance_m), last_start)
+
+    def _redraw_course_view(self) -> None:
+        """Draw the profile, grade colours and axes for the whole course or the current close-up."""
+        course = self._course
+        if course is None or self._course_plot is None:
+            return
+        if self._course_zoomed:
+            start = self._course_window_start_m
+            end = start + self._course_zoom_span_m()
+            distances, elevations = _window_profile(
+                course, self._course_all_distances, self._course_all_elevations, start, end
+            )
+            x_range = (start, end)
+            floor, ceiling = _profile_y_range(elevations, _COURSE_ZOOM_MIN_Y_SPAN_METERS)
+        else:
+            distances, elevations = _thinned(self._course_all_distances, self._course_all_elevations)
+            x_range = (0.0, float(course.total_distance_m))
+            floor, ceiling = _profile_y_range(elevations, _COURSE_MIN_Y_SPAN_METERS)
+        self._course_distances = distances
+        self._course_elevations = elevations
+        for item in (self._course_profile, self._course_ridden):
+            item.setFillLevel(floor)
+        self._course_profile.setData(distances, elevations)
+        self._course_plot.setXRange(*x_range, padding=0)
+        self._course_plot.setYRange(floor, ceiling, padding=0)
+        self._redraw_course_grades()
+        self._course_zoom_button_corner = _zoom_button_corner(
+            distances, elevations, x_range, (floor, ceiling)
+        )
+        self._place_zoom_button()
+        self._draw_course_ridden(self.course_position_m, force=True)
+
+    def _redraw_course_grades(self) -> None:
+        """Overlay the climbs in view in their grade colours, or clear them when switched off."""
+        if not self._course_grade_items:
+            return
+        segments: dict[str, tuple[list[float], list[float]]] = {
+            band: ([], []) for band in self._course_grade_items
+        }
+        if self._course_grade_colors and self._course is not None:
+            distances = self._course_distances
+            elevations = self._course_elevations
+            for index in range(len(distances) - 1):
+                start, end = float(distances[index]), float(distances[index + 1])
+                grade = self._course.grade_percent_at(
+                    (start + end) / 2.0, window_m=max(GRADE_WINDOW_METERS, end - start)
+                )
+                band = course_grade_band(grade)
+                if band is None:
+                    continue
+                xs, ys = segments[band]
+                xs.extend((start, end))
+                ys.extend((float(elevations[index]), float(elevations[index + 1])))
+        for band, (xs, ys) in segments.items():
+            self._course_grade_items[band].setData(np.array(xs), np.array(ys))
+
+    def _draw_course_ridden(self, distance: float, *, force: bool = False) -> None:
+        """Shade the road in view behind *distance*; skipped for moves too small to see."""
+        if len(self._course_distances) < 2:
+            return
+        view_span = float(self._course_distances[-1] - self._course_distances[0])
+        redraw_step = view_span / _COURSE_MAX_PLOT_POINTS
+        if not force and abs(distance - self._course_ridden_drawn_m) < redraw_step:
             return
         self._course_ridden_drawn_m = distance
         ridden = int(np.searchsorted(self._course_distances, distance, side="right"))
@@ -283,18 +450,29 @@ class WorkoutChartWidget(QWidget):
         if ridden and distances[-1] < distance:
             distances = np.append(distances, distance)
             elevations = np.append(elevations, self._course.elevation_at(distance))
+        if len(distances) < 2:
+            distances, elevations = np.array([], dtype=float), np.array([], dtype=float)
         self._course_ridden.setData(distances, elevations)
 
-    def clear_course(self) -> None:
-        """Remove the course profile and give its space back to the workout charts."""
-        self._course = None
-        self._course_distances = np.array([], dtype=float)
-        self._course_elevations = np.array([], dtype=float)
-        if self._course_plot is not None:
-            self._course_profile.setData([], [])
-            self._course_ridden.setData([], [])
-            self._course_pos.setValue(0.0)
-        self._apply_plot_layout()
+    def _move_course_dot(self, distance: float) -> None:
+        self._course_dot.setData([distance], [self._course.elevation_at(distance)])
+
+    def _on_course_zoom_clicked(self, checked: bool) -> None:
+        self.set_course_zoomed(checked)
+
+    def _place_zoom_button(self) -> None:
+        """Put the zoom button in the top corner of the plot area that the road leaves clear."""
+        button = self._course_zoom_button
+        if button is None or self._course_plot is None:
+            return
+        button.adjustSize()
+        view_box = self._course_plot.getViewBox()
+        area = self._course_plot.mapFromScene(view_box.sceneBoundingRect()).boundingRect()
+        if self._course_zoom_button_corner == _CORNER_LEFT:
+            x = area.left() + _ZOOM_BUTTON_MARGIN_PX
+        else:
+            x = area.right() - button.width() - _ZOOM_BUTTON_MARGIN_PX
+        button.move(max(0, int(x)), max(0, int(area.top() + _ZOOM_BUTTON_MARGIN_PX)))
 
     def _ensure_course_plot(self) -> None:
         """Build the course plot and its items above the other plots, the first time it is needed."""
@@ -314,8 +492,32 @@ class WorkoutChartWidget(QWidget):
             brush=pg.mkBrush(color=_COURSE_RIDDEN_FILL),
         )
         self._course_pos = _make_position_line()
-        for item in (self._course_profile, self._course_ridden, self._course_pos):
+        self._course_grade_items = {
+            band: pg.PlotDataItem(
+                [], [], pen=pg.mkPen(color=color, width=_COURSE_GRADE_PEN_WIDTH), connect="pairs"
+            )
+            for band, _low, _high, color in _COURSE_GRADE_BANDS
+        }
+        self._course_dot = pg.ScatterPlotItem(
+            size=_COURSE_DOT_SIZE,
+            pen=pg.mkPen(color=_COURSE_DOT_PEN, width=1.5),
+            brush=pg.mkBrush(color=_COURSE_DOT_BRUSH),
+        )
+        for item in (
+            self._course_profile, self._course_ridden, *self._course_grade_items.values(),
+            self._course_pos, self._course_dot,
+        ):
             self._course_plot.addItem(item)
+        self._course_zoom_button = QToolButton(self._course_plot)
+        self._course_zoom_button.setCheckable(True)
+        self._course_zoom_button.setChecked(self._course_zoomed)
+        self._course_zoom_button.setText(
+            _ZOOM_BUTTON_FULL_TEXT if self._course_zoomed else _ZOOM_BUTTON_ZOOM_TEXT
+        )
+        self._course_zoom_button.setToolTip(_ZOOM_BUTTON_TOOLTIP)
+        self._course_zoom_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._course_zoom_button.clicked.connect(self._on_course_zoom_clicked)
+        self._course_plot.getViewBox().sigResized.connect(lambda _vb: self._place_zoom_button())
         self.layout().insertWidget(0, self._course_plot, 0)
         self._apply_course_theme(_theme_settings(self._color_theme))
         self._apply_course_units()
@@ -774,14 +976,84 @@ def _make_course_plot() -> pg.PlotWidget:
     return plot
 
 
-def _course_y_range(course: Course) -> tuple[float, float]:
-    """Return the (floor, ceiling) elevations to draw *course* between, with headroom."""
-    low = course.min_elevation_m
-    high = course.max_elevation_m
-    span = max(high - low, _COURSE_MIN_Y_SPAN_METERS)
+def _profile_y_range(elevations: np.ndarray, min_span_m: float) -> tuple[float, float]:
+    """Return the (floor, ceiling) to draw *elevations* between, with headroom.
+
+    A profile flatter than *min_span_m* is centred in a band that tall.
+    """
+    low = float(np.min(elevations))
+    high = float(np.max(elevations))
+    span = max(high - low, min_span_m)
     padding = span * _COURSE_Y_PADDING_RATIO
     middle = (low + high) / 2.0
     return middle - span / 2.0 - padding, middle + span / 2.0 + padding
+
+
+def _thinned(distances: np.ndarray, elevations: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return at most about _COURSE_MAX_PLOT_POINTS of a profile's points, always keeping its end."""
+    stride = max(1, -(-len(distances) // _COURSE_MAX_PLOT_POINTS))
+    if stride == 1:
+        return distances, elevations
+    keep = np.arange(0, len(distances), stride)
+    if keep[-1] != len(distances) - 1:
+        keep = np.append(keep, len(distances) - 1)
+    return distances[keep], elevations[keep]
+
+
+def _window_profile(
+    course: Course,
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    start_m: float,
+    end_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the profile from *start_m* to *end_m* (clamped to the course) at full detail.
+
+    Both ends are interpolated, so the profile meets the edges of the view.
+    """
+    end = min(end_m, float(course.total_distance_m))
+    first = int(np.searchsorted(distances, start_m, side="right"))
+    past = int(np.searchsorted(distances, end, side="left"))
+    window_distances = np.concatenate(([start_m], distances[first:past], [end]))
+    window_elevations = np.concatenate(
+        ([course.elevation_at(start_m)], elevations[first:past], [course.elevation_at(end)])
+    )
+    return _thinned(window_distances, window_elevations)
+
+
+def course_grade_band(grade_percent: float) -> str | None:
+    """Return the colour band a climb of *grade_percent* falls in, or None below 3 %."""
+    if grade_percent < _COURSE_GRADE_BANDS[0][1]:
+        return None
+    for band, _low, high, _color in _COURSE_GRADE_BANDS:
+        if grade_percent <= high:
+            return band
+    return None
+
+
+def _zoom_button_corner(
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+) -> str:
+    """Pick the top corner for the zoom button: right, unless the road rises into it and
+    the left corner is clearer."""
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    corner_width = (x_max - x_min) * _ZOOM_BUTTON_WIDTH_RATIO
+    clear_below = y_max - (y_max - y_min) * _ZOOM_BUTTON_HEIGHT_RATIO
+
+    def highest(from_x: float, to_x: float) -> float:
+        inside = elevations[(distances >= from_x) & (distances <= to_x)]
+        edges = np.interp([from_x, to_x], distances, elevations)
+        return float(np.max(np.concatenate((inside, edges))))
+
+    right = highest(x_max - corner_width, x_max)
+    left = highest(x_min, x_min + corner_width)
+    if right < clear_below or right <= left:
+        return _CORNER_RIGHT
+    return _CORNER_LEFT
 
 
 def _series_of(item: pg.PlotDataItem | None) -> tuple[np.ndarray, np.ndarray]:
