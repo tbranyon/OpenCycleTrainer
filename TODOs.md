@@ -23,3 +23,25 @@
     - Flathub builds x86_64 and aarch64: extend `packaging/linux/flatpak_deps.py` to emit wheels for both architectures, each marked with `only-arches`.
     - Be ready to justify each `finish-args` permission (Bluetooth/BlueZ for devices, network for Strava/intervals.icu/map tiles, Documents for exports).
     - Submit by pull request to the `new-pr` branch of `flathub/flathub`; later releases are pull requests to the resulting `flathub/<app-id>` repo (automatable with `x-checker-data`).
+9. **Crash recovery.** Samples are already streamed to `*.samples.jsonl` during the ride, but nothing looks for orphaned files at startup. Offer to finalize them into a FIT file.
+10. **ERG stall protection.** There is no "spiral of death" handling: when cadence collapses under ERG, ease the target and ramp back in.
+11. **Record distance and left/right balance in the FIT file.** Balance is decoded (`core/sensors.py:46`) and then dropped; distance can be integrated from speed.
+12. **FTP ramp test** that proposes a new FTP. FTP is manual only today, and it drives every percentage-based workout. Needs more definition before implementing (test protocol, how the result is computed, and how it is offered to the user).
+13. **Finish or remove half-built pieces:** `core/control/hybrid_mode.py` is unused; the live Hybrid mode runs a separate copy of that logic in `ui/mode_state.py`.
+14. **Discard deletes the ride with no confirmation**, and Esc does the same through Qt's default dialog behaviour (`ui/workout_summary_dialog.py:272`, `ui/workout_controller.py:750`). Confirm first; make Esc harmless.
+15. **Stop and skip act instantly, and Tab is the skip key.** One stray keypress skips an interval, Tab can no longer move focus, and the hotkeys are not listed anywhere in the app (`ui/hotkeys.py:41`). Rebind skip, confirm Stop, add a "?" overlay.
+16. **First run gives no guidance.** Start is visible with nothing loaded and silently does nothing, FTP defaults to 250, and nothing points to Devices. Add a short checklist: pair a trainer, set FTP, pick a workout.
+17. **Dark mode is partial.** Banners, builder hints and the summary dialog hard-code colours, although `ui/theme.py` already has a theme-aware palette.
+18. **Window size is fixed at 1024×720 and not remembered**, and the summary dialog's 760×760 minimum is taller than the main window.
+19. **After a ride, the banner shows only the file name.** Show the folder and add an "Open folder" action.
+
+# Ideas
+
+- **Run the core as a local service** (BLE, engine, recorder) with the UI as a client. A UI crash would no longer end the ride, and a phone could act as a remote or second screen.
+- **The UI framework.** `core/`, `devices/`, `storage/` and `integrations/` import no Qt, so a UI swap touches only `ui/` and `app.py`. Options:
+    - Stay on PySide6 widgets: nothing to migrate, but scaling, theming and big-number layouts stay manual.
+    - Qt Quick (QML) for the ride screen: GPU-drawn, fluid scaling, same Python core and BLE; two UI styles in one app during the transition.
+    - Local web UI over the service split above: any phone, tablet or TV becomes the display; browser latency for live charts and packaging a server.
+    - Flutter or Tauri rewrite: native mobile apps, but rewrites the BLE layer and FIT export and loses the test suite.
+
+    Earlier recommendation: stay on PySide6 and Python for now; do the service split when a second screen or phone remote becomes a goal, since it makes the UI replaceable without committing to a framework.
