@@ -270,6 +270,11 @@ class WorkoutLibraryScreen(QWidget):
         self.category_combo.currentIndexChanged.connect(self._on_category_filter_changed)
         toolbar.addWidget(self.category_combo)
 
+        self.load_button = QPushButton("Load Workout", self)
+        self.load_button.setEnabled(False)
+        self.load_button.clicked.connect(self._on_load_clicked)
+        toolbar.addWidget(self.load_button)
+
         self.edit_button = QPushButton("Edit in Builder", self)
         self.edit_button.setEnabled(False)
         self.edit_button.clicked.connect(self._on_edit_clicked)
@@ -426,8 +431,14 @@ class WorkoutLibraryScreen(QWidget):
         path = item.data(Qt.UserRole)
         if isinstance(path, Path):
             self._selected_path = path
+            self.load_button.setEnabled(True)
             self.edit_button.setEnabled(True)
             self._preview_pane.load(path)
+
+    def _on_load_clicked(self) -> None:
+        """Load the selected workout, as a double-click on its row does."""
+        if self._selected_path is not None:
+            self.workout_selected.emit(self._selected_path)
 
     def _on_edit_clicked(self) -> None:
         if self._selected_path is not None:

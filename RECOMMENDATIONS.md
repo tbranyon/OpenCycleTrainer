@@ -49,19 +49,18 @@ C++ would not have fixed any of them; it would only help install size and startu
 2. **Stop and skip act instantly, and Tab is the skip key.** One stray keypress skips an
    interval, Tab can no longer move focus, and the hotkeys are not listed anywhere in
    the app (`ui/hotkeys.py:41`). Rebind skip, confirm Stop, add a "?" overlay.
-3. **Loading from the Library is double-click only.** Add a Load button.
-4. **First run gives no guidance.** Start is visible with nothing loaded and silently
+3. **First run gives no guidance.** Start is visible with nothing loaded and silently
    does nothing, FTP defaults to 250, and nothing points to Devices. Add a short
    checklist: pair a trainer, set FTP, pick a workout.
-5. **Error banners vanish after 5 s** and dismiss by mouse click only
+4. **Error banners vanish after 5 s** and dismiss by mouse click only
    (`ui/workout_screen.py:642-656`). Keep errors until dismissed.
-6. **Hard to read from the bike.** Tile values are only 1–4 pt above default, there is
+5. **Hard to read from the bike.** Tile values are only 1–4 pt above default, there is
    no fullscreen mode, and the charts have no zone shading or legend.
-7. **Dark mode is partial.** Banners, builder hints and the summary dialog hard-code
+6. **Dark mode is partial.** Banners, builder hints and the summary dialog hard-code
    colours, although `ui/theme.py` already has a theme-aware palette.
-8. **Window size is fixed at 1024×720 and not remembered**, and the summary dialog's
+7. **Window size is fixed at 1024×720 and not remembered**, and the summary dialog's
    760×760 minimum is taller than the main window.
-9. **After a ride, the banner shows only the file name.** Show the folder and add an
+8. **After a ride, the banner shows only the file name.** Show the folder and add an
    "Open folder" action.
 
 **Bigger bet: the UI framework**

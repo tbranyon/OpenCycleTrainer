@@ -269,6 +269,33 @@ def test_double_click_emits_correct_path_for_each_row(tmp_path):
     assert names == {"step_only", "ramp"}
 
 
+# ── Load button ───────────────────────────────────────────────────────────────
+
+def test_load_button_emits_selected_workout(tmp_path):
+    screen, _, _ = _make_screen(tmp_path, user_files=[_STEP_MRC, _RAMP_MRC])
+    received: list[Path] = []
+    screen.workout_selected.connect(received.append)
+    ramp_row = next(
+        row for row in range(screen.table.rowCount())
+        if screen.table.item(row, 1).data(Qt.UserRole).name == "ramp.mrc"
+    )
+
+    screen.table.cellClicked.emit(ramp_row, 1)
+    screen.load_button.click()
+
+    assert [p.name for p in received] == ["ramp.mrc"]
+
+
+def test_load_button_does_nothing_before_a_row_is_selected(tmp_path):
+    screen, _, _ = _make_screen(tmp_path, user_files=[_STEP_MRC])
+    received: list[Path] = []
+    screen.workout_selected.connect(received.append)
+
+    screen.load_button.click()
+
+    assert received == []
+
+
 # ── Duration formatting ───────────────────────────────────────────────────────
 
 def test_format_duration_minutes_and_seconds():
