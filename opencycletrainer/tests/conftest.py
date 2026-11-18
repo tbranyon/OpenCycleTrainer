@@ -6,16 +6,59 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
+import gc
+
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
+
+# One application for the whole run, held here until the interpreter exits. Many test
+# modules create it from a helper and drop the only Python reference; with nothing
+# holding it, widgets still alive at interpreter exit crash Qt during teardown.
+_APP = QApplication.instance() or QApplication([])
 
 
 @pytest.fixture(scope="session")
 def qapp():
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
+    return _APP
+
+
+@pytest.fixture(scope="session", autouse=True)
+def tear_down_qt_at_session_end():
+    """Destroy leftover windows on the main thread before the interpreter shuts down.
+
+    Otherwise they are freed during interpreter teardown, after parts of Qt are gone,
+    and the process segfaults even though every test passed.
+    """
+    yield
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    gc.collect()
+
+
+@pytest.fixture(autouse=True)
+def discard_unfinished_recordings(monkeypatch):
+    """Discard any recording a test leaves running, so its writer thread stops.
+
+    A recorder's writer thread lives until its session ends. Left running, it can
+    trigger garbage collection of Qt objects off the GUI thread, which crashes Qt,
+    and it is still alive when the interpreter exits.
+    """
+    from opencycletrainer.core.recorder import WorkoutRecorder  # noqa: PLC0415
+
+    recorders: list[WorkoutRecorder] = []
+    original_init = WorkoutRecorder.__init__
+
+    def _tracking_init(self, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        recorders.append(self)
+
+    monkeypatch.setattr(WorkoutRecorder, "__init__", _tracking_init)
+    yield
+    for recorder in recorders:
+        recorder.discard()
 
 
 # Tests drive process_tick() explicitly from an injected fake monotonic clock,
@@ -66,7 +109,7 @@ def detach_workout_hotkeys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def shutdown_workout_controllers(monkeypatch, detach_workout_hotkeys):
+def shutdown_workout_controllers(monkeypatch, detach_workout_hotkeys, discard_unfinished_recordings):
     """Keep workout controller tick timers from firing into unrelated tests.
 
     Each controller is stretched to an inert tick interval on construction and
@@ -75,7 +118,8 @@ def shutdown_workout_controllers(monkeypatch, detach_workout_hotkeys):
     on into later tests. Tracking every instance makes the teardown
     unconditional; shutdown() is idempotent, so controllers already stopped by
     the test are unaffected. Depends on detach_workout_hotkeys so controllers
-    shut down before their hotkeys are detached.
+    shut down before their hotkeys are detached, and on discard_unfinished_recordings
+    so controllers finish their own recordings before leftovers are discarded.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
