@@ -79,14 +79,36 @@ def _track_instances(monkeypatch, cls, on_create=None) -> list:
     return instances
 
 
+_HELPER_WINDOW_MODULES = ("PySide6", "pyqtgraph")
+
+
 def _delete_windows(windows) -> None:
-    """Delete the windows not already gone, except those a parent will take with it."""
+    """Delete the windows not already gone, except those a parent will take with it.
+
+    Each pyqtgraph plot keeps parentless helper windows (its right-click menus and
+    options panel) that it touches when it is destroyed, so deleting a helper before
+    the plot's window crashes Qt. The app's windows and pyqtgraph canvases go first;
+    plain Qt and pyqtgraph windows still left afterwards go next.
+    """
+    from PySide6.QtWidgets import QGraphicsView  # noqa: PLC0415
     from shiboken6 import isValid  # noqa: PLC0415
 
-    for window in windows:
-        if isValid(window) and window.parent() is None:
-            window.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    def _is_helper(window) -> bool:
+        return (
+            type(window).__module__.startswith(_HELPER_WINDOW_MODULES)
+            and not isinstance(window, QGraphicsView)
+        )
+
+    remaining = list(windows)
+    for delete_helpers in (False, True):
+        for window in remaining:
+            if (
+                isValid(window)
+                and window.parent() is None
+                and _is_helper(window) == delete_helpers
+            ):
+                window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 @pytest.fixture(autouse=True)
@@ -138,26 +160,33 @@ def detach_workout_hotkeys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def dispose_workout_screens(monkeypatch):
-    """Delete the workout screens each test creates, once the test is over.
+def dispose_new_windows():
+    """Delete every window a test leaves behind, once the test is over.
 
-    Each screen holds the charts and the course map, whose pyqtgraph plots crash Qt if
-    they are left for the garbage collector or freed in bulk at the end of the run.
-    Screens inside a main window go with the window.
+    That is any widget without a parent that appeared during the test: screens,
+    dialogs, charts and maps a test built on their own, and the right-click menus
+    pyqtgraph creates for each plot, which outlive the plot. Left alive, pyqtgraph plots
+    crash Qt when the garbage collector frees them, or when freed in bulk at the end of
+    the run. Widgets inside a parent go with their parent.
     """
-    from opencycletrainer.ui.workout_screen import WorkoutScreen  # noqa: PLC0415
+    from shiboken6 import isValid  # noqa: PLC0415
 
-    screens = _track_instances(monkeypatch, WorkoutScreen)
+    existing = {id(widget) for widget in QApplication.topLevelWidgets() if isValid(widget)}
     yield
-    _delete_windows(screens)
+    _delete_windows(
+        widget
+        for widget in QApplication.topLevelWidgets()
+        if isValid(widget) and id(widget) not in existing
+    )
 
 
 @pytest.fixture(autouse=True)
-def dispose_main_windows(monkeypatch):
-    """Close and delete the main windows each test creates, once the test is over.
+def close_main_windows(monkeypatch, dispose_new_windows):
+    """Close the main windows each test creates, once the test is over.
 
     Closing runs the window's own shutdown (sync, controller, device backend), which is
-    safe to repeat for windows the test already closed.
+    safe to repeat for windows the test already closed. Depends on dispose_new_windows
+    so each window is closed before it is deleted.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
@@ -168,7 +197,6 @@ def dispose_main_windows(monkeypatch):
     for window in windows:
         if isValid(window):
             window.close()
-    _delete_windows(windows)
 
 
 @pytest.fixture(autouse=True)
@@ -176,8 +204,8 @@ def shutdown_workout_controllers(
     monkeypatch,
     detach_workout_hotkeys,
     discard_unfinished_recordings,
-    dispose_workout_screens,
-    dispose_main_windows,
+    dispose_new_windows,
+    close_main_windows,
 ):
     """Keep workout controller tick timers from firing into unrelated tests.
 
@@ -189,7 +217,7 @@ def shutdown_workout_controllers(
     the test are unaffected. Depends on detach_workout_hotkeys so controllers
     shut down before their hotkeys are detached, on discard_unfinished_recordings
     so controllers finish their own recordings before leftovers are discarded, and
-    on the screen and window fixtures so controllers stop before those are deleted.
+    on the window fixtures so controllers stop before their screens are deleted.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
