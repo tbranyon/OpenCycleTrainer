@@ -66,10 +66,15 @@ _RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
 
 _COURSE_PARSERS = {".gpx": parse_gpx_file, ".tcx": parse_tcx_file, ".fit": parse_fit_course_file}
 _ZWO_FILE_SUFFIX = ".zwo"
-_LOAD_FILE_FILTER = (
-    "Workouts and Courses (*.mrc *.zwo *.gpx *.tcx *.fit);;Workout Files (*.mrc *.zwo);;"
-    "Courses (*.gpx *.tcx *.fit)"
-)
+_WORKOUT_FILE_SUFFIXES = (".mrc", _ZWO_FILE_SUFFIX)
+
+
+def _file_filter(label: str, suffixes) -> str:
+    return f"{label} ({' '.join(f'*{suffix}' for suffix in suffixes)})"
+
+
+_WORKOUT_FILE_FILTER = _file_filter("Workout Files", _WORKOUT_FILE_SUFFIXES)
+_COURSE_FILE_FILTER = _file_filter("Course Files", _COURSE_PARSERS)
 _OPEN_ENDED_RIDE_SECONDS = 86400
 """Nominal length of a ride with no planned end (a free ride or a course)."""
 
@@ -408,6 +413,7 @@ class WorkoutSessionController(QObject):
         self._screen.jog_requested.connect(self._jog_target)
         self._screen.mode_selector.currentTextChanged.connect(self._mode_selected)
         self._screen.load_workout_requested.connect(self._request_load_workout_from_file)
+        self._screen.load_course_requested.connect(self._request_load_course_from_file)
         self._screen.free_ride_requested.connect(self._start_free_ride)
         self._screen.erg_target_entered.connect(self._on_erg_target_entered)
         self._screen.kj_source_selected.connect(self._on_kj_source_selected)
@@ -429,18 +435,18 @@ class WorkoutSessionController(QObject):
         self._load_workout_from_file(path)
 
     def _request_load_workout_from_file(self) -> None:
-        start_dir = str(self._settings.last_workout_dir or Path.home())
-        file_path_str, _ = QFileDialog.getOpenFileName(
-            self._screen,
-            "Load Workout or Course File",
-            start_dir,
-            _LOAD_FILE_FILTER,
-        )
-        if not file_path_str:
-            return
+        self._load_picked_file("Load Workout File", self._settings.last_workout_dir, _WORKOUT_FILE_FILTER)
 
-        file_path = Path(file_path_str)
-        self._load_workout_from_file(file_path)
+    def _request_load_course_from_file(self) -> None:
+        self._load_picked_file("Load Course", self._settings.last_course_dir, _COURSE_FILE_FILTER)
+
+    def _load_picked_file(self, caption: str, start_dir: Path | None, file_filter: str) -> None:
+        """Ask the rider for a file, starting in *start_dir* (or home), and load it unless they cancel."""
+        file_path_str, _ = QFileDialog.getOpenFileName(
+            self._screen, caption, str(start_dir or Path.home()), file_filter,
+        )
+        if file_path_str:
+            self._load_workout_from_file(Path(file_path_str))
 
     def _load_workout_from_file(self, path: Path) -> None:
         """Load a workout (.mrc, .zwo) or a course (.gpx, .tcx, .fit), chosen by the file's extension."""
@@ -494,7 +500,7 @@ class WorkoutSessionController(QObject):
             return
         self._clear_completed_recording()
         self._load_course(chosen)
-        self._settings.last_workout_dir = path.parent
+        self._settings.last_course_dir = path.parent
         save_settings(self._settings, self._settings_path)
 
     def _load_course(self, course: Course) -> None:

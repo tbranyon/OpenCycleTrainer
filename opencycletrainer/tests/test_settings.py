@@ -311,28 +311,29 @@ def test_workout_data_dir_nonexistent_path_returns_none():
     assert loaded.workout_data_dir is None
 
 
-def test_last_workout_dir_defaults_to_none():
-    assert AppSettings().last_workout_dir is None
+_LAST_DIR_FIELDS = ("last_workout_dir", "last_course_dir")
 
 
-def test_last_workout_dir_existing_path_round_trips():
+@pytest.mark.parametrize("field_name", _LAST_DIR_FIELDS)
+def test_last_file_dir_existing_path_round_trips(field_name):
     settings_file = _settings_file()
     existing_dir = settings_file.parent
-    settings = AppSettings(last_workout_dir=existing_dir)
+    settings = AppSettings(**{field_name: existing_dir})
 
     save_settings(settings, settings_file)
     loaded = load_settings(settings_file)
 
-    assert loaded.last_workout_dir == existing_dir
+    assert getattr(loaded, field_name) == existing_dir
 
 
-def test_last_workout_dir_nonexistent_path_returns_none():
+@pytest.mark.parametrize("field_name", _LAST_DIR_FIELDS)
+def test_last_file_dir_nonexistent_path_returns_none(field_name):
     settings_file = _settings_file()
-    settings_file.write_text('{"last_workout_dir": "/nonexistent/path/xyz"}', encoding="utf-8")
+    settings_file.write_text(f'{{"{field_name}": "/nonexistent/path/xyz"}}', encoding="utf-8")
 
     loaded = load_settings(settings_file)
 
-    assert loaded.last_workout_dir is None
+    assert getattr(loaded, field_name) is None
 
 
 def test_declined_intervals_icu_ftp_defaults_to_none_and_round_trips():

@@ -131,15 +131,29 @@ def test_pause_dialog_emits_resume_confirmed_after_countdown():
     assert confirmed == [True]
 
 
-def test_free_ride_button_emits_free_ride_requested():
+@pytest.mark.parametrize(
+    ("button_name", "signal_name"),
+    [
+        ("free_ride_button", "free_ride_requested"),
+        ("load_workout_button", "load_workout_requested"),
+        ("load_from_library_button", "load_from_library_requested"),
+        ("load_course_button", "load_course_requested"),
+    ],
+)
+def test_each_start_option_button_asks_for_its_own_action(button_name, signal_name):
     _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
+    received = {name: [] for name in (
+        "free_ride_requested", "load_workout_requested", "load_from_library_requested", "load_course_requested",
+    )}
+    for name, calls in received.items():
+        getattr(screen, name).connect(lambda calls=calls: calls.append(True))
 
-    received = []
-    screen.free_ride_requested.connect(lambda: received.append(True))
-    screen.free_ride_button.click()
+    getattr(screen, button_name).click()
 
-    assert received == [True]
+    assert {name: bool(calls) for name, calls in received.items()} == {
+        name: name == signal_name for name in received
+    }
 
 
 def test_metric_tile_does_not_show_editor_when_editing_disabled():
@@ -242,6 +256,7 @@ def test_set_free_ride_mode_false_disables_editing():
     assert screen.target_power_tile.editing_enabled is False
 
 
+_NONE = (False, False, False, False)
 _START_ONLY = (True, False, False, False)
 _ACTIVE = (False, True, False, True)
 _PAUSED = (False, False, True, True)
@@ -250,8 +265,8 @@ _PAUSED = (False, False, True, True)
 @pytest.mark.parametrize(
     ("state", "visible"),
     [
-        (None, _START_ONLY),
-        ("idle", _START_ONLY),
+        (None, _NONE),
+        ("idle", _NONE),
         ("ready", _START_ONLY),
         ("running", _ACTIVE),
         ("ramp_in", _ACTIVE),
@@ -261,7 +276,10 @@ _PAUSED = (False, False, True, True)
     ],
 )
 def test_control_buttons_visibility_per_session_state(state, visible):
-    """Visible flags are (start, pause, resume, end); None means the initial state."""
+    """Visible flags are (start, pause, resume, end); None means the initial state.
+
+    With nothing loaded ("idle") there is nothing to start, so Start is hidden too.
+    """
     _get_or_create_qapp()
     screen = WorkoutScreen(settings=AppSettings())
     if state is not None:

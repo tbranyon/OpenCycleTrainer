@@ -389,20 +389,69 @@ def test_gpx_without_elevation_explains_why_it_cannot_be_ridden(session, tmp_pat
     assert "elevation" in s.screen.alert_label.text()
 
 
-def test_file_dialog_offers_workouts_and_courses(session, monkeypatch):
+_WORKOUT_PATTERNS = ("*.mrc", "*.zwo")
+_COURSE_PATTERNS = ("*.gpx", "*.tcx", "*.fit")
+
+
+class _FakeFileDialog:
+    """Stands in for QFileDialog.getOpenFileName: records each call and answers with the next pick."""
+
+    def __init__(self, monkeypatch, *picks: Path | None) -> None:
+        self.calls: list[SimpleNamespace] = []
+        self._picks = list(picks)
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", self)
+
+    def __call__(self, parent, caption, directory, file_filter):  # noqa: ARG002
+        self.calls.append(SimpleNamespace(directory=directory, file_filter=file_filter))
+        pick = self._picks.pop(0) if self._picks else None
+        return (str(pick), "") if pick is not None else ("", "")
+
+
+@pytest.mark.parametrize(
+    ("button_name", "offered", "left_out"),
+    [
+        ("load_workout_button", _WORKOUT_PATTERNS, _COURSE_PATTERNS),
+        ("load_course_button", _COURSE_PATTERNS, _WORKOUT_PATTERNS),
+    ],
+)
+def test_each_load_button_offers_only_its_own_kind_of_file(session, monkeypatch, button_name, offered, left_out):
     s = session()
-    offered: list[str] = []
+    dialog = _FakeFileDialog(monkeypatch)
 
-    def _fake_dialog(parent, caption, directory, file_filter):  # noqa: ARG001
-        offered.append(file_filter)
-        return "", ""
+    getattr(s.screen, button_name).click()
 
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", _fake_dialog)
+    (call,) = dialog.calls
+    assert all(pattern in call.file_filter for pattern in offered)
+    assert not any(pattern in call.file_filter for pattern in left_out)
 
-    s.screen.load_from_file_button.click()
 
-    for pattern in ("*.gpx", "*.tcx", "*.fit", "*.mrc", "*.zwo"):
-        assert pattern in offered[0]
+def test_a_course_picked_from_the_course_button_is_ready_to_ride(session, monkeypatch, tmp_path):
+    s = session()
+    _FakeFileDialog(monkeypatch, _write_gpx(tmp_path, _constant_grade(2.0), name="Picked Climb"))
+
+    s.screen.load_course_button.click()
+    s.app.processEvents()
+
+    assert s.controller.course_ride is not None
+    assert s.state == EngineState.READY
+    assert s.screen.title_label.text() == "Picked Climb"
+
+
+def test_workout_and_course_pickers_each_reopen_where_their_last_file_came_from(session, monkeypatch, tmp_path):
+    workouts, courses = tmp_path / "workouts", tmp_path / "courses"
+    workouts.mkdir()
+    courses.mkdir()
+    workout_path = workouts / "ramp.mrc"
+    workout_path.write_bytes((DATA_DIR / "ramp.mrc").read_bytes())
+    course_path = _write_gpx(courses, _constant_grade(2.0))
+    s = session()
+    dialog = _FakeFileDialog(monkeypatch, workout_path, course_path)
+
+    for button in (s.screen.load_workout_button, s.screen.load_course_button) * 2:
+        button.click()
+
+    assert [call.directory for call in dialog.calls[2:]] == [str(workouts), str(courses)]
+    assert (s.settings.last_workout_dir, s.settings.last_course_dir) == (workouts, courses)
 
 
 def test_zwo_workout_loads_from_a_file(session):
