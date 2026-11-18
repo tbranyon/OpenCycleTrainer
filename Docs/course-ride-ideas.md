@@ -6,12 +6,39 @@ designed yet.
 
 ## Map view
 
-- Show the route from above with the rider's position on it.
-- The data is already there: every `CoursePoint` keeps latitude and longitude, and
-  `CourseRide.position` gives the rider's current coordinates.
-- A street or terrain basemap needs map tiles from the internet, which goes against "no
-  internet access required". Drawing just the route outline offline (on a plain background,
-  or pyqtgraph like the other charts) avoids that. A basemap could be optional.
+A map panel on the right of the workout screen, as tall as the course profile and power plot
+together, shown on course rides only.
+
+Decisions:
+
+- Drawn in Qt by the app itself, not an embedded web view (Leaflet would pull in Qt's
+  Chromium, 100+ MB and awkward to package for Flatpak) and not QtLocation (its OpenStreetMap
+  plugin has relied on Qt-run redirect servers and providers that need API keys).
+- The route is drawn from the course's own coordinates, so it works offline. Map tiles are
+  only a background layer; with no internet the route shows on a plain background.
+- Route still to ride in red, ridden part in green, the rider as a small dot like the one on
+  the elevation profile. A lapped course shows one lap's geometry, coloured for the lap being
+  ridden.
+- Default tile source: OpenStreetMap. Opens in Follow mode (centred on the rider at road zoom),
+  with Whole route one click away. The panel starts expanded.
+- Using it needs internet only for the tiles, like intervals.icu sync; it never stops a ride.
+
+OpenStreetMap tile usage policy, which the tile layer must follow: send a User-Agent that
+identifies the app, show "© OpenStreetMap contributors" on the map, cache tiles and respect
+their cache headers, and never download tiles in bulk ahead of time.
+
+### Phases
+
+1. **Panel and offline route.** *(Done in v0.12.0.)* Collapsible panel on course rides with the route (red ahead,
+   green ridden), start and finish markers, the rider dot, Follow / Whole route toggle and
+   +/− zoom. Positions are in Web Mercator so tiles can sit under the route in phase 2.
+2. **Tile background.** OpenStreetMap tiles fetched with a QNetworkAccessManager, kept in a
+   disk cache, with attribution and an identifying User-Agent. Further presets (CyclOSM,
+   OpenTopoMap, Thunderforest OpenCycleMap with an API key) and a custom URL.
+3. **Settings.** "Show map on course rides" toggle and tile source choice in Settings →
+   Charts; remember the panel's width and whether it is collapsed.
+4. **Later.** Draw the map into the saved ride PNG; show points of interest if FIT course
+   import happens.
 
 ## Import FIT for POIs?
 
@@ -27,11 +54,6 @@ designed yet.
   them.
 - Ideas: an elevation gained tile (and gain remaining on the course), and climbing totals in the
   end-of-ride summary.
-
-## Add map view to the PNG?
-
-- The finished ride's chart is saved as a PNG (`ui/chart_export.py`). Once there is a map view,
-  the route could be drawn into that image too.
 
 ## Switch surfaces mid course (manual)
 

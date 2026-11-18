@@ -24,6 +24,7 @@ from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaRecord, SignalQuality
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.settings import AppSettings, THEME_MODE_LIGHT, load_settings
+from .course_map import CourseMapPanel
 from .hotkeys import WorkoutHotkeys
 from .mode_state import MODE_SIMULATION
 from .ride_format import format_grade_percent
@@ -35,6 +36,10 @@ MODE_OPTIONS = ("ERG", "Resistance", "Hybrid", MODE_SIMULATION)
 
 _INTERVAL_REMAINING_TILE_TITLE = "Interval Time/Work Remaining"
 _REMAINING_TILE_TITLE = "Time Remaining"
+_CHART_STRETCH = 3
+_COURSE_MAP_STRETCH = 2
+"""The map takes two fifths of the chart row's width beside the plots."""
+_CHART_ROW_SPACING_PX = 4
 _COURSE_GRADE_TILE_TITLE = "Grade"
 _COURSE_REMAINING_TILE_TITLE = "Distance Remaining"
 
@@ -550,6 +555,7 @@ class WorkoutScreen(QWidget):
     def apply_color_theme(self, color_theme: str) -> None:
         self._theme_mode = color_theme
         self.chart_widget.apply_color_theme(color_theme)
+        self.course_map_panel.apply_color_theme(color_theme)
         dfa_tile = self._tile_by_key.get(DFA_TILE_KEY)
         if isinstance(dfa_tile, DfaMetricTile):
             dfa_tile.apply_color_theme(color_theme)
@@ -817,12 +823,15 @@ class WorkoutScreen(QWidget):
         )
 
     def load_course_chart(self, course: Course) -> None:
-        """Show *course*'s elevation profile above an open-ended power chart."""
+        """Show *course*'s elevation profile above an open-ended power chart, and its map beside them."""
         self.chart_widget.load_course(course)
+        self.course_map_panel.load_course(course)
+        self.course_map_panel.setVisible(self.course_map_panel.has_route)
 
     def update_course_position(self, distance_m: float) -> None:
-        """Move the rider's marker along the course profile."""
+        """Move the rider's marker along the course profile and on the map."""
         self.chart_widget.set_course_position(distance_m)
+        self.course_map_panel.set_position(distance_m)
 
     def set_course_mode(self, active: bool) -> None:
         """Turn the interval and time-remaining tiles into grade and distance-remaining tiles.
@@ -837,6 +846,8 @@ class WorkoutScreen(QWidget):
         )
         if not active:
             self.chart_widget.clear_course()
+            self.course_map_panel.clear()
+            self.course_map_panel.setVisible(False)
 
     def set_free_ride_mode(self, active: bool) -> None:
         """Enable or disable inline ERG target editing on the target power tile."""
@@ -857,8 +868,22 @@ class WorkoutScreen(QWidget):
         self.erg_target_entered.emit(watts)
 
     def _build_chart_scaffolding(self, root_layout: QVBoxLayout) -> None:
+        """Lay out the plots, with the course map to their right on course rides."""
+        self._chart_row = QHBoxLayout()
+        self._chart_row.setSpacing(_CHART_ROW_SPACING_PX)
         self.chart_widget = WorkoutChartWidget(self)
-        root_layout.addWidget(self.chart_widget, stretch=1)
+        self.course_map_panel = CourseMapPanel(self)
+        self.course_map_panel.setVisible(False)
+        self.course_map_panel.collapsed_changed.connect(self._on_course_map_collapsed)
+        self._chart_row.addWidget(self.chart_widget, _CHART_STRETCH)
+        self._chart_row.addWidget(self.course_map_panel, _COURSE_MAP_STRETCH)
+        root_layout.addLayout(self._chart_row, stretch=1)
+
+    def _on_course_map_collapsed(self, collapsed: bool) -> None:
+        """Give the plots the map's width while it is tucked away."""
+        self._chart_row.setStretchFactor(
+            self.course_map_panel, 0 if collapsed else _COURSE_MAP_STRETCH
+        )
 
     def set_trainer_controls_visible(self, visible: bool) -> None:
         """Show or hide the trainer mode and OpenTrueUp footer controls."""
