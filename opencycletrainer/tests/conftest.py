@@ -61,6 +61,34 @@ def pytest_unconfigure(config: pytest.Config) -> None:  # noqa: ARG001
     os._exit(exit_status)
 
 
+def _track_instances(monkeypatch, cls, on_create=None) -> list:
+    """Return a list that collects every *cls* created during the current test.
+
+    *on_create*, if given, is called with each new instance.
+    """
+    instances: list = []
+    original_init = cls.__init__
+
+    def _tracking_init(self, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        if on_create is not None:
+            on_create(self)
+        instances.append(self)
+
+    monkeypatch.setattr(cls, "__init__", _tracking_init)
+    return instances
+
+
+def _delete_windows(windows) -> None:
+    """Delete the windows not already gone, except those a parent will take with it."""
+    from shiboken6 import isValid  # noqa: PLC0415
+
+    for window in windows:
+        if isValid(window) and window.parent() is None:
+            window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 @pytest.fixture(autouse=True)
 def discard_unfinished_recordings(monkeypatch):
     """Discard any recording a test leaves running, so its writer thread stops.
@@ -71,14 +99,7 @@ def discard_unfinished_recordings(monkeypatch):
     """
     from opencycletrainer.core.recorder import WorkoutRecorder  # noqa: PLC0415
 
-    recorders: list[WorkoutRecorder] = []
-    original_init = WorkoutRecorder.__init__
-
-    def _tracking_init(self, *args, **kwargs) -> None:
-        original_init(self, *args, **kwargs)
-        recorders.append(self)
-
-    monkeypatch.setattr(WorkoutRecorder, "__init__", _tracking_init)
+    recorders = _track_instances(monkeypatch, WorkoutRecorder)
     yield
     for recorder in recorders:
         recorder.discard()
@@ -99,22 +120,15 @@ def detach_workout_hotkeys(monkeypatch):
     """Remove each test's application-wide hotkey filters at teardown.
 
     WorkoutHotkeys installs itself as an event filter on the QApplication and only
-    removes itself when its screen is destroyed. A screen a test leaves alive (one
-    inside a main window the test never closed, say) would keep its filter installed,
-    running on every later event: per-test cost would grow with every earlier Qt test.
+    removes itself when its screen is destroyed. A screen a test leaves alive would
+    keep its filter installed, running on every later event: per-test cost would
+    grow with every earlier Qt test.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
     from opencycletrainer.ui.hotkeys import WorkoutHotkeys  # noqa: PLC0415
 
-    instances: list[WorkoutHotkeys] = []
-    original_init = WorkoutHotkeys.__init__
-
-    def _tracking_init(self, *args, **kwargs) -> None:
-        original_init(self, *args, **kwargs)
-        instances.append(self)
-
-    monkeypatch.setattr(WorkoutHotkeys, "__init__", _tracking_init)
+    instances = _track_instances(monkeypatch, WorkoutHotkeys)
     yield
     app = QApplication.instance()
     for hotkeys in instances:
@@ -129,30 +143,41 @@ def dispose_workout_screens(monkeypatch):
 
     Each screen holds the charts and the course map, whose pyqtgraph plots crash Qt if
     they are left for the garbage collector or freed in bulk at the end of the run.
-    Screens inside a parent (a main window) go with their parent instead.
+    Screens inside a main window go with the window.
+    """
+    from opencycletrainer.ui.workout_screen import WorkoutScreen  # noqa: PLC0415
+
+    screens = _track_instances(monkeypatch, WorkoutScreen)
+    yield
+    _delete_windows(screens)
+
+
+@pytest.fixture(autouse=True)
+def dispose_main_windows(monkeypatch):
+    """Close and delete the main windows each test creates, once the test is over.
+
+    Closing runs the window's own shutdown (sync, controller, device backend), which is
+    safe to repeat for windows the test already closed.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
-    from opencycletrainer.ui.workout_screen import WorkoutScreen  # noqa: PLC0415
+    from opencycletrainer.ui.main_window import MainWindow  # noqa: PLC0415
 
-    screens: list[WorkoutScreen] = []
-    original_init = WorkoutScreen.__init__
-
-    def _tracking_init(self, *args, **kwargs) -> None:
-        original_init(self, *args, **kwargs)
-        screens.append(self)
-
-    monkeypatch.setattr(WorkoutScreen, "__init__", _tracking_init)
+    windows = _track_instances(monkeypatch, MainWindow)
     yield
-    for screen in screens:
-        if isValid(screen) and screen.parent() is None:
-            screen.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    for window in windows:
+        if isValid(window):
+            window.close()
+    _delete_windows(windows)
 
 
 @pytest.fixture(autouse=True)
 def shutdown_workout_controllers(
-    monkeypatch, detach_workout_hotkeys, discard_unfinished_recordings, dispose_workout_screens
+    monkeypatch,
+    detach_workout_hotkeys,
+    discard_unfinished_recordings,
+    dispose_workout_screens,
+    dispose_main_windows,
 ):
     """Keep workout controller tick timers from firing into unrelated tests.
 
@@ -164,21 +189,17 @@ def shutdown_workout_controllers(
     the test are unaffected. Depends on detach_workout_hotkeys so controllers
     shut down before their hotkeys are detached, on discard_unfinished_recordings
     so controllers finish their own recordings before leftovers are discarded, and
-    on dispose_workout_screens so controllers stop before their screens are deleted.
+    on the screen and window fixtures so controllers stop before those are deleted.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
     from opencycletrainer.ui.workout_controller import WorkoutSessionController  # noqa: PLC0415
 
-    controllers: list[WorkoutSessionController] = []
-    original_init = WorkoutSessionController.__init__
-
-    def _tracking_init(self, *args, **kwargs) -> None:
-        original_init(self, *args, **kwargs)
-        self._timer.setInterval(_INERT_TICK_INTERVAL_MS)
-        controllers.append(self)
-
-    monkeypatch.setattr(WorkoutSessionController, "__init__", _tracking_init)
+    controllers = _track_instances(
+        monkeypatch,
+        WorkoutSessionController,
+        on_create=lambda controller: controller._timer.setInterval(_INERT_TICK_INTERVAL_MS),
+    )
     yield
     for controller in controllers:
         # A controller parented to a closed window is already torn down, and its
