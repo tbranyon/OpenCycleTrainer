@@ -13,11 +13,10 @@ designed yet.
   internet access required". Drawing just the route outline offline (on a plain background,
   or pyqtgraph like the other charts) avoids that. A basemap could be optional.
 
-## Split course / lap option on import
+## FIT laps for lapped courses
 
-- On import, choose how to ride the file: as one course, or as laps (repeat a loop N times).
-- Could also split a long file into sections, or ride only part of it.
-- Laps would make sense as FIT laps too; the FIT export currently writes a single lap.
+- Riding a course as laps (from the import dialog) builds one long course; the FIT export still
+  writes a single lap. Each course lap could become a FIT lap.
 
 ## Import FIT for POIs?
 

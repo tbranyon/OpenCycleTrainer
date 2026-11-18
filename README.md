@@ -14,6 +14,7 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * Hybrid control mode which uses ERG for recovery intervals and returns to the last-used Resistance level for work intervals (helpful for VO2max intervals)
 * Simulation mode which has the trainer simulate a road grade (FTMS indoor bike simulation), adjustable via the jog hotkeys
 * Ride a GPX course: the trainer follows the course's grade while your power drives a virtual speed along its elevation profile
+* Ride a whole course, just part of it (from/to a chosen distance), or several laps of it
 * Selectable road surface (smooth road to loose gravel) that sets rolling resistance for simulated rides
 * Metric or imperial units for speed, distance, elevation and weight
 * Jog current power target or resistance in 1 or 5% steps via hotkeys

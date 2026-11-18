@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
+import math
 
 GRADE_WINDOW_METERS = 50.0
 """Length of road the reported grade is averaged over, which smooths elevation noise."""
 
 _PERCENT = 100.0
 _MIN_COURSE_POINTS = 2
+_EARTH_RADIUS_METERS = 6_371_000.0
+_LAP_CLOSURE_METERS = 0.5
+"""A lap ending closer than this to the start is treated as a closed loop, with no link between laps."""
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,68 @@ class Course:
         longitude = earlier.longitude_deg + (later.longitude_deg - earlier.longitude_deg) * ratio
         return latitude, longitude
 
+    def section(
+        self, start_m: float | None, end_m: float | None, name: str | None = None
+    ) -> Course:
+        """Return the stretch from *start_m* to *end_m*, re-measured from zero.
+
+        A missing start or end means the start or end of the course; an end past the
+        course is clamped to it. The new ends are interpolated from the original profile.
+        """
+        course_end_m = self.total_distance_m
+        start = 0.0 if start_m is None else float(start_m)
+        end = course_end_m if end_m is None else min(float(end_m), course_end_m)
+        if start < 0.0:
+            raise ValueError("A section cannot start before the course does.")
+        if end <= start:
+            raise ValueError("A section must end after it starts.")
+
+        first_inside = bisect_right(self._distances, start)
+        past_inside = bisect_left(self._distances, end)
+        inside = self.points[first_inside:past_inside]
+        points = (
+            [self._point_at(start, offset_m=start)]
+            + [_shifted(point, -start) for point in inside]
+            + [self._point_at(end, offset_m=start)]
+        )
+        return Course(name=self.name if name is None else name, points=tuple(points))
+
+    def laps(self, count: int, name: str | None = None) -> Course:
+        """Return the course ridden *count* times in a row.
+
+        A route that does not end where it starts gets a straight link from its end
+        back to its start between laps.
+        """
+        if count < 1:
+            raise ValueError("A course must be ridden at least once.")
+        link_m = self._closing_gap_m()
+        is_loop = link_m < _LAP_CLOSURE_METERS
+        lap_length_m = self.total_distance_m + (0.0 if is_loop else link_m)
+        repeated_points = self.points[1:] if is_loop else self.points
+        points = list(self.points)
+        for lap in range(1, count):
+            points.extend(_shifted(point, lap * lap_length_m) for point in repeated_points)
+        return Course(name=self.name if name is None else name, points=tuple(points))
+
+    def _closing_gap_m(self) -> float:
+        """Straight-line distance from the course's end back to its start, 0 without coordinates."""
+        first = self.points[0]
+        last = self.points[-1]
+        coordinates = (first.latitude_deg, first.longitude_deg, last.latitude_deg, last.longitude_deg)
+        if any(value is None for value in coordinates):
+            return 0.0
+        return haversine_meters(*coordinates)
+
+    def _point_at(self, distance_m: float, offset_m: float) -> CoursePoint:
+        """Return an interpolated point at *distance_m*, measured from *offset_m*."""
+        latitude, longitude = self.position_at(distance_m) or (None, None)
+        return CoursePoint(
+            distance_m=distance_m - offset_m,
+            elevation_m=self.elevation_at(distance_m),
+            latitude_deg=latitude,
+            longitude_deg=longitude,
+        )
+
     def _bracket(self, distance_m: float) -> tuple[CoursePoint, CoursePoint, float]:
         """Return the points either side of *distance_m* and how far between them it lies (0-1)."""
         clamped = min(max(float(distance_m), self._distances[0]), self._distances[-1])
@@ -92,3 +158,28 @@ class Course:
         later = self.points[upper]
         ratio = (clamped - earlier.distance_m) / (later.distance_m - earlier.distance_m)
         return earlier, later, ratio
+
+
+def _shifted(point: CoursePoint, by_m: float) -> CoursePoint:
+    """Return *point* moved *by_m* metres along the course."""
+    return CoursePoint(
+        distance_m=point.distance_m + by_m,
+        elevation_m=point.elevation_m,
+        latitude_deg=point.latitude_deg,
+        longitude_deg=point.longitude_deg,
+    )
+
+
+def haversine_meters(
+    latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float
+) -> float:
+    """Return the great-circle distance in metres between two coordinates in degrees."""
+    phi_a = math.radians(latitude_a)
+    phi_b = math.radians(latitude_b)
+    delta_phi = phi_b - phi_a
+    delta_lambda = math.radians(longitude_b - longitude_a)
+    half_chord = (
+        math.sin(delta_phi / 2.0) ** 2
+        + math.cos(phi_a) * math.cos(phi_b) * math.sin(delta_lambda / 2.0) ** 2
+    )
+    return 2.0 * _EARTH_RADIUS_METERS * math.asin(min(1.0, math.sqrt(half_chord)))

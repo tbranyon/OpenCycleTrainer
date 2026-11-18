@@ -37,6 +37,7 @@ from opencycletrainer.storage.paths import get_workout_data_root, get_workout_fi
 from opencycletrainer.storage.settings import AppSettings, save_settings
 
 from .chart_history import ChartHistory
+from .course_import_dialog import choose_course_to_ride
 from .ftms_bridge_manager import FTMSBridgeManager
 from .opentrueup_state import OpenTrueUpState
 from .mode_state import (
@@ -95,6 +96,7 @@ class WorkoutSessionController(QObject):
         strava_upload_fn: Callable[[Path, Path | None], None] | None = None,
         intervals_icu_upload_fn: Callable[[Path, Path | None], None] | None = None,
         fit_exporter: FitExporter | None = None,
+        course_chooser: Callable[[Course, str, object], Course | None] | None = None,
         tick_interval_ms: int = 250,
         parent: QObject | None = None,
     ) -> None:
@@ -117,6 +119,9 @@ class WorkoutSessionController(QObject):
             summary_dialog_factory
             if summary_dialog_factory is not None
             else lambda summary, parent: WorkoutSummaryDialog(summary, parent)
+        )
+        self._course_chooser = (
+            course_chooser if course_chooser is not None else choose_course_to_ride
         )
         self._opentrueup_state = (
             OpenTrueUpState(opentrueup, self._opentrueup_offset_signal.emit)
@@ -453,7 +458,7 @@ class WorkoutSessionController(QObject):
         save_settings(self._settings, self._settings_path)
 
     def _load_course_from_file(self, path: Path) -> None:
-        """Parse a GPX file and ready a ride along it."""
+        """Parse a GPX file, ask how to ride it, and ready a ride along the chosen course."""
         try:
             course = parse_gpx_file(path)
         except GPXParseError as exc:
@@ -463,8 +468,11 @@ class WorkoutSessionController(QObject):
             self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
             return
 
+        chosen = self._course_chooser(course, self._settings.display_units, self._screen)
+        if chosen is None:
+            return
         self._clear_completed_recording()
-        self._load_course(course)
+        self._load_course(chosen)
         self._settings.last_workout_dir = path.parent
         save_settings(self._settings, self._settings_path)
 

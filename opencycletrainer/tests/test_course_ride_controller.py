@@ -148,6 +148,7 @@ class _Session:
         *,
         settings: AppSettings | None = None,
         transport: _FakeFTMSTransport | None = None,
+        course_chooser=None,
     ) -> None:
         self.app = _qapp()
         self.clock = _Clock()
@@ -166,6 +167,11 @@ class _Session:
             summary_dialog_factory=self._record_summary,
             monotonic_clock=self.clock,
             utc_now=self.clock.utc,
+            course_chooser=(
+                course_chooser
+                if course_chooser is not None
+                else (lambda course, units, parent: course)
+            ),
         )
         if transport is not None:
             self.controller.set_trainer_control_target(
@@ -233,6 +239,54 @@ def test_loading_a_gpx_file_readies_a_course_ride(session, tmp_path):
     assert s.controller.course_ride.course.total_distance_m == pytest.approx(
         4 * _POINT_SPACING_METERS, rel=1e-3
     )
+
+
+def test_loading_a_gpx_file_asks_how_to_ride_it(session, tmp_path):
+    asked: list[tuple[object, str]] = []
+
+    def _chooser(course, units, parent):  # noqa: ARG001
+        asked.append((course, units))
+        return course
+
+    s = session(settings=AppSettings(display_units="imperial"), course_chooser=_chooser)
+
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=5), name="River Road"))
+
+    assert len(asked) == 1
+    assert asked[0][0].name == "River Road"
+    assert asked[0][1] == "imperial"
+
+
+def test_the_chosen_course_is_the_one_loaded(session, tmp_path):
+    s = session(course_chooser=lambda course, units, parent: course.laps(3, name="River Road x3"))
+
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=5), name="River Road"))
+
+    assert s.state == EngineState.READY
+    assert s.screen.title_label.text() == "River Road x3"
+    assert s.controller.course_ride.course.total_distance_m == pytest.approx(
+        12 * _POINT_SPACING_METERS, rel=1e-3
+    )
+
+
+def test_choosing_nothing_loads_nothing(session, tmp_path):
+    s = session(course_chooser=lambda course, units, parent: None)
+
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=5)))
+
+    assert s.controller.course_ride is None
+    assert s.controller.last_snapshot is None or s.state == EngineState.IDLE
+
+
+def test_choosing_nothing_keeps_the_workout_already_loaded(session, tmp_path):
+    s = session(course_chooser=lambda course, units, parent: None)
+    s.load(DATA_DIR / "ramp.mrc")
+
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=5)))
+
+    assert s.controller.course_ride is None
+    assert s.state == EngineState.READY
+    assert s.screen.title_label.text() != "Test Course"
 
 
 def test_course_ride_shows_grade_and_distance_remaining(session, tmp_path):

@@ -51,6 +51,12 @@ def format_distance(distance_m: float, units: str = DISPLAY_UNITS_METRIC) -> str
     return f"{value:.2f} {distance_unit_label(units)}"
 
 
+def format_elevation(elevation_m: float, units: str = DISPLAY_UNITS_METRIC) -> str:
+    """Format an elevation or climb in metres for display, e.g. ``328 ft`` or ``100 m``."""
+    value = elevation_m / meters_per_elevation_unit(units)
+    return f"{value:.0f} {elevation_unit_label(units)}"
+
+
 def format_speed(speed_mps: float, units: str = DISPLAY_UNITS_METRIC) -> str:
     """Format a speed in m/s for display, e.g. ``31.5 km/h`` or ``19.6 mph``."""
     value = max(0.0, speed_mps) * _SECONDS_PER_HOUR / meters_per_distance_unit(units)

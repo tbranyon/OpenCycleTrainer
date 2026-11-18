@@ -4,9 +4,8 @@ import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from .course_model import Course, CoursePoint
+from .course_model import Course, CoursePoint, haversine_meters
 
-_EARTH_RADIUS_METERS = 6_371_000.0
 _MIN_POINT_SPACING_METERS = 0.5
 """Points closer than this to the previous one are dropped as stationary GPS repeats."""
 
@@ -106,7 +105,7 @@ def _build_course_points(located: list[tuple[float, float, float]]) -> list[Cour
     ]
     for latitude, longitude, elevation in located[1:]:
         previous = points[-1]
-        step = _haversine_meters(
+        step = haversine_meters(
             previous.latitude_deg, previous.longitude_deg, latitude, longitude
         )
         if step < _MIN_POINT_SPACING_METERS:
@@ -120,21 +119,6 @@ def _build_course_points(located: list[tuple[float, float, float]]) -> list[Cour
             )
         )
     return points
-
-
-def _haversine_meters(
-    latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float
-) -> float:
-    """Return the great-circle distance in metres between two coordinates in degrees."""
-    phi_a = math.radians(latitude_a)
-    phi_b = math.radians(latitude_b)
-    delta_phi = phi_b - phi_a
-    delta_lambda = math.radians(longitude_b - longitude_a)
-    half_chord = (
-        math.sin(delta_phi / 2.0) ** 2
-        + math.cos(phi_a) * math.cos(phi_b) * math.sin(delta_lambda / 2.0) ** 2
-    )
-    return 2.0 * _EARTH_RADIUS_METERS * math.asin(min(1.0, math.sqrt(half_chord)))
 
 
 def _course_name(root: ET.Element) -> str:
