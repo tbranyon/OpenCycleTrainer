@@ -58,3 +58,33 @@ def shutdown_workout_controllers(monkeypatch):
         # C++ half is gone — touching its timer from here would raise.
         if isValid(controller):
             controller.shutdown()
+
+
+class _OfflineTileProvider:
+    """Stands in for the map's network tile provider so no test downloads real map tiles."""
+
+    def __init__(self) -> None:
+        from PySide6.QtCore import QObject, Signal  # noqa: PLC0415
+
+        from opencycletrainer.ui.map_tiles import OPENSTREETMAP  # noqa: PLC0415
+
+        class _Signals(QObject):
+            tile_ready = Signal(int, int, int)
+
+        self._signals = _Signals()
+        self.tile_ready = self._signals.tile_ready
+        self.source = OPENSTREETMAP
+
+    def set_wanted(self, tiles) -> None:  # noqa: ARG002
+        return None
+
+    def image(self, key):  # noqa: ARG002
+        return None
+
+
+@pytest.fixture(autouse=True)
+def offline_map_tiles(monkeypatch):
+    """Keep every map created by a test off the network."""
+    from opencycletrainer.ui import map_tiles  # noqa: PLC0415
+
+    monkeypatch.setattr(map_tiles, "create_default_tile_provider", _OfflineTileProvider)

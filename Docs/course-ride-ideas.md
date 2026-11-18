@@ -32,7 +32,7 @@ their cache headers, and never download tiles in bulk ahead of time.
 1. **Panel and offline route.** *(Done in v0.12.0.)* Collapsible panel on course rides with the route (red ahead,
    green ridden), start and finish markers, the rider dot, Follow / Whole route toggle and
    +/− zoom. Positions are in Web Mercator so tiles can sit under the route in phase 2.
-2. **Tile background.** OpenStreetMap tiles fetched with a QNetworkAccessManager, kept in a
+2. **Tile background.** *(Done in v0.13.0; presets are in code, choosing one comes with phase 3.)* OpenStreetMap tiles fetched with a QNetworkAccessManager, kept in a
    disk cache, with attribution and an identifying User-Agent. Further presets (CyclOSM,
    OpenTopoMap, Thunderforest OpenCycleMap with an API key) and a custom URL.
 3. **Settings.** "Show map on course rides" toggle and tile source choice in Settings →

@@ -334,3 +334,157 @@ def test_leaving_course_mode_hides_the_map():
 
     assert not screen.course_map_panel.isVisibleTo(screen)
     assert not screen.course_map_panel.map_widget.has_route
+
+
+# ── Map tiles ─────────────────────────────────────────────────────────────────
+
+from PySide6.QtCore import QObject, Signal  # noqa: E402
+from PySide6.QtGui import QImage  # noqa: E402
+
+from opencycletrainer.ui.map_tiles import (  # noqa: E402
+    OPENSTREETMAP,
+    tile_bounds,
+    tile_zoom_for,
+    visible_tiles,
+)
+
+
+class _FakeTiles(QObject):
+    """Records which tiles the map wants and hands over tiles when the test says so."""
+
+    tile_ready = Signal(int, int, int)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.source = OPENSTREETMAP
+        self.wanted: list[tuple[int, int, int]] = []
+        self._images: dict[tuple[int, int, int], QImage] = {}
+
+    def set_wanted(self, tiles) -> None:
+        self.wanted = list(tiles)
+
+    def image(self, key):
+        return self._images.get(key)
+
+    def deliver(self, key) -> None:
+        image = QImage(256, 256, QImage.Format.Format_RGB32)
+        image.fill(0x336699)
+        self._images[key] = image
+        self.tile_ready.emit(*key)
+
+
+def _tiled(course: Course | None = None) -> tuple[CourseMapWidget, _FakeTiles]:
+    _qapp()
+    tiles = _FakeTiles()
+    widget = CourseMapWidget(tile_provider=tiles)
+    widget.resize(400, 600)
+    widget.load_course(course if course is not None else _course())
+    return widget, tiles
+
+
+def _view_rect(widget: CourseMapWidget) -> tuple[float, float, float, float]:
+    (x_min, x_max), (y_min, y_max) = _view(widget)
+    return x_min, x_max, y_min, y_max
+
+
+def test_following_asks_for_the_tiles_in_view_at_the_follow_zoom():
+    widget, tiles = _tiled()
+
+    widget.set_position(650.0)
+
+    assert tiles.wanted
+    assert set(tiles.wanted) == set(visible_tiles(_view_rect(widget), widget.zoom_level))
+
+
+def test_zooming_asks_for_tiles_at_the_new_zoom():
+    widget, tiles = _tiled()
+
+    widget.zoom_in_button.click()
+
+    assert {key[0] for key in tiles.wanted} == {DEFAULT_FOLLOW_ZOOM + 1}
+
+
+def test_whole_route_asks_for_tiles_matched_to_the_screen():
+    widget, tiles = _tiled()
+
+    widget.follow_button.click()
+
+    x_min, x_max, _, _ = _view_rect(widget)
+    width_px, _ = widget._view_size_px()
+    zoom = tile_zoom_for((x_max - x_min) / width_px, max_zoom=OPENSTREETMAP.max_zoom)
+    assert {key[0] for key in tiles.wanted} == {zoom}
+
+
+def test_a_delivered_tile_is_drawn_under_the_route_at_its_place():
+    widget, tiles = _tiled()
+    key = tiles.wanted[0]
+
+    tiles.deliver(key)
+
+    item = widget._tile_items[key]
+    rect = item.mapRectToParent(item.boundingRect())
+    x0, y0, x1, y1 = tile_bounds(*key)
+    assert (rect.left(), rect.top(), rect.right(), rect.bottom()) == pytest.approx((x0, y0, x1, y1), rel=1e-9)
+    assert item.zValue() < widget._ahead_item.zValue()
+
+
+def test_tiles_already_held_are_drawn_straight_away():
+    widget, tiles = _tiled()
+    key = tiles.wanted[0]
+    tiles.deliver(key)
+
+    widget.load_course(_course())
+
+    assert key in widget._tile_items
+
+
+def test_a_tile_that_arrives_after_the_view_moved_on_is_not_drawn():
+    widget, tiles = _tiled()
+    old_key = tiles.wanted[0]
+    widget.zoom_in_button.click()
+
+    tiles.deliver(old_key)
+
+    assert old_key not in widget._tile_items
+
+
+def test_tiles_that_leave_the_view_are_removed():
+    widget, tiles = _tiled()
+    for key in list(tiles.wanted):
+        tiles.deliver(key)
+    drawn = set(widget._tile_items)
+
+    widget.zoom_out_button.click()
+
+    assert not drawn & set(widget._tile_items)
+
+
+def test_the_map_credits_its_tile_source():
+    widget, _ = _tiled()
+
+    assert widget.attribution_label.text() == "© OpenStreetMap contributors"
+    assert widget.attribution_label.isVisibleTo(widget)
+
+
+def test_clearing_the_map_stops_asking_for_tiles_and_drops_them():
+    widget, tiles = _tiled()
+    tiles.deliver(tiles.wanted[0])
+
+    widget.clear()
+
+    assert tiles.wanted == []
+    assert widget._tile_items == {}
+
+
+def test_a_course_without_coordinates_asks_for_no_tiles():
+    _qapp()
+    tiles = _FakeTiles()
+    widget = CourseMapWidget(tile_provider=tiles)
+    course = Course(
+        name="No GPS",
+        points=(CoursePoint(distance_m=0.0, elevation_m=1.0), CoursePoint(distance_m=10.0, elevation_m=2.0)),
+    )
+
+    widget.load_course(course)
+
+    assert tiles.wanted == []

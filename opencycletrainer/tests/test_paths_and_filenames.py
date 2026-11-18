@@ -193,3 +193,31 @@ def test_get_workout_fit_json_png_dirs_use_custom_root(tmp_path):
     assert fit_dir.is_dir()
     assert json_dir.is_dir()
     assert png_dir.is_dir()
+
+
+def test_get_cache_dir_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "_system_name", lambda: "linux")
+    monkeypatch.setattr(paths, "_home_dir", lambda: tmp_path)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+    assert paths.get_cache_dir() == tmp_path / ".cache" / "opencycletrainer"
+
+
+def test_get_cache_dir_follows_xdg_cache_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "_system_name", lambda: "linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+
+    assert paths.get_cache_dir() == tmp_path / "xdg" / "opencycletrainer"
+
+
+def test_get_cache_dir_windows_uses_local_appdata(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "_system_name", lambda: "windows")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+
+    assert paths.get_cache_dir() == tmp_path / "Local" / "OpenCycleTrainer" / "cache"
+
+
+def test_map_tile_cache_dir_is_inside_the_cache_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "get_cache_dir", lambda: tmp_path)
+
+    assert paths.get_map_tile_cache_dir() == tmp_path / "map-tiles"

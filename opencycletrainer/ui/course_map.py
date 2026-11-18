@@ -7,10 +7,14 @@ os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QToolButton, QWidget
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QToolButton, QWidget
 
 from opencycletrainer.core.course_model import Course
+
+from . import map_tiles
+from .map_tiles import TileKey, tile_bounds, tile_zoom_for, visible_tiles
 
 # Web Mercator (EPSG:3857), the projection map tiles are drawn in.
 _EARTH_RADIUS_M = 6_378_137.0
@@ -48,6 +52,14 @@ _WHOLE_ROUTE_TEXT = "Whole route"
 _ZOOM_IN_TEXT = "+"
 _ZOOM_OUT_TEXT = "−"
 
+_TILE_Z_VALUE = -10             # map tiles sit under the route
+_RGBA_CHANNELS = 4
+_RGBA_LEVELS = (0, 255)
+_ATTRIBUTION_STYLE = (
+    "QLabel { background: rgba(255, 255, 255, 190); color: #1e293b; padding: 1px 4px; }"
+)
+_ATTRIBUTION_FONT_SIZE_DELTA = -2
+
 _COLLAPSE_BUTTON_WIDTH_PX = 16
 _COLLAPSE_TEXT = "›"  # › tucks the map away to the right
 _EXPAND_TEXT = "‹"    # ‹ brings it back
@@ -70,12 +82,19 @@ def _mercator_metres_per_pixel(zoom: int) -> float:
 class CourseMapWidget(QWidget):
     """Top-down map of a course: the road still to ride in red, the ridden road in green.
 
-    The route is drawn from the course's own coordinates, so it needs no network. The view
-    either follows the rider at a tile zoom level or shows the whole route.
+    The route is drawn from the course's own coordinates, so it needs no network; map
+    tiles from *tile_provider* (OpenStreetMap by default) are drawn underneath as they
+    arrive. The view either follows the rider at a tile zoom level or shows the whole route.
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, tile_provider=None) -> None:
         super().__init__(parent)
+        self._tiles = (
+            tile_provider if tile_provider is not None else map_tiles.create_default_tile_provider()
+        )
+        self._tiles.tile_ready.connect(self._on_tile_ready)
+        self._tile_items: dict[TileKey, pg.ImageItem] = {}
+        self._visible_tile_keys: set[TileKey] = set()
         self._course: Course | None = None
         self._distances = np.array([], dtype=float)
         self._xs = np.array([], dtype=float)
@@ -122,6 +141,11 @@ class CourseMapWidget(QWidget):
         self.zoom_out_button = self._make_overlay_button(_ZOOM_OUT_TEXT)
         self.zoom_out_button.setToolTip("Zoom out")
         self.zoom_out_button.clicked.connect(lambda: self._set_zoom(self._zoom_level - 1))
+        self.attribution_label = QLabel(self._tiles.source.attribution, self._plot)
+        self.attribution_label.setStyleSheet(_ATTRIBUTION_STYLE)
+        attribution_font = self.attribution_label.font()
+        attribution_font.setPointSize(max(1, attribution_font.pointSize() + _ATTRIBUTION_FONT_SIZE_DELTA))
+        self.attribution_label.setFont(attribution_font)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -173,6 +197,7 @@ class CourseMapWidget(QWidget):
             self._ahead_item, self._ridden_item, self._start_marker, self._finish_marker, self._dot,
         ):
             item.setData([], [])
+        self._show_tiles([])
 
     def set_position(self, distance_m: float) -> None:
         """Place the rider *distance_m* along the course and colour the lap being ridden."""
@@ -256,11 +281,43 @@ class CourseMapWidget(QWidget):
             centre_y = (float(np.min(self._ys)) + float(np.max(self._ys))) / 2.0
         half_width = width_px * metres_per_px / 2.0
         half_height = height_px * metres_per_px / 2.0
-        self._plot.setRange(
-            xRange=(centre_x - half_width, centre_x + half_width),
-            yRange=(centre_y - half_height, centre_y + half_height),
-            padding=0,
-        )
+        view = (centre_x - half_width, centre_x + half_width, centre_y - half_height, centre_y + half_height)
+        self._plot.setRange(xRange=view[:2], yRange=view[2:], padding=0)
+        max_zoom = self._tiles.source.max_zoom
+        if self._following:
+            tile_zoom = min(self._zoom_level, max_zoom)
+        else:
+            tile_zoom = tile_zoom_for(metres_per_px, max_zoom=max_zoom)
+        self._show_tiles(visible_tiles(view, tile_zoom))
+
+    def _show_tiles(self, keys: list[TileKey]) -> None:
+        """Draw the tiles in view that are already at hand, drop the rest, and ask for the missing."""
+        self._visible_tile_keys = set(keys)
+        for key in [key for key in self._tile_items if key not in self._visible_tile_keys]:
+            self._plot.removeItem(self._tile_items.pop(key))
+        for key in keys:
+            if key not in self._tile_items:
+                image = self._tiles.image(key)
+                if image is not None:
+                    self._draw_tile(key, image)
+        self._tiles.set_wanted(keys)
+
+    def _on_tile_ready(self, zoom: int, x: int, y: int) -> None:
+        key = (zoom, x, y)
+        if key in self._visible_tile_keys and key not in self._tile_items:
+            image = self._tiles.image(key)
+            if image is not None:
+                self._draw_tile(key, image)
+
+    def _draw_tile(self, key: TileKey, image: QImage) -> None:
+        """Place a tile's image over its patch of the map, beneath the route."""
+        item = pg.ImageItem(axisOrder="row-major")
+        item.setImage(_rgba_rows_south_first(image), levels=_RGBA_LEVELS, autoLevels=False)
+        x_min, y_min, x_max, y_max = tile_bounds(*key)
+        item.setRect(QRectF(x_min, y_min, x_max - x_min, y_max - y_min))
+        item.setZValue(_TILE_Z_VALUE)
+        self._plot.addItem(item)
+        self._tile_items[key] = item
 
     def _make_overlay_button(self, text: str) -> QToolButton:
         button = QToolButton(self._plot)
@@ -276,6 +333,11 @@ class CourseMapWidget(QWidget):
             button.adjustSize()
             button.move(max(0, x_right - button.width()), y)
             y += button.height() + _BUTTON_SPACING_PX
+        self.attribution_label.adjustSize()
+        self.attribution_label.move(
+            max(0, self._plot.width() - self.attribution_label.width()),
+            max(0, self._plot.height() - self.attribution_label.height()),
+        )
 
     @staticmethod
     def _find_lap_bounds(course: Course) -> list[tuple[int, int]]:
@@ -296,12 +358,21 @@ class CourseMapWidget(QWidget):
         return bounds
 
 
+def _rgba_rows_south_first(image: QImage) -> np.ndarray:
+    """Return a tile as an RGBA array with its southern row first, as the map's y axis runs north."""
+    rgba = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    width, height = rgba.width(), rgba.height()
+    raw = np.frombuffer(rgba.constBits(), dtype=np.uint8, count=rgba.sizeInBytes())
+    rows = raw.reshape(height, rgba.bytesPerLine())[:, : width * _RGBA_CHANNELS]
+    return rows.reshape(height, width, _RGBA_CHANNELS)[::-1].copy()
+
+
 class CourseMapPanel(QWidget):
     """The course map with a slim button on its left edge that tucks it away and brings it back."""
 
     collapsed_changed = Signal(bool)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, tile_provider=None) -> None:
         super().__init__(parent)
         self._collapsed = False
         self.collapse_button = QToolButton(self)
@@ -309,7 +380,7 @@ class CourseMapPanel(QWidget):
         self.collapse_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.collapse_button.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
-        self.map_widget = CourseMapWidget(self)
+        self.map_widget = CourseMapWidget(self, tile_provider=tile_provider)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

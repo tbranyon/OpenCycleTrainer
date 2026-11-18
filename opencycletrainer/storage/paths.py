@@ -12,6 +12,8 @@ APP_ICON_FILE_NAME = "icon_nobg.png"
 WORKOUT_FIT_SUBDIR = "FIT"
 WORKOUT_JSON_SUBDIR = "JSON"
 WORKOUT_PNG_SUBDIR = "png"
+CACHE_SUBDIR_WINDOWS = "cache"
+MAP_TILE_CACHE_SUBDIR = "map-tiles"
 
 
 def _system_name() -> str:
@@ -79,6 +81,23 @@ def get_data_dir() -> Path:
     if xdg_data:
         return Path(xdg_data) / APP_NAME_UNIX
     return _home_dir() / ".local" / "share" / APP_NAME_UNIX
+
+
+def get_cache_dir() -> Path:
+    """Return the folder for data the app can always fetch again, such as map tiles."""
+    if _system_name() == "windows":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        base = Path(local_appdata) if local_appdata else _home_dir() / "AppData" / "Local"
+        return base / APP_NAME_WINDOWS / CACHE_SUBDIR_WINDOWS
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / APP_NAME_UNIX
+    return _home_dir() / ".cache" / APP_NAME_UNIX
+
+
+def get_map_tile_cache_dir() -> Path:
+    """Return the folder downloaded map tiles are cached in."""
+    return get_cache_dir() / MAP_TILE_CACHE_SUBDIR
 
 
 def get_workout_data_root(custom_root: Path | None = None) -> Path:

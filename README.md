@@ -16,7 +16,7 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * Ride a GPX course: the trainer follows the course's grade while your power drives a virtual speed along its elevation profile
 * Ride a whole course, just part of it (from/to a chosen distance), or several laps of it, with each lap recorded as a FIT lap
 * Course elevation profile with a zoomed-in view of the road ahead (configurable span) and climbs coloured by grade
-* Collapsible course map beside the charts: route still to ride in red, ridden in green, following the rider or showing the whole route
+* Collapsible course map beside the charts on OpenStreetMap tiles (cached on disk; the route still shows offline): route still to ride in red, ridden in green, following the rider or showing the whole route
 * Selectable road surface (smooth road to loose gravel) that sets rolling resistance for simulated rides
 * Metric or imperial units for speed, distance, elevation and weight
 * Jog current power target or resistance in 1 or 5% steps via hotkeys
