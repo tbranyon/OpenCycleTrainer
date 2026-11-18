@@ -423,6 +423,8 @@ class WorkoutChartWidget(QWidget):
             elevations = self._course_elevations
             for index in range(len(distances) - 1):
                 start, end = float(distances[index]), float(distances[index + 1])
+                if end <= start:
+                    continue  # the jump back to the start between laps
                 grade = self._course.grade_percent_at(
                     (start + end) / 2.0, window_m=max(GRADE_WINDOW_METERS, end - start)
                 )
@@ -1016,7 +1018,11 @@ def _window_profile(
     past = int(np.searchsorted(distances, end, side="left"))
     window_distances = np.concatenate(([start_m], distances[first:past], [end]))
     window_elevations = np.concatenate(
-        ([course.elevation_at(start_m)], elevations[first:past], [course.elevation_at(end)])
+        (
+            [course.elevation_at(start_m)],
+            elevations[first:past],
+            [course.elevation_at(end, from_before=True)],
+        )
     )
     return _thinned(window_distances, window_elevations)
 

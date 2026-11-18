@@ -240,19 +240,74 @@ def test_laps_add_up_the_climbing():
     assert loop.laps(4).total_ascent_m == pytest.approx(4 * loop.total_ascent_m)
 
 
-def test_laps_of_a_route_that_does_not_return_ride_back_to_the_start_between_laps():
-    out_and_away = Course(
+_LEG_M = 111.195
+
+
+def _point_to_point(finish_elevation_m: float = 110.0) -> Course:
+    """A straight ~111 m route north that finishes away from its start, at 100 m to *finish_elevation_m*."""
+    return Course(
         name="Point to point",
         points=(
             CoursePoint(distance_m=0.0, elevation_m=100.0, latitude_deg=45.0, longitude_deg=7.0),
-            CoursePoint(distance_m=111.195, elevation_m=110.0, latitude_deg=45.001, longitude_deg=7.0),
+            CoursePoint(
+                distance_m=_LEG_M,
+                elevation_m=finish_elevation_m,
+                latitude_deg=45.001,
+                longitude_deg=7.0,
+            ),
         ),
     )
 
-    laps = out_and_away.laps(2)
 
-    assert laps.total_distance_m == pytest.approx(3 * 111.195, rel=1e-3)
-    assert laps.elevation_at(laps.total_distance_m) == pytest.approx(110.0)
+def test_laps_of_a_route_that_does_not_return_repeat_straight_from_the_start():
+    laps = _point_to_point().laps(3)
+
+    assert laps.total_distance_m == pytest.approx(3 * _LEG_M)
+    assert laps.lap_starts_m == pytest.approx((0.0, _LEG_M, 2 * _LEG_M))
+
+
+def test_elevation_jumps_back_to_the_start_at_a_lap_change():
+    laps = _point_to_point().laps(2)
+
+    assert laps.elevation_at(_LEG_M, from_before=True) == pytest.approx(110.0)
+    assert laps.elevation_at(_LEG_M) == pytest.approx(100.0)
+    assert laps.elevation_at(_LEG_M + 0.5 * _LEG_M) == pytest.approx(105.0)
+
+
+def test_position_jumps_back_to_the_start_at_a_lap_change():
+    laps = _point_to_point().laps(2)
+
+    assert laps.position_at(_LEG_M, from_before=True) == pytest.approx((45.001, 7.0))
+    assert laps.position_at(_LEG_M) == pytest.approx((45.0, 7.0))
+
+
+def test_grade_is_not_spoiled_by_the_jump_between_laps():
+    laps = _point_to_point().laps(2)
+    grade = 10.0 / _LEG_M * 100.0
+
+    assert laps.grade_percent_at(_LEG_M - 1.0) == pytest.approx(grade)
+    assert laps.grade_percent_at(_LEG_M) == pytest.approx(grade)
+    assert laps.grade_percent_at(_LEG_M + 1.0) == pytest.approx(grade)
+
+
+@pytest.mark.parametrize("finish_elevation_m, ascent_per_lap", [(110.0, 10.0), (90.0, 0.0)])
+def test_the_jump_between_laps_is_not_counted_as_climbing(finish_elevation_m, ascent_per_lap):
+    laps = _point_to_point(finish_elevation_m).laps(3)
+
+    assert laps.total_ascent_m == pytest.approx(3 * ascent_per_lap)
+
+
+def test_only_a_lap_change_may_share_a_distance():
+    points = (
+        CoursePoint(distance_m=0.0, elevation_m=100.0),
+        CoursePoint(distance_m=100.0, elevation_m=110.0),
+        CoursePoint(distance_m=100.0, elevation_m=100.0),
+        CoursePoint(distance_m=200.0, elevation_m=110.0),
+    )
+
+    Course(name="Two laps", points=points, lap_starts_m=(0.0, 100.0))
+    with pytest.raises(ValueError):
+        Course(name="No lap change", points=points)
 
 
 def test_one_lap_is_the_course_itself():
@@ -298,23 +353,26 @@ def test_laps_number_each_repeat_of_a_loop():
     assert laps.lap_number_at(laps.total_distance_m) == 3
 
 
-def test_the_ride_back_to_the_start_belongs_to_the_lap_before_it():
-    out_and_away = Course(
-        name="Point to point",
-        points=(
-            CoursePoint(distance_m=0.0, elevation_m=100.0, latitude_deg=45.0, longitude_deg=7.0),
-            CoursePoint(distance_m=111.195, elevation_m=110.0, latitude_deg=45.001, longitude_deg=7.0),
-        ),
-    )
+def test_a_new_lap_begins_where_the_last_one_finishes():
+    laps = _point_to_point().laps(2)
 
-    laps = out_and_away.laps(2)
-
-    assert laps.lap_number_at(150.0) == 1
-    assert laps.lap_number_at(2 * 111.195 + 1.0) == 2
+    assert laps.lap_number_at(_LEG_M - 0.1) == 1
+    assert laps.lap_number_at(_LEG_M) == 2
 
 
-def test_a_section_of_laps_is_a_single_lap():
-    assert _loop().laps(3).section(100.0, 900.0).lap_count == 1
+def test_a_section_of_laps_keeps_the_lap_changes_inside_it():
+    lap_m = _loop().total_distance_m
+
+    section = _loop().laps(3).section(100.0, 900.0)
+
+    assert section.lap_starts_m == pytest.approx((0.0, lap_m - 100.0, 2 * lap_m - 100.0))
+
+
+def test_a_section_ending_at_a_lap_change_ends_at_the_finish():
+    section = _point_to_point().laps(3).section(None, _LEG_M)
+
+    assert section.lap_count == 1
+    assert section.elevation_at(section.total_distance_m) == pytest.approx(110.0)
 
 
 def test_lap_starts_must_begin_at_the_start_and_lie_on_the_course():

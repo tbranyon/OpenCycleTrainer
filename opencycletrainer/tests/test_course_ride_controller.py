@@ -264,10 +264,8 @@ def test_the_chosen_course_is_the_one_loaded(session, tmp_path):
 
     assert s.state == EngineState.READY
     assert s.screen.title_label.text() == "River Road x3"
-    # The test track runs straight north, so each lap after the first rides back to the start.
-    lap_m = 4 * _POINT_SPACING_METERS
     assert s.controller.course_ride.course.total_distance_m == pytest.approx(
-        3 * lap_m + 2 * lap_m, rel=1e-3
+        12 * _POINT_SPACING_METERS, rel=1e-3
     )
 
 
@@ -472,7 +470,8 @@ def test_recorded_samples_place_the_rider_on_the_course(session, tmp_path):
 
 def test_recorded_samples_number_the_course_lap_being_ridden(session, tmp_path):
     s = session(course_chooser=lambda course, units, parent: course.laps(3))
-    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=2)))
+    # Laps of ~222 m: 45 s of riding crosses into the second lap but does not finish the course.
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0, point_count=3)))
     s.start()
 
     s.ride(45.0, 250)

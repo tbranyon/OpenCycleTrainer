@@ -486,3 +486,16 @@ def test_grade_colours_follow_the_zoomed_view():
 
     assert _band_segments(widget, "steep") == [(2000.0, 3000.0)]
     assert _band_segments(widget, "moderate") == []
+
+
+def test_the_jump_between_laps_is_not_coloured_as_a_climb():
+    _qapp()
+    widget = WorkoutChartWidget()
+    climb = Course(
+        name="Wall",
+        points=(CoursePoint(distance_m=0.0, elevation_m=0.0), CoursePoint(distance_m=500.0, elevation_m=60.0)),
+    )
+
+    widget.load_course(climb.laps(2))
+
+    assert _band_segments(widget, "very_steep") == [(0.0, 500.0), (500.0, 1000.0)]

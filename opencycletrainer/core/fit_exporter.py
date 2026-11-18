@@ -302,12 +302,19 @@ def _lap_spans(
 def _total_ascent_descent_m(samples: list[FitExportSample]) -> tuple[int | None, int | None]:
     """Return whole metres climbed and descended across the samples' altitudes.
 
-    Both are None when no sample carries an altitude.
+    The jump back to the start between course laps is not counted. Both are None when
+    no sample carries an altitude.
     """
-    altitudes = [sample.altitude_m for sample in samples if sample.altitude_m is not None]
-    if not altitudes:
+    with_altitude = [sample for sample in samples if sample.altitude_m is not None]
+    if not with_altitude:
         return None, None
-    changes = [later - earlier for earlier, later in zip(altitudes, altitudes[1:])]
+    changes = [
+        later.altitude_m - earlier.altitude_m
+        for earlier, later in zip(with_altitude, with_altitude[1:])
+        if earlier.lap_number is None
+        or later.lap_number is None
+        or earlier.lap_number == later.lap_number
+    ]
     ascent = sum(change for change in changes if change > 0)
     descent = -sum(change for change in changes if change < 0)
     return int(round(ascent)), int(round(descent))

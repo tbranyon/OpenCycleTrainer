@@ -287,3 +287,20 @@ def test_fit_export_without_lap_numbers_writes_a_single_lap(tmp_path):
     session = next(message for message in messages if isinstance(message, SessionMessage))
     assert len(laps) == 1
     assert session.num_laps == 1
+
+
+def test_fit_climbing_totals_skip_the_jump_between_laps(tmp_path):
+    from fit_tool.profile.messages.session_message import SessionMessage
+
+    altitudes = [100.0, 110.0, 120.0, 100.0, 110.0]
+    laps = [1, 1, 1, 2, 2]
+    samples = [
+        to_fit_export_sample(_course_sample(second, altitude_m=altitude, lap_number=lap))
+        for second, (altitude, lap) in enumerate(zip(altitudes, laps))
+    ]
+
+    messages = _export(tmp_path, samples)
+
+    session = next(message for message in messages if isinstance(message, SessionMessage))
+    assert session.total_ascent == 30
+    assert session.total_descent == 0
