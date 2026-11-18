@@ -6,9 +6,11 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
+from collections import Counter
 import sys
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 # One application for the whole run. Many test modules create it from a helper and
@@ -29,14 +31,29 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     _session = session
 
 
+def pytest_terminal_summary(terminalreporter) -> None:
+    """List the windows tests left alive, by type, so leaks are visible as they are fixed."""
+    from shiboken6 import isValid  # noqa: PLC0415
+
+    leftovers = Counter(
+        type(widget).__name__ for widget in QApplication.topLevelWidgets() if isValid(widget)
+    )
+    if not leftovers:
+        return
+    terminalreporter.section("Qt windows still alive at the end of the run")
+    for name, count in sorted(leftovers.items(), key=lambda item: (-item[1], item[0])):
+        terminalreporter.write_line(f"{count:6d}  {name}")
+    terminalreporter.write_line(f"{sum(leftovers.values()):6d}  total")
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_unconfigure(config: pytest.Config) -> None:  # noqa: ARG001
     """End the process once pytest has finished, skipping interpreter teardown.
 
-    The run keeps every screen it creates alive (see detach_workout_hotkeys), and
-    pyqtgraph plots among them cannot be destroyed safely in bulk: freeing them during
-    interpreter teardown, or deleting their windows from C++, segfaults the process
-    after every test has passed. Results are already reported and written by now.
+    Some tests still leave windows alive (listed in the run's summary), and pyqtgraph
+    plots among them cannot be destroyed safely in bulk: freeing them during interpreter
+    teardown, or deleting their windows from C++, segfaults the process after every test
+    has passed. Results are already reported and written by now.
     """
     exit_status = int(_session.exitstatus) if _session is not None else 0
     sys.stdout.flush()
@@ -77,21 +94,14 @@ def discard_unfinished_recordings(monkeypatch):
 _INERT_TICK_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 
-# Hotkeys detached from the application, kept so their screens are never freed.
-_DETACHED_HOTKEYS: list = []
-
-
 @pytest.fixture(autouse=True)
 def detach_workout_hotkeys(monkeypatch):
     """Remove each test's application-wide hotkey filters at teardown.
 
     WorkoutHotkeys installs itself as an event filter on the QApplication and only
-    removes itself when its screen is destroyed. Tests never destroy their screens,
-    so every filter stays installed and runs on every later event: per-test cost
-    grows linearly with the number of earlier Qt tests, and late in the run a single
-    test takes seconds. Detached hotkeys are kept referenced for the session so
-    their screens stay alive exactly as before; letting the garbage collector free
-    them mid-session crashes Qt while recorder writer threads are still running.
+    removes itself when its screen is destroyed. A screen a test leaves alive (one
+    inside a main window the test never closed, say) would keep its filter installed,
+    running on every later event: per-test cost would grow with every earlier Qt test.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
@@ -111,11 +121,39 @@ def detach_workout_hotkeys(monkeypatch):
         # Hotkeys of a screen the test already closed are gone with it.
         if app is not None and isValid(hotkeys):
             app.removeEventFilter(hotkeys)
-    _DETACHED_HOTKEYS.extend(instances)
 
 
 @pytest.fixture(autouse=True)
-def shutdown_workout_controllers(monkeypatch, detach_workout_hotkeys, discard_unfinished_recordings):
+def dispose_workout_screens(monkeypatch):
+    """Delete the workout screens each test creates, once the test is over.
+
+    Each screen holds the charts and the course map, whose pyqtgraph plots crash Qt if
+    they are left for the garbage collector or freed in bulk at the end of the run.
+    Screens inside a parent (a main window) go with their parent instead.
+    """
+    from shiboken6 import isValid  # noqa: PLC0415
+
+    from opencycletrainer.ui.workout_screen import WorkoutScreen  # noqa: PLC0415
+
+    screens: list[WorkoutScreen] = []
+    original_init = WorkoutScreen.__init__
+
+    def _tracking_init(self, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        screens.append(self)
+
+    monkeypatch.setattr(WorkoutScreen, "__init__", _tracking_init)
+    yield
+    for screen in screens:
+        if isValid(screen) and screen.parent() is None:
+            screen.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+@pytest.fixture(autouse=True)
+def shutdown_workout_controllers(
+    monkeypatch, detach_workout_hotkeys, discard_unfinished_recordings, dispose_workout_screens
+):
     """Keep workout controller tick timers from firing into unrelated tests.
 
     Each controller is stretched to an inert tick interval on construction and
@@ -124,8 +162,9 @@ def shutdown_workout_controllers(monkeypatch, detach_workout_hotkeys, discard_un
     on into later tests. Tracking every instance makes the teardown
     unconditional; shutdown() is idempotent, so controllers already stopped by
     the test are unaffected. Depends on detach_workout_hotkeys so controllers
-    shut down before their hotkeys are detached, and on discard_unfinished_recordings
-    so controllers finish their own recordings before leftovers are discarded.
+    shut down before their hotkeys are detached, on discard_unfinished_recordings
+    so controllers finish their own recordings before leftovers are discarded, and
+    on dispose_workout_screens so controllers stop before their screens are deleted.
     """
     from shiboken6 import isValid  # noqa: PLC0415
 
