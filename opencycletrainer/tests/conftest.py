@@ -7,7 +7,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
 
 from collections import Counter
-import sys
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
@@ -23,16 +22,12 @@ def qapp():
     return _APP
 
 
-_session: pytest.Session | None = None
-
-
-def pytest_sessionstart(session: pytest.Session) -> None:
-    global _session  # noqa: PLW0603
-    _session = session
-
-
 def pytest_terminal_summary(terminalreporter) -> None:
-    """List the windows tests left alive, by type, so leaks are visible as they are fixed."""
+    """List any windows tests left alive, by type, so a new leak shows up at once.
+
+    Windows still alive when the interpreter exits are freed after parts of Qt are
+    gone, which can segfault the process even though every test passed.
+    """
     from shiboken6 import isValid  # noqa: PLC0415
 
     leftovers = Counter(
@@ -44,21 +39,6 @@ def pytest_terminal_summary(terminalreporter) -> None:
     for name, count in sorted(leftovers.items(), key=lambda item: (-item[1], item[0])):
         terminalreporter.write_line(f"{count:6d}  {name}")
     terminalreporter.write_line(f"{sum(leftovers.values()):6d}  total")
-
-
-@pytest.hookimpl(trylast=True)
-def pytest_unconfigure(config: pytest.Config) -> None:  # noqa: ARG001
-    """End the process once pytest has finished, skipping interpreter teardown.
-
-    Some tests still leave windows alive (listed in the run's summary), and pyqtgraph
-    plots among them cannot be destroyed safely in bulk: freeing them during interpreter
-    teardown, or deleting their windows from C++, segfaults the process after every test
-    has passed. Results are already reported and written by now.
-    """
-    exit_status = int(_session.exitstatus) if _session is not None else 0
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(exit_status)
 
 
 def _track_instances(monkeypatch, cls, on_create=None) -> list:
