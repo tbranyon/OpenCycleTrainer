@@ -145,6 +145,7 @@ class AppSettings:
     default_workout_behavior: str = DEFAULT_WORKOUT_BEHAVIOR
     windowed_power_window_seconds: int = 3
     last_workout_dir: Path | None = None
+    last_course_dir: Path | None = None
     workout_data_dir: Path | None = None
     strava_auto_sync_enabled: bool = False
     strava_athlete_name: str = ""
@@ -190,6 +191,7 @@ class AppSettings:
             "default_workout_behavior": self.default_workout_behavior,
             "windowed_power_window_seconds": self.windowed_power_window_seconds,
             "last_workout_dir": str(self.last_workout_dir) if self.last_workout_dir else None,
+            "last_course_dir": str(self.last_course_dir) if self.last_course_dir else None,
             "workout_data_dir": str(self.workout_data_dir) if self.workout_data_dir else None,
             "strava_auto_sync_enabled": self.strava_auto_sync_enabled,
             "strava_athlete_name": self.strava_athlete_name,
@@ -248,6 +250,7 @@ class AppSettings:
             default_workout_behavior=default_workout_behavior,
             windowed_power_window_seconds=max(1, min(10, int(data.get("windowed_power_window_seconds", 3)))),
             last_workout_dir=_restore_dir(data.get("last_workout_dir")),
+            last_course_dir=_restore_dir(data.get("last_course_dir")),
             workout_data_dir=_restore_dir(data.get("workout_data_dir")),
             strava_auto_sync_enabled=bool(data.get("strava_auto_sync_enabled", False)),
             strava_athlete_name=str(data.get("strava_athlete_name", "")),

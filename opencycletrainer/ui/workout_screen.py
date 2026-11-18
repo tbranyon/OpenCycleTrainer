@@ -26,6 +26,7 @@ from opencycletrainer.core.course_model import Course
 from opencycletrainer.core.dfa.pipeline import DFA_WINDOW_SECONDS, DfaRecord, SignalQuality
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.storage.settings import AppSettings, THEME_MODE_LIGHT, load_settings
+from .action_button import ROLE_DANGER, ROLE_PRIMARY, ActionButton
 from .chart_export import ChartImageExport
 from .course_map import CourseMapPanel
 from .map_tiles import TileSource, tile_source_for
@@ -45,6 +46,10 @@ _COURSE_MAP_DEFAULT_SHARE = 0.4
 _CHART_SPLITTER_HANDLE_PX = 4
 _COURSE_GRADE_TILE_TITLE = "Grade"
 _COURSE_REMAINING_TILE_TITLE = "Distance Remaining"
+_BUTTON_SPACING_PX = 8
+_START_OPTION_GROUP_GAP_PX = 16
+"""Extra space setting Start Free Ride apart from the ways to load something to ride."""
+_CONTROL_BUTTON_MIN_WIDTH_PX = 104
 
 
 class PauseDialog(QDialog):
@@ -453,6 +458,7 @@ class WorkoutScreen(QWidget):
     pause_resume_requested = Signal()
     load_workout_requested = Signal()
     load_from_library_requested = Signal()
+    load_course_requested = Signal()
     free_ride_requested = Signal()
     erg_target_entered = Signal(int)
     tile_order_changed = Signal(list)  # emits new list[str] of tile keys after drag reorder
@@ -488,28 +494,7 @@ class WorkoutScreen(QWidget):
         self.title_label.setFont(title_font)
         self.title_label.setAlignment(Qt.AlignCenter)
 
-        self.load_buttons_widget = QWidget(self)
-        load_buttons_layout = QVBoxLayout(self.load_buttons_widget)
-        load_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        load_buttons_layout.setSpacing(4)
-        self.load_from_library_button = QPushButton("Load from Library", self)
-        self.load_from_library_button.setObjectName("loadFromLibraryButton")
-        font = self.load_from_library_button.font()
-        font.setPointSize(font.pointSize() + 2)
-        self.load_from_library_button.setFont(font)
-        self.load_from_library_button.clicked.connect(self.load_from_library_requested)
-        self.load_from_file_button = QPushButton("Load from File", self)
-        self.load_from_file_button.setObjectName("loadFromFileButton")
-        self.load_from_file_button.setFont(font)
-        self.load_from_file_button.clicked.connect(self.load_workout_requested)
-        self.free_ride_button = QPushButton("Free Ride", self)
-        self.free_ride_button.setObjectName("freeRideButton")
-        self.free_ride_button.setFont(font)
-        self.free_ride_button.clicked.connect(self.free_ride_requested)
-        load_buttons_layout.addWidget(self.load_from_library_button)
-        load_buttons_layout.addWidget(self.load_from_file_button)
-        load_buttons_layout.addWidget(self.free_ride_button)
-
+        self._build_start_options()
         self.title_widget.addWidget(self.title_label)
         self.title_widget.addWidget(self.load_buttons_widget)
         self.title_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -567,6 +552,8 @@ class WorkoutScreen(QWidget):
 
     def apply_color_theme(self, color_theme: str) -> None:
         self._theme_mode = color_theme
+        for button in self.findChildren(ActionButton):
+            button.apply_color_theme(color_theme)
         self.chart_widget.apply_color_theme(color_theme)
         self.course_map_panel.apply_color_theme(color_theme)
         dfa_tile = self._tile_by_key.get(DFA_TILE_KEY)
@@ -602,7 +589,7 @@ class WorkoutScreen(QWidget):
 
     def set_session_state(self, state: str) -> None:
         state_key = str(state).strip().lower()
-        can_start = state_key in {"idle", "ready", "stopped", "finished"}
+        can_start = state_key in {"ready", "stopped", "finished"}
         can_pause = state_key in {"running", "ramp_in"}
         can_resume = state_key == "paused"
         can_stop = state_key in {"running", "ramp_in", "paused"}
@@ -746,22 +733,47 @@ class WorkoutScreen(QWidget):
 
         root_layout.addWidget(self.metrics_widget)
 
+    def _build_start_options(self) -> None:
+        """Build the row of ways to start riding, shown while nothing is loaded."""
+        self.load_buttons_widget = QWidget(self)
+        options_row = QHBoxLayout(self.load_buttons_widget)
+        options_row.setContentsMargins(0, 0, 0, 0)
+        options_row.setSpacing(_BUTTON_SPACING_PX)
+        self.free_ride_button = ActionButton("Start Free Ride", role=ROLE_PRIMARY, icon="play", parent=self)
+        self.free_ride_button.setToolTip("Ride with no plan, starting now")
+        self.load_workout_button = ActionButton("Load Workout File", icon="workout", parent=self)
+        self.load_workout_button.setToolTip("Open a workout file (.mrc, .zwo)")
+        self.load_from_library_button = ActionButton("Load from Library", icon="library", parent=self)
+        self.load_from_library_button.setToolTip("Choose a workout in the Library tab")
+        self.load_course_button = ActionButton("Load Course", icon="course", parent=self)
+        self.load_course_button.setToolTip("Open a course file (.gpx, .tcx, .fit) to ride its route")
+        self.free_ride_button.clicked.connect(self.free_ride_requested)
+        self.load_workout_button.clicked.connect(self.load_workout_requested)
+        self.load_from_library_button.clicked.connect(self.load_from_library_requested)
+        self.load_course_button.clicked.connect(self.load_course_requested)
+
+        options_row.addStretch(1)
+        options_row.addWidget(self.free_ride_button)
+        options_row.addSpacing(_START_OPTION_GROUP_GAP_PX)
+        options_row.addWidget(self.load_workout_button)
+        options_row.addWidget(self.load_from_library_button)
+        options_row.addWidget(self.load_course_button)
+        options_row.addStretch(1)
+
     def _build_control_buttons(self, root_layout: QVBoxLayout) -> None:
         controls_row = QHBoxLayout()
-        controls_row.setSpacing(8)
+        controls_row.setSpacing(_BUTTON_SPACING_PX)
         controls_row.addStretch(1)
 
-        self.start_button = QPushButton("Start", self)
-        self.pause_button = QPushButton("Pause", self)
-        self.resume_button = QPushButton("Resume", self)
-        self.end_button = QPushButton("Stop", self)
-        self.save_button = QPushButton("Save", self)
+        self.start_button = ActionButton("Start", role=ROLE_PRIMARY, icon="play", parent=self)
+        self.pause_button = ActionButton("Pause", icon="pause", parent=self)
+        self.resume_button = ActionButton("Resume", role=ROLE_PRIMARY, icon="play", parent=self)
+        self.end_button = ActionButton("Stop", role=ROLE_DANGER, icon="stop", parent=self)
+        self.save_button = ActionButton("Save", icon="save", parent=self)
 
-        controls_row.addWidget(self.start_button)
-        controls_row.addWidget(self.pause_button)
-        controls_row.addWidget(self.resume_button)
-        controls_row.addWidget(self.end_button)
-        controls_row.addWidget(self.save_button)
+        for button in (self.start_button, self.pause_button, self.resume_button, self.end_button, self.save_button):
+            button.setMinimumWidth(_CONTROL_BUTTON_MIN_WIDTH_PX)
+            controls_row.addWidget(button)
         controls_row.addStretch(1)
         root_layout.addLayout(controls_row)
         self.set_session_state("idle")
