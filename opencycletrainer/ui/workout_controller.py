@@ -285,6 +285,10 @@ class WorkoutSessionController(QObject):
             )
         if was_enabled != now_enabled:
             self._ftms_bridge_manager.set_opentrueup(self._opentrueup_state.controller)
+        # Redraw what is on screen now, so a change such as units shows without waiting
+        # for the next tick (which never comes before a loaded ride starts).
+        if self._engine.workout is not None and self._last_snapshot is not None:
+            self._handle_snapshot(self._last_snapshot, now_monotonic=None)
 
     def shutdown(self) -> None:
         self._timer.stop()

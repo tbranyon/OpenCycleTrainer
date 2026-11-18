@@ -21,14 +21,6 @@ designed yet.
   "next POI in X km" tile.
 - Could also accept a FIT course as the course itself, not just for POIs.
 
-## Change units on an already loaded course when settings change
-
-- Switching units in Settings while a course is loaded doesn't fully update what's on screen.
-- Likely cause (not verified): the tiles only refresh on the ride's tick, which doesn't run
-  until the ride starts, so a course that is loaded but not started keeps the old units until
-  then. The profile axes are relabelled straight away. Applying settings could redraw the
-  current values immediately.
-
 ## Show / record elevation gain
 
 - Total ascent and descent are already written to the FIT session, but nothing on screen shows

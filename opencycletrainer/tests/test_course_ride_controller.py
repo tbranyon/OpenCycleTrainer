@@ -387,6 +387,35 @@ def test_loading_a_workout_after_a_course_leaves_course_mode(session, tmp_path):
 
 # ── Riding ────────────────────────────────────────────────────────────────────
 
+def _pedal_without_ticks(s: _Session, seconds: float, watts: int = 180, rpm: float = 85.0) -> None:
+    """Feed power and cadence readings at the tick rate, as the sensors would, with no ticks."""
+    for _ in range(int(round(seconds / _TICK_SECONDS))):
+        s.clock.now += _TICK_SECONDS
+        s.controller.receive_cadence_rpm(rpm)
+        s.controller.receive_power_watts(watts, s.clock.now)
+
+
+def test_course_ride_starts_itself_after_three_seconds_of_pedaling(session, tmp_path):
+    s = session()
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+
+    _pedal_without_ticks(s, 2.75)
+    assert s.state == EngineState.READY
+
+    _pedal_without_ticks(s, 0.5)
+    assert s.state == EngineState.RUNNING
+
+
+def test_pedaling_before_a_course_is_loaded_does_not_count_towards_starting_it(session, tmp_path):
+    s = session()
+    _pedal_without_ticks(s, 5.0)
+
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    _pedal_without_ticks(s, 2.0)
+
+    assert s.state == EngineState.READY
+
+
 def test_pedaling_moves_the_rider_along_the_course(session, tmp_path):
     s = session()
     s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
@@ -779,6 +808,54 @@ def test_switching_units_mid_ride_updates_the_course_values(session, tmp_path):
     assert s.screen.remaining_tile.value_label.text().endswith(" mi")
     assert s.screen._tile_by_key["speed"].value_label.text().endswith(" mph")
     assert s.screen.chart_widget._course_plot.getAxis("bottom").labelText == "mi"
+
+
+def test_switching_units_updates_a_loaded_course_before_it_starts(session, tmp_path):
+    s = session(settings=AppSettings(tile_selections=["speed"]))
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    assert s.screen.remaining_tile.value_label.text().endswith(" km")
+
+    imperial = AppSettings(
+        display_units="imperial", tile_selections=["speed"], workout_data_dir=tmp_path
+    )
+    s.screen.apply_settings(imperial)
+    s.controller.apply_settings(imperial)
+
+    assert s.screen.remaining_tile.value_label.text().endswith(" mi")
+    assert s.screen._tile_by_key["speed"].value_label.text().endswith(" mph")
+
+
+def test_switching_units_mid_ride_updates_the_values_straight_away(session, tmp_path):
+    s = session(settings=AppSettings(tile_selections=["speed"]))
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+    s.ride(10.0, 200)
+
+    imperial = AppSettings(
+        display_units="imperial", tile_selections=["speed"], workout_data_dir=tmp_path
+    )
+    s.screen.apply_settings(imperial)
+    s.controller.apply_settings(imperial)
+
+    assert s.screen.remaining_tile.value_label.text().endswith(" mi")
+    assert s.screen._tile_by_key["speed"].value_label.text().endswith(" mph")
+
+
+def test_switching_units_does_not_disturb_a_paused_course_ride(session, tmp_path):
+    s = session()
+    s.load(_write_gpx(tmp_path, _constant_grade(0.0)))
+    s.start()
+    s.ride(10.0, 200)
+    s.screen.pause_button.click()
+    distance = s.controller.course_ride.distance_m
+
+    imperial = AppSettings(display_units="imperial", workout_data_dir=tmp_path)
+    s.screen.apply_settings(imperial)
+    s.controller.apply_settings(imperial)
+
+    assert s.state == EngineState.PAUSED
+    assert s.controller.course_ride.distance_m == distance
+    assert s.screen.remaining_tile.value_label.text().endswith(" mi")
 
 
 def test_recorded_course_values_stay_metric_with_imperial_units(session, tmp_path):
