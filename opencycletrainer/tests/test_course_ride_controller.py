@@ -464,6 +464,24 @@ def test_zwo_workout_loads_from_a_file(session):
     assert s.screen.title_widget.currentWidget() == s.screen.title_label
 
 
+def test_zwo_text_loads_a_workout_without_a_file(session):
+    s = session()
+
+    s.controller.load_workout_text((DATA_DIR / "steady.zwo").read_text(encoding="utf-8"), "Planned")
+
+    assert s.state == EngineState.READY
+    assert s.screen.title_label.text() == "Steady Ride"
+
+
+def test_invalid_workout_text_shows_an_alert_naming_the_workout(session):
+    s = session()
+
+    s.controller.load_workout_text("not a workout", "Planned Ride")
+
+    assert s.screen.title_widget.currentWidget() == s.screen.load_buttons_widget
+    assert "Planned Ride" in s.screen.alert_label.text()
+
+
 def test_loading_a_workout_after_a_course_leaves_course_mode(session, tmp_path):
     s = session()
     s.load(_write_gpx(tmp_path, _constant_grade(2.0)))

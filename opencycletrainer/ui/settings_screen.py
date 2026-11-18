@@ -241,6 +241,7 @@ _READ_API_KEY_FROM_STORE = object()
 class SettingsScreen(QWidget):
     settings_applied = Signal(object)
     ftp_edited = Signal(int)  # the rider finished typing a new FTP
+    intervals_icu_connection_changed = Signal(bool)  # True once connected, False on disconnect
     _sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
     _intervals_icu_sync_now_signal = Signal(str)  # "success" | "duplicate" | "error:{msg}"
     _intervals_icu_connect_signal = Signal(str)  # "ok:{name}" | "error:{msg}"
@@ -885,6 +886,7 @@ class SettingsScreen(QWidget):
 
     def _apply_intervals_icu_connected_state(self, connected: bool, athlete_name: str) -> None:
         self._intervals_icu_connected = connected
+        self.intervals_icu_connection_changed.emit(connected)
         if connected:
             label = f"Connected as {athlete_name}" if athlete_name else "Connected"
         else:

@@ -23,13 +23,11 @@ C++ would not have fixed any of them; it would only help install size and startu
    collapses under ERG, ease the target and ramp back in.
 3. **Record distance and left/right balance in the FIT file.** Balance is decoded
    (`core/sensors.py:46`) and then dropped; distance can be integrated from speed.
-4. **Pull today's planned workout from intervals.icu.** Authentication already exists,
-   and this removes the manual file shuffle for anyone following a plan.
-5. **FTP ramp test** that proposes a new FTP. FTP is manual only today, and it drives
+4. **FTP ramp test** that proposes a new FTP. FTP is manual only today, and it drives
    every percentage-based workout.
-6. **Finish or remove half-built pieces:** `core/control/hybrid_mode.py` is unused;
+5. **Finish or remove half-built pieces:** `core/control/hybrid_mode.py` is unused;
    the live Hybrid mode runs a separate copy of that logic in `ui/mode_state.py`.
-7. **Import `.erg` workouts** (close to the existing MRC parser), plus favourites and a
+6. **Import `.erg` workouts** (close to the existing MRC parser), plus favourites and a
    ride-history browser.
 
 **Bigger bets**

@@ -8,6 +8,7 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * Graphical and numeric workout interface
 * Configurable data fields
 * Import of .mrc and .zwo files for custom workouts
+* Load the ride planned for today on your intervals.icu calendar with one click
 * FIT file export
 * ERG and Resistance mode control of Bluetooth FTMS trainers
 * Power matching between trainer and on-bike power meter (OpenTrueUp)

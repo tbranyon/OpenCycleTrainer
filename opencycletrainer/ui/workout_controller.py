@@ -34,7 +34,7 @@ from opencycletrainer.core.recorder import WorkoutRecorder, to_fit_export_sample
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
-from opencycletrainer.core.zwo_parser import ZWOParseError, parse_zwo_file
+from opencycletrainer.core.zwo_parser import ZWOParseError, parse_zwo_file, parse_zwo_text
 from opencycletrainer.storage.filenames import build_activity_filename
 from opencycletrainer.storage.paths import get_workout_data_root, get_workout_fit_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
@@ -434,6 +434,20 @@ class WorkoutSessionController(QObject):
         """Load a workout from *path* without opening a file dialog."""
         self._load_workout_from_file(path)
 
+    def load_workout_text(self, zwo_text: str, name: str) -> None:
+        """Load a workout from ZWO text, such as one downloaded from intervals.icu.
+
+        *name* is used when the text has no name of its own, and in any error shown.
+        """
+        self._screen.clear_alert()
+        ftp = max(1, int(self._settings.ftp))
+        try:
+            workout = parse_zwo_text(zwo_text, ftp_watts=ftp, fallback_workout_name=name)
+        except ZWOParseError:
+            self._screen.show_alert(f"Could not load '{name}' — workout format may be invalid")
+            return
+        self._ready_workout(workout, ftp)
+
     def _request_load_workout_from_file(self) -> None:
         self._load_picked_file("Load Workout File", self._settings.last_workout_dir, _WORKOUT_FILE_FILTER)
 
@@ -467,6 +481,12 @@ class WorkoutSessionController(QObject):
             self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
             return
 
+        self._ready_workout(workout, ftp)
+        self._settings.last_workout_dir = path.parent
+        save_settings(self._settings, self._settings_path)
+
+    def _ready_workout(self, workout: Workout, ftp: int) -> None:
+        """Replace whatever is loaded with *workout*, ready to start."""
         self._clear_completed_recording()
         self._leave_open_ended_ride()
         self._workout = workout
@@ -481,8 +501,6 @@ class WorkoutSessionController(QObject):
         snapshot = self._engine.load_workout(self._workout)
         self._screen.set_workout_name(self._workout.name)
         self._handle_snapshot(snapshot, now_monotonic=None)
-        self._settings.last_workout_dir = path.parent
-        save_settings(self._settings, self._settings_path)
 
     def _load_course_from_file(self, path: Path) -> None:
         """Parse a course file, ask how to ride it, and ready a ride along the chosen course."""

@@ -459,6 +459,7 @@ class WorkoutScreen(QWidget):
     load_workout_requested = Signal()
     load_from_library_requested = Signal()
     load_course_requested = Signal()
+    load_planned_workout_requested = Signal()
     free_ride_requested = Signal()
     erg_target_entered = Signal(int)
     tile_order_changed = Signal(list)  # emits new list[str] of tile keys after drag reorder
@@ -565,6 +566,10 @@ class WorkoutScreen(QWidget):
         tile = self._tile_by_key.get(DFA_TILE_KEY)
         if isinstance(tile, DfaMetricTile):
             tile.set_dfa_record(record)
+
+    def set_planned_workout_available(self, available: bool) -> None:
+        """Show the button that loads today's planned workout only while it can work."""
+        self.load_planned_workout_button.setVisible(available)
 
     def set_workout_name(self, workout_name: str | None) -> None:
         name = str(workout_name or "").strip()
@@ -747,10 +752,14 @@ class WorkoutScreen(QWidget):
         self.load_from_library_button.setToolTip("Choose a workout in the Library tab")
         self.load_course_button = ActionButton("Load Course", icon="course", parent=self)
         self.load_course_button.setToolTip("Open a course file (.gpx, .tcx, .fit) to ride its route")
+        self.load_planned_workout_button = ActionButton("Today's Plan", icon="calendar", parent=self)
+        self.load_planned_workout_button.setToolTip("Load the ride planned for today on intervals.icu")
+        self.load_planned_workout_button.setVisible(False)
         self.free_ride_button.clicked.connect(self.free_ride_requested)
         self.load_workout_button.clicked.connect(self.load_workout_requested)
         self.load_from_library_button.clicked.connect(self.load_from_library_requested)
         self.load_course_button.clicked.connect(self.load_course_requested)
+        self.load_planned_workout_button.clicked.connect(self.load_planned_workout_requested)
 
         options_row.addStretch(1)
         options_row.addWidget(self.free_ride_button)
@@ -758,6 +767,7 @@ class WorkoutScreen(QWidget):
         options_row.addWidget(self.load_workout_button)
         options_row.addWidget(self.load_from_library_button)
         options_row.addWidget(self.load_course_button)
+        options_row.addWidget(self.load_planned_workout_button)
         options_row.addStretch(1)
 
     def _build_control_buttons(self, root_layout: QVBoxLayout) -> None:

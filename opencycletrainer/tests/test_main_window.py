@@ -256,6 +256,57 @@ def test_editing_ftp_in_settings_offers_to_update_intervals_icu(qapp, tmp_path, 
         window.close()
 
 
+def _intervals_icu_window(monkeypatch, *, api_key: str | None) -> MainWindow:
+    from opencycletrainer.ui import main_window as main_window_module
+
+    monkeypatch.setattr(main_window_module, "get_api_key", lambda: api_key)
+    monkeypatch.setattr(main_window_module, "get_tokens", lambda: None)
+    return MainWindow(backend=MockDeviceBackend())
+
+
+def test_todays_plan_button_follows_the_intervals_icu_connection(qapp, monkeypatch):
+    from opencycletrainer.ui import settings_screen as settings_screen_module
+
+    monkeypatch.setattr(settings_screen_module, "clear_api_key", lambda: None)
+    monkeypatch.setattr(settings_screen_module, "save_settings", lambda *args: None)
+    window = _intervals_icu_window(monkeypatch, api_key="secret")
+    try:
+        button = window.workout_screen.load_planned_workout_button
+        assert not button.isHidden()
+
+        window.settings_screen.disconnect_intervals_icu()
+
+        assert button.isHidden()
+    finally:
+        _close_window(window, qapp)
+
+
+def test_todays_plan_button_is_hidden_when_intervals_icu_is_not_connected(qapp, monkeypatch):
+    window = _intervals_icu_window(monkeypatch, api_key=None)
+    try:
+        assert window.workout_screen.load_planned_workout_button.isHidden()
+    finally:
+        _close_window(window, qapp)
+
+
+def test_todays_plan_button_loads_the_planned_workout(qapp, monkeypatch):
+    from opencycletrainer.integrations.intervalsicu.planned_workouts import PlannedWorkout
+
+    zwo_text = (_DATA_DIR / "steady.zwo").read_text(encoding="utf-8")
+    window = _intervals_icu_window(monkeypatch, api_key="secret")
+    loader = window.planned_workout_loader
+    loader._fetch_fn = lambda api_key, day: [PlannedWorkout(event_id=7, name="Steady Ride")]
+    loader._download_fn = lambda api_key, event_id: zwo_text
+    loader._run_async = lambda job: job()
+    try:
+        window.workout_screen.load_planned_workout_button.click()
+        qapp.processEvents()
+
+        assert window.workout_screen.title_label.text() == "Steady Ride"
+    finally:
+        _close_window(window, qapp)
+
+
 def test_main_window_forwards_monotonic_receipt_time_with_power(qapp):
     """Power readings reach the controller stamped with the BLE receipt time
     so the 1 s aggregator weights them by real arrival, not GUI-slot timing."""

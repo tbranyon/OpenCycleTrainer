@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QInputDialog
 from PySide6.QtWidgets import QMainWindow
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtWidgets import QTabWidget
@@ -25,10 +26,12 @@ from opencycletrainer.integrations.strava.sync_service import upload_fit_to_stra
 from opencycletrainer.integrations.strava.token_store import get_tokens
 from opencycletrainer.integrations.intervalsicu.sync_service import upload_fit_to_intervals_icu
 from opencycletrainer.integrations.intervalsicu.key_store import get_api_key
+from opencycletrainer.integrations.intervalsicu.planned_workouts import PlannedWorkout
 from opencycletrainer.storage.settings import AppSettings, save_settings
 from opencycletrainer.devices.device_manager import DeviceManager
 from .devices_screen import DevicesScreen
 from .ftp_sync import IntervalsIcuFtpSync
+from .planned_workout_loader import PlannedWorkoutLoader
 from .settings_screen import SettingsScreen
 from .theme import apply_application_theme
 from .toast import ToastOverlay
@@ -92,6 +95,18 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.settings_screen.ftp_edited.connect(self.ftp_sync.on_local_ftp_edited)
+        self.planned_workout_loader = PlannedWorkoutLoader(
+            api_key_getter=self.settings_screen.connected_intervals_icu_api_key,
+            choose=self._choose_planned_workout,
+            load=self.workout_controller.load_workout_text,
+            notify=self.workout_screen.show_alert,
+            parent=self,
+        )
+        self.workout_screen.load_planned_workout_requested.connect(self.planned_workout_loader.request)
+        self.settings_screen.intervals_icu_connection_changed.connect(
+            self.workout_screen.set_planned_workout_available
+        )
+        self.workout_screen.set_planned_workout_available(intervals_icu_api_key is not None)
         self.workout_screen.tile_order_changed.connect(self._on_tile_order_changed)
         self.devices_screen.sensor_sample_received.connect(self._on_sensor_sample)
         self.devices_screen.trainer_device_changed.connect(self._on_trainer_device_changed)
@@ -149,6 +164,16 @@ class MainWindow(QMainWindow):
     def check_intervals_icu_ftp(self) -> None:
         """Offer the FTP from intervals.icu if it differs from the app's. No-op when not connected."""
         self.ftp_sync.check_on_startup()
+
+    def _choose_planned_workout(self, planned: list[PlannedWorkout]) -> PlannedWorkout | None:
+        """Ask which of today's planned rides to load; None if the rider cancels."""
+        names = [workout.name for workout in planned]
+        name, accepted = QInputDialog.getItem(
+            self, "Today's Plan", "Several rides are planned today. Load:", names, 0, False,
+        )
+        if not accepted or name not in names:
+            return None
+        return planned[names.index(name)]
 
     def _confirm(self, title: str, text: str) -> bool:
         """Ask a yes/no question and return True for yes."""
@@ -251,6 +276,7 @@ class MainWindow(QMainWindow):
         width_px, collapsed = self.workout_screen.course_map_layout()
         self.settings_screen.set_course_map_layout(width_px=width_px, collapsed=collapsed)
         self.ftp_sync.shutdown()
+        self.planned_workout_loader.shutdown()
         self.workout_controller.shutdown()
         self.workout_screen.finish_chart_exports()
         self.devices_screen.backend.shutdown()

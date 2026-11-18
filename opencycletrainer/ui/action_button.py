@@ -51,6 +51,11 @@ _ICON_SVG = {
         f'<rect {_STROKE} x="5.6" y="4" width="2.8" height="9.75" rx="0.6"/>'
         f'<rect {_STROKE} x="10.2" y="3.25" width="2.6" height="10.5" rx="0.6" transform="rotate(10 12.8 13.75)"/>'
     ),
+    "calendar": (
+        f'<rect {_STROKE} x="1.75" y="3" width="12.5" height="11" rx="1.4"/>'
+        f'<path {_STROKE} d="M1.75 6.5h12.5M5 1.5v3M11 1.5v3"/>'
+        f'<rect {_FILL} x="9" y="9" width="3" height="3" rx="0.5"/>'
+    ),
     "course": (
         f'<path {_STROKE} d="M1.5 13.25 5.6 5.5l3.1 4.6 1.9-2.6 3.9 5.75z"/>'
         f'<circle {_FILL} cx="5.6" cy="3.1" r="1.15"/>'
