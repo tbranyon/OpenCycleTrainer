@@ -747,7 +747,7 @@ class WorkoutScreen(QWidget):
         self.free_ride_button = ActionButton("Start Free Ride", role=ROLE_PRIMARY, icon="play", parent=self)
         self.free_ride_button.setToolTip("Ride with no plan, starting now")
         self.load_workout_button = ActionButton("Load Workout File", icon="workout", parent=self)
-        self.load_workout_button.setToolTip("Open a workout file (.mrc, .zwo)")
+        self.load_workout_button.setToolTip("Open a workout file (.mrc, .zwo, .erg)")
         self.load_from_library_button = ActionButton("Load from Library", icon="library", parent=self)
         self.load_from_library_button.setToolTip("Choose a workout in the Library tab")
         self.load_course_button = ActionButton("Load Course", icon="course", parent=self)

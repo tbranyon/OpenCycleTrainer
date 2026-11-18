@@ -19,6 +19,7 @@ from .control import (
 )
 from .energy_tracker import ExternalEnergyTracker
 from .fit_exporter import FitExportSample, FitExporter, JsonFitWriterBackend
+from .erg_parser import ERGParseError, parse_erg_file, parse_erg_text
 from .mrc_parser import MRCParseError, parse_mrc_file, parse_mrc_text
 from .recorder import RecorderSample, RecorderSession, RecorderSummary, WorkoutRecorder
 from .sensors import CadenceSource, PowerSource, SensorSample, SensorStreamDecoder
@@ -27,6 +28,7 @@ from .workout_model import Workout, WorkoutInterval
 
 __all__ = [
     "ControlMode",
+    "ERGParseError",
     "EngineState",
     "ExternalEnergyTracker",
     "FTMSControl",
@@ -59,6 +61,8 @@ __all__ = [
     "WorkoutEngine",
     "WorkoutEngineSnapshot",
     "WorkoutInterval",
+    "parse_erg_file",
+    "parse_erg_text",
     "parse_mrc_file",
     "parse_mrc_text",
 ]

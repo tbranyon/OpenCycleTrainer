@@ -143,12 +143,14 @@ flowchart TD
         builder_parser[builder_parser]
         mrc[mrc_parser / mrc_exporter]
         zwo[zwo_parser / zwo_exporter]
+        erg[erg_parser]
+        workout_files[workout_files]
         library[WorkoutLibrary]
     end
 
     subgraph Store[Storage]
         blocks_store[(blocks.json)]
-        user_workouts[(user workouts .mrc/.zwo)]
+        user_workouts[(user workouts .mrc/.zwo/.erg)]
     end
 
     rider --> builder_screen
@@ -161,6 +163,10 @@ flowchart TD
     builder_screen -->|save as ZWO| zwo
     builder_screen -->|workout_saved| library
     library --> user_workouts
+    library -->|parse by extension| workout_files
+    workout_files --> mrc
+    workout_files --> zwo
+    workout_files --> erg
     library_screen -->|refresh / parse headers| library
     library_screen -->|workout_selected| main_window
     library_screen -->|workout_edit_requested| builder_screen
@@ -200,6 +206,8 @@ flowchart TD
 - `builder_parser`: `opencycletrainer/core/builder_parser.py`
 - `mrc_parser` / `mrc_exporter`: `opencycletrainer/core/mrc_parser.py`, `opencycletrainer/core/mrc_exporter.py`
 - `zwo_parser` / `zwo_exporter`: `opencycletrainer/core/zwo_parser.py`, `opencycletrainer/core/zwo_exporter.py`
+- `erg_parser`: `opencycletrainer/core/erg_parser.py`
+- `workout_files`: `opencycletrainer/core/workout_files.py`
 - `blocks` store: `opencycletrainer/storage/blocks.py`
 
 ## Notes
@@ -220,7 +228,9 @@ flowchart TD
 - OpenTrueUp receives both trainer and bike power samples through the bridge, computes an
   offset, and can trigger an ERG target re-application on the trainer.
 - The workout authoring subsystem (Library + Builder + reusable Blocks) parses and exports
-  MRC and ZWO files. The builder's `@name` block references are expanded by `builder_parser`
+  MRC and ZWO files, and also reads ERG files (targets in watts, scaled to the rider's FTP
+  when the file states the FTP it was written for). `workout_files` picks the parser by
+  file extension for the library, the builder and the workout tab. The builder's `@name` block references are expanded by `builder_parser`
   from `blocks.json` at the current FTP; block bodies cannot themselves reference blocks
   (single-level nesting only).
 - Current implementation gap: resistance setpoints are sent to the trainer during a workout

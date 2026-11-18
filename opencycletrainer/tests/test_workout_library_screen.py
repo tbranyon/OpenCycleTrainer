@@ -537,8 +537,8 @@ def test_compute_target_np_returns_int():
 
 # ── Phase 4: ZWO support ──────────────────────────────────────────────────────
 
-def test_file_dialog_filter_contains_zwo(tmp_path):
-    """_on_add_clicked must use a filter that includes *.zwo."""
+@pytest.mark.parametrize("pattern", ["*.mrc", "*.zwo", "*.erg"])
+def test_add_file_dialog_offers_every_workout_format(tmp_path, pattern):
     screen, _, _ = _make_screen(tmp_path)
 
     captured_filter: list[str] = []
@@ -554,7 +554,7 @@ def test_file_dialog_filter_contains_zwo(tmp_path):
         screen._on_add_clicked()
 
     assert captured_filter, "getOpenFileName was not called"
-    assert "*.zwo" in captured_filter[0]
+    assert pattern in captured_filter[0]
 
 
 def test_adding_zwo_with_category_calls_inject_zwo(tmp_path):
@@ -622,14 +622,27 @@ def test_adding_zwo_without_category_does_not_inject(tmp_path):
     mock_add_text.assert_not_called()
 
 
-def test_preview_pane_load_zwo_populates_name(tmp_path):
-    """WorkoutPreviewPane.load() must handle .zwo files — name label populated from ZWO name."""
+@pytest.mark.parametrize(
+    ("path", "expected_name"),
+    [(_STEADY_ZWO, "Steady Ride"), (_DATA_DIR / "steady.erg", "Steady Watts")],
+)
+def test_preview_pane_load_populates_name_for_zwo_and_erg(tmp_path, path, expected_name):
     _get_qapp()
     from opencycletrainer.ui.workout_library_screen import WorkoutPreviewPane
 
     pane = WorkoutPreviewPane(ftp_getter=lambda: 250)
-    pane.load(_STEADY_ZWO)
-    assert pane._name_label.text() == "Steady Ride"
+    pane.load(path)
+    assert pane._name_label.text() == expected_name
+
+
+def test_preview_pane_charts_an_erg_workout_in_watts(tmp_path):
+    _get_qapp()
+    from opencycletrainer.ui.workout_library_screen import WorkoutPreviewPane
+
+    pane = WorkoutPreviewPane(ftp_getter=lambda: 250)
+    pane.load(_DATA_DIR / "steady.erg")
+    _, y = pane._target_item.getData()
+    assert max(y) == 200
 
 
 def test_preview_pane_load_zwo_populates_chart_data(tmp_path):

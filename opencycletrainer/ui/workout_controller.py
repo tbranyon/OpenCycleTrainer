@@ -15,7 +15,6 @@ from PySide6.QtWidgets import QFileDialog
 from opencycletrainer.core.control.ftms_control import FTMSControlTransport, should_jog_persist_into_interval
 from opencycletrainer.core.control.opentrueup import OpenTrueUpController
 from opencycletrainer.devices.ble_backend import BleakDeviceBackend, BleakFTMSControlTransport
-from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file
 from opencycletrainer.core.bike_physics import rolling_resistance_for_surface
 from opencycletrainer.core.cadence_history import CadenceHistory
 from opencycletrainer.core.course_model import Course
@@ -34,7 +33,8 @@ from opencycletrainer.core.recorder import WorkoutRecorder, to_fit_export_sample
 from opencycletrainer.core.sensors import CadenceSource, PowerSource
 from opencycletrainer.core.workout_engine import EngineState, WorkoutEngine, WorkoutEngineSnapshot
 from opencycletrainer.core.workout_model import Workout, WorkoutInterval
-from opencycletrainer.core.zwo_parser import ZWOParseError, parse_zwo_file, parse_zwo_text
+from opencycletrainer.core.workout_files import WORKOUT_PARSE_ERRORS, parse_workout_file, workout_file_filter
+from opencycletrainer.core.zwo_parser import ZWOParseError, parse_zwo_text
 from opencycletrainer.storage.filenames import build_activity_filename
 from opencycletrainer.storage.paths import get_workout_data_root, get_workout_fit_dir
 from opencycletrainer.storage.settings import AppSettings, save_settings
@@ -65,15 +65,13 @@ _AUTO_START_PEDALING_SECONDS = 3.0
 _RIDING_STATES = frozenset({EngineState.RUNNING, EngineState.RAMP_IN})
 
 _COURSE_PARSERS = {".gpx": parse_gpx_file, ".tcx": parse_tcx_file, ".fit": parse_fit_course_file}
-_ZWO_FILE_SUFFIX = ".zwo"
-_WORKOUT_FILE_SUFFIXES = (".mrc", _ZWO_FILE_SUFFIX)
 
 
 def _file_filter(label: str, suffixes) -> str:
     return f"{label} ({' '.join(f'*{suffix}' for suffix in suffixes)})"
 
 
-_WORKOUT_FILE_FILTER = _file_filter("Workout Files", _WORKOUT_FILE_SUFFIXES)
+_WORKOUT_FILE_FILTER = workout_file_filter()
 _COURSE_FILE_FILTER = _file_filter("Course Files", _COURSE_PARSERS)
 _OPEN_ENDED_RIDE_SECONDS = 86400
 """Nominal length of a ride with no planned end (a free ride or a course)."""
@@ -463,21 +461,18 @@ class WorkoutSessionController(QObject):
             self._load_workout_from_file(Path(file_path_str))
 
     def _load_workout_from_file(self, path: Path) -> None:
-        """Load a workout (.mrc, .zwo) or a course (.gpx, .tcx, .fit), chosen by the file's extension."""
+        """Load a workout (.mrc, .zwo, .erg) or a course (.gpx, .tcx, .fit), chosen by the file's extension."""
         self._screen.clear_alert()
         if path.suffix.lower() in _COURSE_PARSERS:
             self._load_course_from_file(path)
             return
         ftp = max(1, int(self._settings.ftp))
         try:
-            if path.suffix.lower() == _ZWO_FILE_SUFFIX:
-                workout = parse_zwo_file(path, ftp_watts=ftp)
-            else:
-                workout = parse_mrc_file(path, ftp_watts=ftp)
-        except (MRCParseError, ZWOParseError) as exc:
+            workout = parse_workout_file(path, ftp_watts=ftp)
+        except WORKOUT_PARSE_ERRORS:
             self._screen.show_alert(f"Could not load '{path.name}' — file format may be invalid")
             return
-        except (IOError, OSError) as exc:
+        except OSError:
             self._screen.show_alert(f"Could not read '{path.name}' — check the file exists and is accessible")
             return
 

@@ -25,10 +25,9 @@ from PySide6.QtWidgets import (
 
 from opencycletrainer.core.builder_parser import parse_builder_text, workout_to_builder_text
 from opencycletrainer.core.mrc_exporter import workout_to_mrc_text
-from opencycletrainer.core.mrc_parser import parse_mrc_file, parse_mrc_header
 from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.core.zwo_exporter import workout_to_zwo_text
-from opencycletrainer.core.zwo_parser import parse_zwo_file, parse_zwo_header
+from opencycletrainer.core.workout_files import parse_workout_file, parse_workout_header
 from opencycletrainer.storage.blocks import load_blocks
 from opencycletrainer.ui.block_manager_dialog import BlockManagerDialog
 from opencycletrainer.ui.workout_chart import (
@@ -257,12 +256,8 @@ class WorkoutBuilderScreen(QWidget):
         """Load a workout file from the library into the builder for editing."""
         ftp = self._ftp_getter()
         try:
-            if path.suffix.lower() == ".zwo":
-                workout = parse_zwo_file(path, ftp_watts=ftp)
-                header = parse_zwo_header(path)
-            else:
-                workout = parse_mrc_file(path, ftp_watts=ftp)
-                header = parse_mrc_header(path)
+            workout = parse_workout_file(path, ftp_watts=ftp)
+            header = parse_workout_header(path)
         except Exception as exc:
             QMessageBox.critical(self, "Load Error", f"Could not load workout for editing:\n{exc}")
             return

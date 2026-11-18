@@ -78,8 +78,37 @@ def parse_mrc_text(
     if ftp_watts <= 0:
         raise MRCParseError("FTP must be a positive integer.")
 
+    header, points = read_course_text(text, MRCParseError, file_kind="MRC", value_column="PERCENT")
+    intervals = build_course_intervals(points, ftp_watts=ftp_watts, error=MRCParseError)
+    if not intervals:
+        raise MRCParseError("MRC file did not produce any intervals.")
+
+    return Workout(
+        name=course_workout_name(header, fallback_workout_name),
+        ftp_watts=ftp_watts,
+        intervals=tuple(intervals),
+    )
+
+
+# ── Shared with the ERG parser, which uses the same section layout ────────────
+
+CoursePoint = tuple[Decimal, Decimal, int]  # minutes, value, source line number
+
+
+def read_course_text(
+    text: str,
+    error: type[ValueError],
+    file_kind: str,
+    value_column: str,
+) -> tuple[dict[str, str], list[CoursePoint]]:
+    """Split MRC-style text into its lowercase-keyed header and its data points.
+
+    *value_column* names the second data column (PERCENT, WATTS) in error messages.
+
+    Raises *error* when the [COURSE DATA] section is missing or a row is malformed.
+    """
     header: dict[str, str] = {}
-    points: list[tuple[Decimal, Decimal, int]] = []
+    points: list[CoursePoint] = []
     in_course_data = False
     saw_course_data_section = False
 
@@ -98,8 +127,8 @@ def parse_mrc_text(
             continue
 
         if in_course_data:
-            minute_value, percent_value = _parse_data_row(stripped, line_number)
-            points.append((minute_value, percent_value, line_number))
+            minute_value, data_value = _parse_data_row(stripped, line_number, error, value_column)
+            points.append((minute_value, data_value, line_number))
             continue
 
         if "=" in stripped:
@@ -107,55 +136,61 @@ def parse_mrc_text(
             header[key.strip().lower()] = value.strip()
 
     if not saw_course_data_section:
-        raise MRCParseError("Missing [COURSE DATA] section.")
+        raise error("Missing [COURSE DATA] section.")
     if len(points) < 2:
-        raise MRCParseError("MRC file must define at least two course data points.")
+        raise error(f"{file_kind} file must define at least two course data points.")
+    return header, points
 
-    intervals = _build_intervals(points, ftp_watts=ftp_watts)
-    if not intervals:
-        raise MRCParseError("MRC file did not produce any intervals.")
 
-    workout_name = (
+def course_workout_name(header: dict[str, str], fallback_workout_name: str) -> str:
+    """Name a workout from its header, falling back to *fallback_workout_name*."""
+    name = (
         header.get("description")
         or header.get("workoutname")
         or header.get("file name")
         or fallback_workout_name
     ).strip()
+    return name or "Workout"
 
-    return Workout(name=workout_name or "Workout", ftp_watts=ftp_watts, intervals=tuple(intervals))
 
-
-def _parse_data_row(row: str, line_number: int) -> tuple[Decimal, Decimal]:
+def _parse_data_row(
+    row: str,
+    line_number: int,
+    error: type[ValueError],
+    value_column: str,
+) -> tuple[Decimal, Decimal]:
     fields = row.split()
     if len(fields) < 2:
-        raise MRCParseError(
-            f"Line {line_number}: expected two numeric columns (MINUTES PERCENT), got '{row}'."
+        raise error(
+            f"Line {line_number}: expected two numeric columns (MINUTES {value_column}), got '{row}'."
         )
 
-    minute_value = _parse_decimal(fields[0], line_number=line_number, field_name="MINUTES")
-    percent_value = _parse_decimal(fields[1], line_number=line_number, field_name="PERCENT")
+    minute_value = _parse_decimal(fields[0], line_number, "MINUTES", error)
+    data_value = _parse_decimal(fields[1], line_number, value_column, error)
 
     if minute_value < 0:
-        raise MRCParseError(f"Line {line_number}: MINUTES must be >= 0.")
-    if percent_value < 0:
-        raise MRCParseError(f"Line {line_number}: PERCENT must be >= 0.")
+        raise error(f"Line {line_number}: MINUTES must be >= 0.")
+    if data_value < 0:
+        raise error(f"Line {line_number}: {value_column} must be >= 0.")
 
-    return minute_value, percent_value
+    return minute_value, data_value
 
 
-def _parse_decimal(value: str, line_number: int, field_name: str) -> Decimal:
+def _parse_decimal(value: str, line_number: int, field_name: str, error: type[ValueError]) -> Decimal:
     try:
         return Decimal(value)
     except InvalidOperation as exc:
-        raise MRCParseError(
+        raise error(
             f"Line {line_number}: invalid {field_name} value '{value}'."
         ) from exc
 
 
-def _build_intervals(
-    points: Iterable[tuple[Decimal, Decimal, int]],
+def build_course_intervals(
+    points: Iterable[CoursePoint],
     ftp_watts: int,
+    error: type[ValueError],
 ) -> list[WorkoutInterval]:
+    """Turn (minutes, percent of FTP) points into intervals, one per span between points."""
     point_list = list(points)
     intervals: list[WorkoutInterval] = []
 
@@ -164,7 +199,7 @@ def _build_intervals(
         curr_minute, curr_percent, curr_line = point_list[index]
 
         if curr_minute < prev_minute:
-            raise MRCParseError(
+            raise error(
                 "Line "
                 f"{curr_line}: MINUTES must be non-decreasing (previous value on line {prev_line})."
             )
@@ -178,7 +213,7 @@ def _build_intervals(
             (delta_minutes * Decimal("60")).to_integral_value(rounding=ROUND_HALF_UP)
         )
         if duration_seconds <= 0:
-            raise MRCParseError(
+            raise error(
                 f"Line {curr_line}: interval duration is too short after rounding."
             )
 
@@ -199,4 +234,3 @@ def _build_intervals(
 
 def _percent_to_watts(percent: Decimal, ftp_watts: int) -> int:
     return int((Decimal(ftp_watts) * percent / Decimal("100")).to_integral_value(rounding=ROUND_HALF_UP))
-

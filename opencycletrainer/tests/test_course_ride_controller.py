@@ -389,7 +389,7 @@ def test_gpx_without_elevation_explains_why_it_cannot_be_ridden(session, tmp_pat
     assert "elevation" in s.screen.alert_label.text()
 
 
-_WORKOUT_PATTERNS = ("*.mrc", "*.zwo")
+_WORKOUT_PATTERNS = ("*.mrc", "*.zwo", "*.erg")
 _COURSE_PATTERNS = ("*.gpx", "*.tcx", "*.fit")
 
 
@@ -454,14 +454,25 @@ def test_workout_and_course_pickers_each_reopen_where_their_last_file_came_from(
     assert (s.settings.last_workout_dir, s.settings.last_course_dir) == (workouts, courses)
 
 
-def test_zwo_workout_loads_from_a_file(session):
+@pytest.mark.parametrize("filename", ["steady.zwo", "steady.erg"])
+def test_zwo_and_erg_workouts_load_from_a_file(session, filename):
     s = session()
 
-    s.load(DATA_DIR / "steady.zwo")
+    s.load(DATA_DIR / filename)
 
     assert s.state == EngineState.READY
     assert s.controller.course_ride is None
     assert s.screen.title_widget.currentWidget() == s.screen.title_label
+
+
+def test_an_erg_workout_targets_the_watts_written_in_it(session):
+    s = session()
+    s.load(DATA_DIR / "steady.erg")
+    s.start()
+
+    s.ride(seconds=1.0, watts=150)
+
+    assert "/ 200" in s.screen.target_power_tile.value_label.text()
 
 
 def test_zwo_text_loads_a_workout_without_a_file(session):

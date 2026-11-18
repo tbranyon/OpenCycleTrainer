@@ -286,6 +286,22 @@ def test_zwo_entry_duration_correct(tmp_path):
     assert lib.entries[0].duration_seconds == 600
 
 
+_ERG_WITH_CATEGORY = (
+    "[COURSE HEADER]\nDESCRIPTION = Watts Block\nCATEGORY = SST\nMINUTES WATTS\n"
+    "[END COURSE HEADER]\n[COURSE DATA]\n0 220\n10 220\n[END COURSE DATA]\n"
+)
+
+
+def test_erg_entries_are_listed_with_duration_and_category(tmp_path):
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    (user_dir / "block.erg").write_text(_ERG_WITH_CATEGORY, encoding="utf-8")
+
+    lib = WorkoutLibrary(user_dir=user_dir, prepackaged_dir=tmp_path / "empty")
+
+    assert [(e.path.name, e.duration_seconds, e.category) for e in lib.entries] == [("block.erg", 600, "SST")]
+
+
 # ── Exception narrowing ───────────────────────────────────────────────────────
 
 def test_mrc_parse_error_skips_file(tmp_path):
@@ -295,7 +311,7 @@ def test_mrc_parse_error_skips_file(tmp_path):
     _write_mrc(user_dir, "workout.mrc", _MRC_WITHOUT_CATEGORY)
 
     with patch(
-        "opencycletrainer.core.workout_library.parse_mrc_file",
+        "opencycletrainer.core.workout_files.parse_mrc_file",
         side_effect=MRCParseError("bad mrc"),
     ):
         lib = WorkoutLibrary(user_dir=user_dir, prepackaged_dir=tmp_path / "empty")
@@ -310,7 +326,7 @@ def test_zwo_parse_error_skips_file(tmp_path):
     _write_zwo(user_dir, "workout.zwo", _ZWO_SIMPLE)
 
     with patch(
-        "opencycletrainer.core.workout_library.parse_zwo_file",
+        "opencycletrainer.core.workout_files.parse_zwo_file",
         side_effect=ZWOParseError("bad zwo"),
     ):
         lib = WorkoutLibrary(user_dir=user_dir, prepackaged_dir=tmp_path / "empty")
@@ -325,7 +341,7 @@ def test_unexpected_exception_propagates_from_mrc_parser(tmp_path):
     _write_mrc(user_dir, "workout.mrc", _MRC_WITHOUT_CATEGORY)
 
     with patch(
-        "opencycletrainer.core.workout_library.parse_mrc_file",
+        "opencycletrainer.core.workout_files.parse_mrc_file",
         side_effect=MemoryError("out of memory"),
     ):
         with pytest.raises(MemoryError):
@@ -339,7 +355,7 @@ def test_unexpected_exception_propagates_from_zwo_parser(tmp_path):
     _write_zwo(user_dir, "workout.zwo", _ZWO_SIMPLE)
 
     with patch(
-        "opencycletrainer.core.workout_library.parse_zwo_file",
+        "opencycletrainer.core.workout_files.parse_zwo_file",
         side_effect=MemoryError("out of memory"),
     ):
         with pytest.raises(MemoryError):
@@ -353,7 +369,7 @@ def test_os_error_during_parse_skips_file(tmp_path):
     _write_mrc(user_dir, "workout.mrc", _MRC_WITHOUT_CATEGORY)
 
     with patch(
-        "opencycletrainer.core.workout_library.parse_mrc_file",
+        "opencycletrainer.core.workout_files.parse_mrc_file",
         side_effect=OSError("permission denied"),
     ):
         lib = WorkoutLibrary(user_dir=user_dir, prepackaged_dir=tmp_path / "empty")
@@ -368,7 +384,7 @@ def test_unicode_decode_error_during_parse_skips_file(tmp_path):
     _write_zwo(user_dir, "workout.zwo", _ZWO_SIMPLE)
 
     with patch(
-        "opencycletrainer.core.workout_library.parse_zwo_file",
+        "opencycletrainer.core.workout_files.parse_zwo_file",
         side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid"),
     ):
         lib = WorkoutLibrary(user_dir=user_dir, prepackaged_dir=tmp_path / "empty")

@@ -27,8 +27,6 @@ C++ would not have fixed any of them; it would only help install size and startu
    every percentage-based workout.
 5. **Finish or remove half-built pieces:** `core/control/hybrid_mode.py` is unused;
    the live Hybrid mode runs a separate copy of that logic in `ui/mode_state.py`.
-6. **Import `.erg` workouts** (close to the existing MRC parser), plus favourites and a
-   ride-history browser.
 
 **Bigger bets**
 

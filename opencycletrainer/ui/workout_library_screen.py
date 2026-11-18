@@ -29,8 +29,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from opencycletrainer.core.mrc_parser import inject_category_into_mrc_text, parse_mrc_file
-from opencycletrainer.core.zwo_parser import inject_category_into_zwo_text, parse_zwo_file
+from opencycletrainer.core.mrc_parser import inject_category_into_mrc_text
+from opencycletrainer.core.workout_files import ZWO_FILE_SUFFIX, parse_workout_file, workout_file_filter
+from opencycletrainer.core.zwo_parser import inject_category_into_zwo_text
 from opencycletrainer.core.workout_library import WorkoutLibrary
 from opencycletrainer.core.workout_model import Workout
 from opencycletrainer.ui.workout_chart import (
@@ -143,14 +144,11 @@ class WorkoutPreviewPane(QWidget):
     def load(self, path: Path) -> None:
         """Parse workout at path using current FTP, populate chart and stats.
 
-        Supports both .mrc and .zwo files, dispatching to the appropriate parser.
+        Supports .mrc, .zwo and .erg files, dispatching to the appropriate parser.
         """
         try:
             ftp = self._ftp_getter()
-            if path.suffix.lower() == ".zwo":
-                workout = parse_zwo_file(path, ftp_watts=ftp)
-            else:
-                workout = parse_mrc_file(path, ftp_watts=ftp)
+            workout = parse_workout_file(path, ftp_watts=ftp)
         except Exception:
             self.clear()
             return
@@ -391,7 +389,12 @@ class WorkoutLibraryScreen(QWidget):
             self,
             "Add Workout to Library",
             str(Path.home()),
-            "Workout Files (*.mrc *.zwo);;MRC Files (*.mrc);;ZWO Files (*.zwo)",
+            ";;".join((
+                workout_file_filter(),
+                "MRC Files (*.mrc)",
+                "ZWO Files (*.zwo)",
+                "ERG Files (*.erg)",
+            )),
         )
         if not file_path_str:
             return
@@ -410,7 +413,7 @@ class WorkoutLibraryScreen(QWidget):
         try:
             if cat:
                 text = source_path.read_text(encoding="utf-8")
-                if source_path.suffix.lower() == ".zwo":
+                if source_path.suffix.lower() == ZWO_FILE_SUFFIX:
                     text = inject_category_into_zwo_text(text, cat)
                 else:
                     text = inject_category_into_mrc_text(text, cat)

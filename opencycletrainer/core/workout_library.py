@@ -5,8 +5,12 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from opencycletrainer.core.mrc_parser import MRCParseError, parse_mrc_file, parse_mrc_header
-from opencycletrainer.core.zwo_parser import ZWOParseError, parse_zwo_file, parse_zwo_header
+from opencycletrainer.core.workout_files import (
+    WORKOUT_FILE_SUFFIXES,
+    WORKOUT_PARSE_ERRORS,
+    parse_workout_file,
+    parse_workout_header,
+)
 from opencycletrainer.storage.paths import get_prepackaged_workouts_dir, get_user_workouts_dir
 
 _logger = logging.getLogger(__name__)
@@ -45,7 +49,7 @@ class WorkoutLibrary:
         for source_dir in (self._user_dir, self._prepackaged_dir):
             if not source_dir.exists():
                 continue
-            paths = sorted(source_dir.glob("*.mrc")) + sorted(source_dir.glob("*.zwo"))
+            paths = [path for suffix in WORKOUT_FILE_SUFFIXES for path in source_dir.glob(f"*{suffix}")]
             for path in sorted(paths):
                 entry = self._try_parse(path)
                 if entry is not None:
@@ -74,13 +78,9 @@ class WorkoutLibrary:
 
     def _try_parse(self, path: Path) -> WorkoutLibraryEntry | None:
         try:
-            if path.suffix.lower() == ".zwo":
-                workout = parse_zwo_file(path, ftp_watts=_DUMMY_FTP)
-                header = parse_zwo_header(path)
-            else:
-                workout = parse_mrc_file(path, ftp_watts=_DUMMY_FTP)
-                header = parse_mrc_header(path)
-        except (ZWOParseError, MRCParseError, OSError, UnicodeDecodeError):
+            workout = parse_workout_file(path, ftp_watts=_DUMMY_FTP)
+            header = parse_workout_header(path)
+        except (*WORKOUT_PARSE_ERRORS, OSError, UnicodeDecodeError):
             _logger.warning("Skipping unparseable workout file: %s", path)
             return None
         return WorkoutLibraryEntry(
