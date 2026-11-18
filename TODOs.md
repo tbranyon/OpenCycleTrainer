@@ -34,6 +34,7 @@
 17. **Dark mode is partial.** Banners, builder hints and the summary dialog hard-code colours, although `ui/theme.py` already has a theme-aware palette.
 18. **Window size is fixed at 1024×720 and not remembered**, and the summary dialog's 760×760 minimum is taller than the main window.
 19. **After a ride, the banner shows only the file name.** Show the folder and add an "Open folder" action.
+20. **Validate DFA α1 against Kubios.** Record a real RR + power session (e.g. Polar H10 during an indoor ramp), run the same RR file through Kubios HRV (smoothness priors λ=500, DFA 4–16), and confirm per-window α1 agrees within ~0.05. If offsets are systematic, check box direction, then resampling, then artifact correction (see the validation plan in `Docs/dfa-a1-implementation.md`).
 
 # Ideas
 

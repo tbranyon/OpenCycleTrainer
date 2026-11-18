@@ -1,5 +1,9 @@
 # DFA α1 — Implementation Brief (Clean-Room Spec)
 
+> Implemented in `opencycletrainer/core/dfa/`. This document is the algorithm reference
+> (sources, parameters, quality gate). How α1 is wired into the app (tile, chart,
+> recording, FIT export) is described in [ArchitectureDiagram.md](ArchitectureDiagram.md).
+
 **Target:** Real-time short-term scaling exponent (DFA α1) for a desktop ERG-trainer
 control app, computed from a BLE chest-strap RR-interval stream.
 
@@ -61,93 +65,6 @@ BLE RR stream (ms)
 Keep DFA and detrending on the **beat-indexed** RR series. Do **not** resample to an even
 time grid — the exercise DFA α1 literature operates on the beat series, and resampling
 changes the exponent.
-
----
-
-## [0] OCT integration map (read first)
-
-This section maps the clean-room stages above onto OpenCycleTrainer's actual architecture.
-Stages [1]–[5] are pure computation and live in a new, Qt-free core module so they can be
-unit-tested in isolation (per the project's TDD workflow). The UI and plumbing are
-described in [7]–[9].
-
-### 0a. Prerequisite — RR-interval acquisition (NOT yet in OCT)
-
-OCT today **discards** RR intervals. `decode_heart_rate_measurement`
-(`opencycletrainer/devices/decoders/hrs.py`) reads only `heart_rate_bpm` from the HR
-Measurement characteristic (`0x2A37`) and ignores the optional **RR-Interval** field. The
-entire DFA pipeline depends on that field, so the first work item is to surface it:
-
-1. **Decoder** — extend `decode_heart_rate_measurement` to parse the RR-Interval field
-   when flag **bit 4** (`RR-Interval present`) is set. RR values are `uint16`, little-endian,
-   in **1/1024 s** units; convert to **ms** (`rr_ms = raw * 1000 / 1024`). A single
-   notification may carry **multiple** RR values (append all). The Energy-Expended field
-   (flag bit 3) precedes RR and must be skipped when present to find the correct offset.
-2. **Metrics struct** — add `rr_intervals_ms: tuple[float, ...] | None` to `DecodedMetrics`
-   (`devices/decoders/base.py`). A tuple keeps the frozen dataclass hashable and reflects
-   that one packet can yield several beats.
-3. **Sensor sample** — add the same field to `SensorSample` (`core/sensors.py`) and pass it
-   through `SensorStreamDecoder.decode_notification`.
-4. **Fan-out** — in `MainWindow._on_sensor_sample` (`ui/main_window.py`), when
-   `sample.rr_intervals_ms` is present, forward each RR value to the DFA pipeline (mirroring
-   the existing `receive_hr_bpm` call).
-5. **Source selection** — only chest straps emit RR, and a session may have several
-   HR-capable devices. Feed the DFA pipeline RR **only** from the connected `HEART_RATE`
-   device. Many optical/arm straps never set bit 4 → the pipeline must degrade gracefully to
-   `INSUFFICIENT` and the tile must show a "No RR data from strap" reason (see [5e]/[7]).
-
-Add decoder tests alongside `tests/test_sensor_decoders.py`: HR-only packet (no RR), single
-RR, multi-RR, and RR-with-energy-expended offset cases.
-
-### 0b. Module layout
-
-| Concern | Location (new unless noted) | Notes |
-|---|---|---|
-| Pure pipeline (stages [1]–[5]) | `core/dfa/pipeline.py` | `DfaPipeline` + `DfaRecord` dataclass. Numpy only, no Qt, no I/O. |
-| Artifact correction | `core/dfa/artifact.py` | Lipponen-Tarvainen classifier + corrections. |
-| Detrend + DFA math | `core/dfa/dfa.py` | Smoothness-priors solve, profile, fluctuation, slope. |
-| RR ingest + scheduling | `core/dfa/pipeline.py` | Ring buffer, 5 s recompute tick, holds `latest_record`. |
-| Tile widget | `ui/workout_screen.py` | `DfaMetricTile(MetricTile)` (subclass, like `KJMetricTile`). |
-| Tile value wiring | `ui/tile_computation.py`, `ui/tile_config.py` | Register `dfa_a1`; add a `dfa_source` callable. |
-| Chart overlay | `ui/workout_chart.py` | α1 series on a **right-hand** y-axis. |
-| Recording | `core/recorder.py`, `core/fit_exporter.py` | α1 (+ quality) into the 1 Hz sample row; FIT developer field. |
-
-### 0c. Dependencies
-
-- **numpy** is used transitively (matplotlib/pyqtgraph) but **not declared** in
-  `pyproject.toml`. Add it as an explicit dependency — the pipeline imports it directly.
-- **scipy is NOT a dependency** and should not be added for this. The scipy sketches in [3]
-  and [5c] are illustrative only. Implement the banded (pentadiagonal) Cholesky solve and the
-  log-log linear regression with **numpy alone** — both are a few lines and keep the
-  dependency surface small. Avoid `numpy.linalg.solve` on the dense `A`: it is sub-millisecond
-  with single-threaded BLAS, but multithreaded OpenBLAS (the numpy wheel default) was measured
-  at 270–450 ms per solve at N=150–400 on the GUI thread, from thread start-up alone. The
-  implementation uses a pure-Python banded Cholesky (~0.2 ms at N=400).
-
-### 0d. Threading
-
-The spec's "always run on a `QThread`" guidance is over-cautious for this workload: a
-full recompute at N≈400 is sub-millisecond and only fires every 5 s. OCT already delivers
-sensor samples on the **GUI thread** via Qt signals, so the simplest correct design is:
-
-- `DfaPipeline` ingests RR on the GUI thread (cheap append to a ring buffer).
-- A `QTimer` (5 s) on the GUI thread triggers `recompute()` → updates `latest_record`.
-- The tile and chart **pull** the latest record (consistent with how every other tile
-  pulls from `power_history` / `hr_source`), rather than the spec's push-`Signal(dict)`.
-
-Keep `DfaPipeline.recompute()` pure and side-effect-free so it can later be moved onto a
-`QThread`/`QRunnable` if profiling on low-end hardware ever shows jank. Do not prematurely
-thread it.
-
-### 0e. "Enabled" semantics & versioning
-
-Per product decision: the feature is **active whenever the `dfa_a1` tile is selected** in
-`tile_selections`. Selecting the tile turns on the 5 s pipeline, the chart overlay, and
-recording; deselecting it turns them off. RR ingest into the 120 s buffer continues either
-way (it is only an append), so selecting the tile mid-ride shows α1 immediately instead of
-after the window refills. No separate enable checkbox
-in Settings for the first iteration. This is a **new feature → bump MINOR** (0.2.0 → 0.3.0)
-when implemented, updating both `pyproject.toml` and `opencycletrainer/__init__.py`.
 
 ---
 
@@ -399,7 +316,7 @@ class DfaRecord:
 ```
 
 `DfaPipeline.latest_record` holds the most recent one; the tile, chart, and recorder all
-pull from it (see [0d], [7]–[9]).
+pull from it.
 
 **`mean_power_w` definition (OCT):** the average power over the **same ~120 s window** the
 α1 reading covers, so the user can read α1 against the power that produced it. Compute it at
@@ -427,7 +344,7 @@ window is full / no power data.
 > VT1/VT2 detection or zone classification. Users perform ramp tests ad hoc and read the
 > threshold crossings off the live α1 tile/chart manually. The material below is retained
 > as reference for a future iteration; do **not** build it now, and do **not** ship any
-> "Zone 1/Zone 2/VO₂" categorical label derived from α1 (see [7]).
+> "Zone 1/Zone 2/VO₂" categorical label derived from α1.
 
 - **Ramp (ERG step test):** as ERG target steps up every 3–4 min, record (power, α1)
   using only `quality == GOOD` samples. Estimate VT1 power where α1 crosses **0.75**
@@ -437,192 +354,6 @@ window is full / no power data.
 - Flag and discard α1 during ERG target-change transients — discard any window whose
   120 s span includes a target change, plus require 30–60 s settle before trusting
   the next window.
-
----
-
-## [7] OCT UI — DFA α1 tile + click-to-open detail popup
-
-### Design (product decision)
-
-The α1 readout is a **standard metric tile** in OCT's existing draggable tile grid
-(`ui/workout_screen.py`), registered as `dfa_a1` like any other tile — it keeps the same
-size, drag-to-reorder, and Settings selection behaviour. Two differences from a plain
-`MetricTile`:
-
-1. A small **quality dot** (red/amber/green/grey "traffic light") rendered as a separate
-   element inside the tile, top-right, reflecting `SignalQuality`.
-2. **Clicking the tile opens a popup detail modal** floating over the tile (not an inline
-   expand animation — the spec's `QPropertyAnimation`/`maximumHeight` approach is
-   **dropped**, because it would change the tile's height and disrupt the fixed grid).
-   Clicking the tile again, or clicking the modal, dismisses it.
-
-The modal is a frameless popup roughly **one tile-height tall plus a hair more**,
-horizontally a little **wider than the tile** (overhanging slightly left and right), anchored
-over the originating tile. It shows the detail metrics (R², RMSSD, artifact breakdown,
-quality reason). No `zone_label` / "Zone 1/2/VO₂" element anywhere — that layer was cut
-(see [6]).
-
-### Widget structure
-
-```
-DfaMetricTile(MetricTile)                ← subclass, like KJMetricTile; same grid footprint
-│   (inherits title_label + value_label "α1  0.81" / "α1  --", drag behaviour)
-├── quality_dot (QLabel)                 ← ~10 px circle, top-right corner overlay
-└── clicked → toggles DfaDetailPopup
-
-DfaDetailPopup(QFrame, Qt.Popup | frameless)   ← floats above the tile
-└── QVBoxLayout
-    ├── power_row    (QLabel)            ← "Window power   215 W  (120 s)"
-    ├── r2_row       (QLabel)            ← "Scaling fit (R²)   0.98"
-    ├── rmssd_row    (QLabel)            ← "RMSSD   42 ms"
-    ├── artifact_row (QLabel)            ← "Artifacts   1.2%  (2 missed, 1 ectopic)"
-    └── reason_row   (QLabel)            ← quality_reason; hidden when GOOD
-```
-
-**Window-average power display.** Show the α1 window's mean power (`record.mean_power_w`)
-alongside the reading. Preferred: a compact secondary line in the **tile** under the α1
-value (e.g. `α1 0.81` with `215 W` smaller beneath) so power and α1 are read together at a
-glance — but `MetricTile` is title+value only, so this needs a small subtitle label. **If
-that crowds the tile**, drop the tile sub-line and rely on the `power_row` in the modal
-(which always shows it regardless). Format `"-- W"` when `mean_power_w is None`.
-
-`MetricTile` already routes drag via `mousePressEvent`/`mouseMoveEvent` with a 6 px
-threshold (`_DRAG_THRESHOLD`); treat a press-release **below** that threshold as a click and
-toggle the popup, so drag-to-reorder and click-to-open don't conflict.
-
-### Quality colours
-
-Don't hardcode hex — pull from the active theme (`ui/theme.py`) so the dot matches OCT's
-light/dark palettes. Keep a single mapping keyed by `SignalQuality`:
-
-```python
-# resolved against the current theme, not literal hex
-QUALITY_ROLE = {
-    SignalQuality.GOOD:         "success",   # green
-    SignalQuality.DEGRADED:     "warning",   # amber
-    SignalQuality.POOR:         "danger",    # red
-    SignalQuality.INSUFFICIENT: "muted",     # grey
-}
-```
-
-### Value & dot update (pull model)
-
-Consistent with every other tile, the value is computed in `TileComputation`
-(`ui/tile_computation.py`) from a `dfa_source: Callable[[], DfaRecord | None]` injected the
-same way `hr_source`/`balance_source` are. Add a branch to `TileComputation.compute`:
-
-```python
-if key == "dfa_a1":
-    rec = self._dfa_source() if self._dfa_source is not None else None
-    if rec is None or rec.alpha1 is None:
-        return "--"
-    return f"{rec.alpha1:.2f}"
-```
-
-The quality dot and popup contents need the **full** record, not just the string, so
-`DfaMetricTile` also reads from `dfa_source` (or the screen pushes the record to it each
-tick alongside `set_tile_value`). Register the option in `ui/tile_config.py`:
-
-```python
-("dfa_a1", "DFA α1"),
-```
-
-### Popup implementation sketch
-
-```python
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel
-
-class DfaDetailPopup(QFrame):
-    """Frameless popup with α1 quality detail; dismissed on click or focus-out."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent, Qt.Popup)            # Qt.Popup auto-closes on outside click
-        self.setFrameShape(QFrame.StyledPanel)
-        lay = QVBoxLayout(self)
-        self.r2_row = QLabel(self); self.rmssd_row = QLabel(self)
-        self.artifact_row = QLabel(self); self.reason_row = QLabel(self)
-        for w in (self.r2_row, self.rmssd_row, self.artifact_row, self.reason_row):
-            lay.addWidget(w)
-
-    def show_for(self, tile, record):
-        self._populate(record)
-        self.adjustSize()
-        # overhang the tile slightly on both sides, sit just over it
-        margin = 12
-        self.setFixedWidth(tile.width() + 2 * margin)
-        top_left = tile.mapToGlobal(QPoint(-margin, 0))
-        self.move(top_left)
-        self.show()
-
-    def _populate(self, record):
-        power = f"{record.mean_power_w:.0f} W" if record.mean_power_w is not None else "-- W"
-        self.power_row.setText(f"Window power   {power}  (120 s)")
-        self.r2_row.setText(f"Scaling fit (R²)   {record.r2_loglog:.3f}")
-        self.rmssd_row.setText(f"RMSSD   {record.rmssd_ms:.0f} ms")
-        detail = ", ".join(f"{v} {k}" for k, v in record.artifact_breakdown.items() if v > 0) or "none"
-        self.artifact_row.setText(f"Artifacts   {record.artifact_fraction:.1%}  ({detail})")
-        self.reason_row.setText(record.quality_reason)
-        self.reason_row.setVisible(bool(record.quality_reason))
-```
-
-`Qt.Popup` gives the "click again / click elsewhere closes" behaviour for free; track an
-`_is_open` flag on the tile so a click on the tile itself toggles rather than re-opens.
-
-### Notes for the implementer
-
-- Reuse OCT's existing overlay conventions (`ui/paused_overlay.py`, `ui/toast.py`) for
-  styling and z-ordering rather than inventing a new pattern.
-- The pipeline runs on the GUI thread via a 5 s `QTimer` (see [0d]); there is **no**
-  background `QThread`/`Signal(dict)`. The tile just re-reads `latest_record` on the same
-  cadence the other tiles refresh.
-- Match `MetricTile`'s `QFrame.StyledPanel` + QSS palette; the popup should read as a small
-  card consistent with the tile grid.
-
----
-
-## [8] Chart overlay (α1 trace)
-
-When the `dfa_a1` tile is selected, plot the live α1 series on **both** charts in
-`ui/workout_chart.py` (interval + workout overview), in a colour distinct from the existing
-traces — target is **blue** `#3b82f6`, actual **green** `#22c55e`, HR **red** `#ef4444`, so
-use e.g. **purple/violet** `#a855f7` for α1.
-
-α1 ranges ~0.3–1.5, which is incompatible with the watt-scaled left axis. Add a **secondary
-right-hand y-axis** for α1 via a linked `pg.ViewBox` (the standard pyqtgraph twin-axis
-pattern): create a second ViewBox, add it to the plot's scene, link its X to the main
-ViewBox, and keep its Y range fixed (≈0.0–1.6). Label the right axis "α1".
-
-- Build the α1 series the same way `update_charts` builds `power_series`/`hr_series`
-  (list of `(elapsed_seconds, alpha1)`), sourced from a new α1 history buffer fed by the
-  pipeline each 5 s emit.
-- Gate on quality: when a window is `POOR`/`INSUFFICIENT` (`alpha1 is None`), insert a gap
-  rather than a point — use `connect="finite"` with `NaN`, matching the existing actual/HR
-  items.
-- Only create/show the α1 series and right axis when the tile is enabled; tear them down
-  when it's deselected.
-
----
-
-## [9] Recording & FIT export
-
-α1 must be recorded to file. The pipeline emits every 5 s; the recorder samples at 1 Hz
-(`core/recorder.py`). **Forward-fill** the latest α1 into each 1 Hz row (carry the last
-value until the next emit; leave `null` until the first full window).
-
-- **`RecorderSample`** — add `dfa_alpha1: float | None` (and optionally
-  `dfa_quality: str | None`). Thread it through `record_sample`, `_sample_to_row` (JSONL),
-  and the `RecorderSample` reconstruction. The `.samples.jsonl` stream is the **canonical**
-  store and is trivially extended.
-- **FIT** — there is **no native FIT field** for DFA α1. Embed it as a **developer data
-  field** (fit-tool supports `DeveloperDataIdMessage` + `FieldDescriptionMessage`, then per
-  `RecordMessage` developer field values). Add `dfa_alpha1` to `FitExportSample` and write
-  the developer field when any α1 is present. Treat this as **best-effort**: wrap in the
-  same defensive `_set_field` style, and if the developer-field path fails, the JSONL store
-  still has the data. Note that downstream platforms (intervals.icu, Strava) may or may not
-  surface developer fields — that's acceptable for this iteration.
-- Keep the existing `JsonFitWriterBackend` test backend in sync (add `dfa_alpha1` to its
-  record dict) so FIT-export tests stay deterministic.
 
 ---
 
@@ -637,27 +368,6 @@ value until the next emit; leave `null` until the first full window).
 4. Unit-test DFA on a synthetic series with known exponent (e.g. white noise → α≈0.5,
    integrated white noise / Brownian → α≈1.5) to confirm the core estimator before
    worrying about the HRV-specific stages.
-
-### OCT TDD checklist (build in this order, tests first)
-
-Per `CLAUDE.md` (write failing tests first; keep stages pure and Qt-free where possible):
-
-1. **RR decode** — `tests/test_sensor_decoders.py`: HR-only (no RR), single RR, multi-RR,
-   RR-after-energy-expended offset; verify 1/1024 s → ms conversion.
-2. **DFA core** — new `tests/test_dfa.py`: synthetic white-noise/Brownian exponents (item 4
-   above); banded smoothness-priors solve matches a dense `numpy.linalg.solve` reference;
-   log-log slope/R² regression against a hand-computed case.
-3. **Artifact correction** — `tests/test_dfa_artifact.py`: gross gate (300/2000 ms),
-   missed/extra/ectopic classification and the resulting `artifact_breakdown` counts.
-4. **Pipeline** — `tests/test_dfa_pipeline.py`: ring-buffer windowing to ≥120 000 ms, 5 s
-   recompute cadence, quality-gate transitions (INSUFFICIENT→GOOD→POOR), and the "no RR"
-   degradation path producing the right `quality_reason`.
-5. **Tile/value** — extend `tests/test_tile_computation.py` for the `dfa_a1` branch (`--`
-   when no record / α1 None; formatted value otherwise); a `DfaMetricTile` test that a
-   sub-threshold click toggles the popup while a drag still emits `drag_requested`.
-6. **Recorder/FIT** — extend `tests/test_recorder.py` / `tests/test_fit_exporter.py` for the
-   forward-filled `dfa_alpha1` JSONL field and the developer-field FIT path (via
-   `JsonFitWriterBackend`).
 
 ---
 

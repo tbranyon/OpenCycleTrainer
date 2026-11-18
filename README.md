@@ -10,6 +10,7 @@ OpenCycleTrainer is a cross-platform open-source workout player for indoor bike 
 * Import of .mrc, .zwo and .erg files for custom workouts
 * Load the ride planned for today on your intervals.icu calendar with one click
 * FIT file export
+* Live DFA α1 from a chest-strap's RR intervals, shown as a tile and on the charts and saved in the FIT file
 * ERG and Resistance mode control of Bluetooth FTMS trainers
 * Power matching between trainer and on-bike power meter (OpenTrueUp)
 * Hybrid control mode which uses ERG for recovery intervals and returns to the last-used Resistance level for work intervals (helpful for VO2max intervals)
@@ -39,6 +40,5 @@ Add `-Upgrade` / `--upgrade` to move dependencies to their newest allowed versio
 ## Future possibilities
 * Import additional filetypes
 * More configurability of data fields and app behavior
-* Calculation and display of DFAalpha1 during workout
-* Export custom data from workout, such as trainer/PM offset, left/right balance, DFAalpha1, etc.
+* Export more custom data from workout, such as trainer/PM offset and left/right balance
 
