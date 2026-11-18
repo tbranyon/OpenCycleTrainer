@@ -1,7 +1,7 @@
 # OpenCycleTrainer Architecture Diagram
 
-This diagram documents how control commands, live telemetry, recording, and workout
-authoring route through the project modules.
+This diagram documents how control commands, live telemetry, recording, workout
+authoring, course rides and DFA α1 route through the project modules.
 
 ## Control Command Routing (UI -> Trainer)
 
@@ -74,7 +74,7 @@ flowchart TD
     end
 
     subgraph App[Application]
-        main_window[MainWindow on_sensor_sample]
+        main_window[MainWindow _on_sensor_sample]
         controller[WorkoutSessionController receive_*]
         bridge_mgr[FTMSBridgeManager]
         workout_screen[WorkoutScreen tiles/charts]
@@ -88,7 +88,7 @@ flowchart TD
     devices_screen --> decoders
     decoders --> sensor_sample
     sensor_sample -->|signal: sensor_sample_received| main_window
-    main_window -->|receive_power / bike_power / hr / cadence / speed / pedal_balance / energy_kj| controller
+    main_window -->|receive_power_watts / bike_power_watts / hr_bpm / rr_intervals_ms / cadence_rpm / speed_mps / pedal_balance / bike_energy_kj / trainer_energy_kj| controller
     controller -->|live power samples| bridge_mgr
     bridge_mgr -->|OpenTrueUp offset / ERG re-apply| controller
     controller -->|live metrics / charts / offset| workout_screen
@@ -105,6 +105,8 @@ flowchart TD
     fit_exporter[FitExporter]
     workout_screen[WorkoutScreen]
     strava[Strava Sync Service]
+    icu[intervals.icu Sync Service]
+    manual_save[Manual save: WorkoutRecorder + FitExporter]
 
     samples[(samples.jsonl)]
     summary[(summary.json)]
@@ -120,9 +122,12 @@ flowchart TD
     fit_exporter --> fit
     rec_integration -->|export_chart_image on commit| workout_screen
     workout_screen --> png
-    rec_integration -->|auto-sync upload queue| strava
+    rec_integration -->|upload executor queue| strava
+    rec_integration -->|upload executor queue| icu
     fit --> strava
-    png -->|optional image upload| strava
+    fit --> icu
+    controller -->|save without a live recording| manual_save
+    manual_save --> fit
 ```
 
 ## Workout Authoring Routing (Library / Builder / Blocks)
@@ -161,7 +166,8 @@ flowchart TD
     builder_parser -.expands @block refs.-> blocks_store
     builder_screen -->|save as MRC| mrc
     builder_screen -->|save as ZWO| zwo
-    builder_screen -->|workout_saved| library
+    builder_screen -->|workout_saved -> refresh| library_screen
+    builder_screen -->|workout_load_requested| main_window
     library --> user_workouts
     library -->|parse by extension| workout_files
     workout_files --> mrc
@@ -171,8 +177,84 @@ flowchart TD
     library_screen -->|workout_selected| main_window
     library_screen -->|workout_edit_requested| builder_screen
     workout_screen -->|load_from_library_requested| main_window
+    workout_screen -->|load_planned_workout_requested| planned[PlannedWorkoutLoader]
+    planned -->|today's intervals.icu workout| main_window
     main_window -->|load_workout| controller[WorkoutSessionController]
     controller --> workout_screen
+```
+
+## Course Ride Routing (Course file -> Trainer grade / Chart / Map)
+
+```mermaid
+flowchart TD
+    rider((Rider))
+    files[(course .gpx / .tcx / .fit)]
+
+    subgraph Parse[Course parsing]
+        gpx[gpx_parser]
+        tcx[tcx_parser]
+        fitc[fit_course_parser]
+        course_files[course_files: points + POIs]
+        course[Course / CoursePoint / CoursePoi]
+    end
+
+    subgraph Ride[Ride]
+        import_dialog[CourseImportDialog / CourseSplitDialog / CourseLapDialog]
+        controller[WorkoutSessionController]
+        course_ride[CourseRide]
+        physics[bike_physics.advance_speed]
+        mode_state[ModeState set_course_grade]
+        bridge_mgr[FTMSBridgeManager _apply_simulation]
+        trainer[(Smart Trainer FTMS simulation)]
+    end
+
+    subgraph View[Display / Export]
+        workout_screen[WorkoutScreen]
+        chart[WorkoutChart load_course]
+        map[CourseMapPanel / CourseMapWidget]
+        tiles[NetworkTileProvider + tile cache]
+        chart_export[ChartImageExport + map_export]
+        png[(ride image .png)]
+    end
+
+    rider --> import_dialog
+    files --> gpx & tcx & fitc
+    gpx & tcx & fitc --> course_files --> course
+    import_dialog -->|from/to distance, laps| controller
+    course --> controller
+    controller -->|each tick: power| course_ride
+    course_ride --> physics
+    physics -->|virtual speed, distance| course_ride
+    course_ride -->|current grade| mode_state
+    mode_state --> bridge_mgr --> trainer
+    controller -->|load_course_chart / set_course_mode| workout_screen
+    workout_screen --> chart
+    workout_screen --> map
+    map --> tiles
+    controller -->|on commit| chart_export --> png
+```
+
+## DFA α1 Routing (HR strap -> Tile)
+
+```mermaid
+flowchart TD
+    hr[(HR Sensor HRS)]
+    devices_screen[DevicesScreen hrs decoder]
+    main_window[MainWindow]
+    controller[WorkoutSessionController _update_dfa]
+    pipeline[DfaPipeline ingest_rr / maybe_recompute]
+    artifact[artifact: classify_beats / correct_artifacts]
+    dfa[dfa.compute_alpha1]
+    tile[TileComputation DFA tile]
+    workout_screen[WorkoutScreen]
+
+    hr -->|RR intervals in HR measurement| devices_screen
+    devices_screen -->|SensorSample with RR| main_window
+    main_window -->|receive_rr_intervals_ms, selected HR device only| controller
+    controller -->|only while the DFA tile is shown| pipeline
+    pipeline --> artifact --> dfa
+    dfa -->|DfaRecord every 5 s| pipeline
+    pipeline -->|latest_dfa_record| tile --> workout_screen
 ```
 
 ### Diagram Node Key
@@ -192,13 +274,22 @@ flowchart TD
 - `OpenTrueUpController`: `opencycletrainer/core/control/opentrueup.py`
 - `HybridModeController`: `opencycletrainer/core/control/hybrid_mode.py` (implemented + tested, not yet wired into the live UI)
 - `OneSecondAggregator`: `opencycletrainer/core/one_second_aggregator.py`
-- `DeviceManager`: `opencycletrainer/devices/device_manager.py` (abstract; `BleakDeviceBackend`, `MockBackend` implement it)
+- `DeviceManager`: `opencycletrainer/devices/device_manager.py` (abstract; `BleakDeviceBackend`, `MockDeviceBackend` implement it)
 - `BleakDeviceBackend`, `BleakFTMSControlTransport`: `opencycletrainer/devices/ble_backend.py`
 - `Protocol Decoders`: `opencycletrainer/devices/decoders/*` (ftms, cps, hrs, csc)
 - `SensorSample`: `opencycletrainer/core/sensors.py`
 - `WorkoutRecorder`, `RecorderSample`: `opencycletrainer/core/recorder.py`
 - `FitExporter`: `opencycletrainer/core/fit_exporter.py`
-- `Strava Sync Service`: `opencycletrainer/integrations/strava/sync_service.py`
+- `Strava Sync Service`: `opencycletrainer/integrations/strava/sync_service.py` (FIT upload only)
+- `intervals.icu Sync Service`: `opencycletrainer/integrations/intervalsicu/sync_service.py`; FTP sync in `ftp_service.py` and `ui/ftp_sync.py`; planned workouts in `planned_workouts.py` and `ui/planned_workout_loader.py`
+- `gpx_parser` / `tcx_parser` / `fit_course_parser` / `course_files`: `opencycletrainer/core/`
+- `Course`, `CoursePoint`, `CoursePoi`: `opencycletrainer/core/course_model.py`
+- `CourseRide`: `opencycletrainer/core/course_ride.py`; `bike_physics`: `opencycletrainer/core/bike_physics.py`
+- `CourseImportDialog` and friends: `opencycletrainer/ui/course_import_dialog.py`
+- `CourseMapPanel` / `CourseMapWidget`: `opencycletrainer/ui/course_map.py`; tiles in `opencycletrainer/ui/map_tiles.py`
+- `ChartImageExport`: `opencycletrainer/ui/chart_export.py`; map drawing in `opencycletrainer/ui/map_export.py`
+- `DfaPipeline`: `opencycletrainer/core/dfa/pipeline.py`; maths in `core/dfa/dfa.py`, artifact correction in `core/dfa/artifact.py`
+- `PlannedWorkoutLoader`: `opencycletrainer/ui/planned_workout_loader.py`
 - `WorkoutLibraryScreen`: `opencycletrainer/ui/workout_library_screen.py`
 - `WorkoutBuilderScreen`: `opencycletrainer/ui/workout_builder_screen.py`
 - `BlockManagerDialog`: `opencycletrainer/ui/block_manager_dialog.py`
@@ -209,20 +300,24 @@ flowchart TD
 - `erg_parser`: `opencycletrainer/core/erg_parser.py`
 - `workout_files`: `opencycletrainer/core/workout_files.py`
 - `blocks` store: `opencycletrainer/storage/blocks.py`
+- Supporting pieces not drawn: settings (`storage/settings.py`, `ui/settings_screen.py`), credentials (`integrations/keyring_support.py` with a file fallback in `integrations/intervalsicu/key_store.py`; `integrations/strava/token_store.py`), spin-down (`core/control/spin_down.py`, `ui/spin_down_dialog.py`), capabilities dialogs (`ui/*_capabilities_dialog.py`), paired-device autoconnect (`storage/paired_devices.py`, `DevicesScreen.start_autoconnect`), OpenTrueUp offsets (`storage/opentrueup_offsets.py`), toasts (`ui/toast.py`)
 
 ## Notes
 
-- `WorkoutSessionController` is the central integration point. It no longer talks to the
-  trainer, recorder, or OpenTrueUp directly; instead it composes dedicated collaborators:
-  `FTMSBridgeManager`, `RecorderIntegration`, `ModeState`, `OpenTrueUpState`, `PauseState`,
-  `ChartHistory`, `TileComputation`, `PowerHistory`, and `TrainerConnection`.
+- `WorkoutSessionController` is the central integration point. Trainer control and live
+  recording go through dedicated collaborators: `FTMSBridgeManager`, `RecorderIntegration`,
+  `ModeState`, `OpenTrueUpState`, `PauseState`, `ChartHistory`, `TileComputation`,
+  `PowerHistory`, and `TrainerConnection`. It also owns `DfaPipeline`, `ExternalEnergyTracker`,
+  `CadenceHistory`, `PedalingDetector` and `IntervalStats`, plus a `WorkoutRecorder` and
+  `FitExporter` of its own for saving a ride manually.
 - `FTMSBridgeManager` owns the `WorkoutEngineFTMSBridge` and a single-worker
   `ThreadPoolExecutor`, so all blocking BLE control-point writes (with their indication
   acks) run off the Qt UI thread. Snapshots, power samples, and jog/mode actions are
   submitted as queued executor tasks.
 - `RecorderIntegration` feeds raw per-tick sensor snapshots through a `OneSecondAggregator`,
   so the recorder only ever receives deterministic 1 Hz bins regardless of tick jitter. It
-  also owns kJ accumulation and the background Strava upload queue (a second executor).
+  also owns kJ accumulation and two background executors: one for saving and one queueing
+  FIT uploads to Strava and intervals.icu.
 - Cadence source selection uses priority: dedicated cadence sensor > power meter > trainer.
   Power metrics prefer the bike power meter (CPS), falling back to trainer (FTMS) power.
 - OpenTrueUp receives both trainer and bike power samples through the bridge, computes an
@@ -233,7 +328,10 @@ flowchart TD
   file extension for the library, the builder and the workout tab. The builder's `@name` block references are expanded by `builder_parser`
   from `blocks.json` at the current FTP; block bodies cannot themselves reference blocks
   (single-level nesting only).
-- Current implementation gap: resistance setpoints are sent to the trainer during a workout
-  (via the bridge's `on_engine_snapshot` with `manual_resistance_level`), but a manual
-  resistance *jog* still only updates internal/UI state and does not immediately push a
-  resistance command (marked TODO in `ui/workout_controller.py`).
+- On a course ride, `CourseRide` turns rider power into virtual speed with `bike_physics`
+  and feeds the current grade to `ModeState`, which the bridge sends as an FTMS simulation
+  command. The map is drawn from cached tiles and also composed into the saved ride image.
+- DFA α1 is computed only while its tile is shown, from RR intervals of the selected HR
+  device, recomputed every 5 seconds after artifact correction.
+- `HybridModeController` (`core/control/hybrid_mode.py`) is still not wired into the live UI;
+  Hybrid mode runs its own logic in `ui/mode_state.py`.
