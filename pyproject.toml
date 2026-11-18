@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencycletrainer"
-version = "0.19.0"
+version = "0.19.1"
 description = "OpenCycleTrainer desktop app scaffold"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "packaging>=24.0",
+]
+
+[dependency-groups]
+# Freezes the app for the Windows installer (scripts/build_windows.ps1).
+windows-build = [
+  "pyinstaller>=6.10",
 ]
 
 [project.scripts]
