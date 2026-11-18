@@ -31,9 +31,12 @@ def tear_down_qt_at_session_end():
     and the process segfaults even though every test passed.
     """
     yield
+    from shiboken6 import isValid  # noqa: PLC0415
+
     for widget in QApplication.topLevelWidgets():
-        widget.close()
-        widget.deleteLater()
+        # Deleting one window can take others with it, so skip any already gone.
+        if isValid(widget):
+            widget.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     gc.collect()
 
