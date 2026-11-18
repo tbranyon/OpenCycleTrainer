@@ -282,12 +282,32 @@ def test_panel_starts_expanded_and_collapses_to_its_button():
 
 # ── Workout screen ────────────────────────────────────────────────────────────
 
+_screens: list = []
+
+
 def _screen():
     _qapp()
     from opencycletrainer.storage.settings import AppSettings
     from opencycletrainer.ui.workout_screen import WorkoutScreen
 
-    return WorkoutScreen(settings=AppSettings())
+    screen = WorkoutScreen(settings=AppSettings())
+    _screens.append(screen)
+    return screen
+
+
+@pytest.fixture(autouse=True)
+def _destroy_screens():
+    """Destroy workout screens after each test.
+
+    Every live workout screen filters all application events for its hotkeys, so a
+    screen left alive would slow down every test that runs afterwards.
+    """
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    while _screens:
+        _screens.pop().deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def test_map_panel_is_hidden_until_a_course_is_loaded():
