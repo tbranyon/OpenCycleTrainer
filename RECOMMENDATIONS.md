@@ -49,9 +49,7 @@ C++ would not have fixed any of them; it would only help install size and startu
 2. **Stop and skip act instantly, and Tab is the skip key.** One stray keypress skips an
    interval, Tab can no longer move focus, and the hotkeys are not listed anywhere in
    the app (`ui/hotkeys.py:41`). Rebind skip, confirm Stop, add a "?" overlay.
-3. **"Load from File" rejects ZWO**, although the Library accepts it
-   (`ui/workout_controller.py:315,327`). Loading from the Library is double-click only;
-   add a Load button.
+3. **Loading from the Library is double-click only.** Add a Load button.
 4. **First run gives no guidance.** Start is visible with nothing loaded and silently
    does nothing, FTP defaults to 250, and nothing points to Devices. Add a short
    checklist: pair a trainer, set FTP, pick a workout.
