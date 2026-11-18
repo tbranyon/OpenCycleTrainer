@@ -565,15 +565,34 @@ def test_simulation_mode_follows_grade_changes():
     _, snapshot, workout = _running_snapshot_and_workout()
 
     manager.submit_snapshot(snapshot, workout)
-    # The grade is read when the bridge thread applies the snapshot, so let it catch up
-    # before the grade changes.
-    manager._ftms_bridge_executor.submit(lambda: None).result(timeout=2.0)
     mode_state.grade_percent = -3.0
     manager.submit_snapshot(snapshot, workout)
     manager.submit_snapshot(snapshot, workout)
     manager._ftms_bridge_executor.shutdown(wait=True)
 
     assert _simulation_grades(transport)[-2:] == [2.0, -3.0]
+
+
+def test_queued_snapshot_applies_the_mode_and_grade_from_when_it_was_submitted():
+    """A backed-up bridge must not apply a queued snapshot with state changed since.
+
+    The course ride leaves Simulation mode and clears the grade when it ends; snapshots
+    still queued for the bridge thread at that point must keep the grade they were
+    submitted with.
+    """
+    manager, _, mode_state, transport = _configured_manager(mode="Simulation", grade_percent=-6.0)
+    _, snapshot, workout = _running_snapshot_and_workout()
+    release = threading.Event()
+    manager._ftms_bridge_executor.submit(release.wait)
+
+    manager.submit_snapshot(snapshot, workout)
+    mode_state._mode = "ERG"
+    mode_state.grade_percent = 0.0
+    release.set()
+    manager._ftms_bridge_executor.shutdown(wait=True)
+
+    assert _simulation_grades(transport)[-1:] == [-6.0]
+    assert not [w for w in transport.writes if w[0] in (0x04, 0x05)]
 
 
 def test_simulation_mode_flattens_the_road_when_paused():

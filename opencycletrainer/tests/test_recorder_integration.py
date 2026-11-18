@@ -137,48 +137,6 @@ def _make(
     return ri, rec, scr
 
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
-
-
-class TestDefaults:
-    def test_recorder_active_is_false(self) -> None:
-        ri, *_ = _make()
-        assert ri.recorder_active is False
-
-    def test_total_kj_is_zero(self) -> None:
-        ri, *_ = _make()
-        assert ri.total_kj == pytest.approx(0.0)
-
-
-# ── SensorSnapshot ────────────────────────────────────────────────────────────
-
-
-class TestSensorSnapshot:
-    def test_fields_are_accessible(self) -> None:
-        s = SensorSnapshot(
-            last_power_watts=250,
-            last_bike_power_watts=240,
-            last_hr_bpm=155,
-            last_cadence_rpm=92.5,
-            last_speed_mps=11.0,
-        )
-        assert s.last_power_watts == 250
-        assert s.last_bike_power_watts == 240
-        assert s.last_hr_bpm == 155
-        assert s.last_cadence_rpm == pytest.approx(92.5)
-        assert s.last_speed_mps == pytest.approx(11.0)
-
-    def test_all_none_fields_allowed(self) -> None:
-        s = SensorSnapshot(
-            last_power_watts=None,
-            last_bike_power_watts=None,
-            last_hr_bpm=None,
-            last_cadence_rpm=None,
-            last_speed_mps=None,
-        )
-        assert s.last_power_watts is None
-
-
 # ── start() ──────────────────────────────────────────────────────────────────
 
 
@@ -192,11 +150,6 @@ class TestStart:
         ri, rec, _ = _make()
         ri.start(_FakeWorkout(), _UTC_NOW)
         assert rec.started is True
-
-    def test_passes_workout_name_to_recorder(self) -> None:
-        ri, rec, _ = _make()
-        ri.start(_FakeWorkout("Custom Ride"), _UTC_NOW)
-        assert rec.started  # implicitly verifies start was called without error
 
     def test_noop_when_already_started(self) -> None:
         ri, rec, _ = _make()

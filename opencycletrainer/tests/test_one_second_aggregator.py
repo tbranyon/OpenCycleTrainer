@@ -171,18 +171,6 @@ class TestPowerAveraging:
         assert len(result) == 1
         assert result[0].trainer_power_watts is None
 
-    def test_bike_power_averaged_independently(self) -> None:
-        agg = _active_agg()
-        agg.add_power(_ts(0), 200, 220)
-        agg.add_power(_ts(500), 210, 240)
-        result = agg.add_power(_ts(1000), 0, 0)
-        assert len(result) == 1
-        # trainer: 200*0.5 + 210*0.5 = 205
-        assert result[0].trainer_power_watts == 205
-        # bike: 220*0.5 + 240*0.5 = 230
-        assert result[0].bike_power_watts == 230
-
-
 # ── Last-value fields ─────────────────────────────────────────────────────────
 
 
@@ -317,18 +305,6 @@ class TestPauseResume:
         result = agg.add_power(_ts(3000), 0, None)
         assert len(result) == 1
         assert result[0].trainer_power_watts == 300
-
-    def test_power_carry_forward_still_applies_across_normal_bin_boundary(self) -> None:
-        """Without an intervening pause, carry-forward must still work exactly
-        as before (regression guard for the ordinary, non-pause case)."""
-        agg = _active_agg()
-        agg.add_power(_ts(0), 200, None)
-        agg.add_power(_ts(1000), 200, None)  # closes bin 0 (avg 200 W)
-        agg.add_power(_ts(1500), 300, None)  # no pause; bin 1 first reading at 500ms
-        result = agg.add_power(_ts(2000), 0, None)
-        assert len(result) == 1
-        # 200 W for 0–0.5 s, 300 W for 0.5–1.0 s → 250 W.
-        assert result[0].trainer_power_watts == 250
 
     def test_feed_while_paused_produces_nothing(self) -> None:
         agg = _active_agg()

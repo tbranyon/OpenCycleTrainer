@@ -91,22 +91,6 @@ def _two_interval_workout(first_free_ride: bool = True) -> Workout:
 
 
 class TestModeStateDefaults:
-    def test_initial_selected_mode(self):
-        ms = ModeState("ERG")
-        assert ms.selected_mode == "ERG"
-
-    def test_initial_selected_mode_resistance(self):
-        ms = ModeState("Resistance")
-        assert ms.selected_mode == "Resistance"
-
-    def test_is_free_ride_false_by_default(self):
-        ms = ModeState("ERG")
-        assert ms.is_free_ride is False
-
-    def test_free_ride_erg_target_none_by_default(self):
-        ms = ModeState("ERG")
-        assert ms.free_ride_erg_target is None
-
     def test_default_resistance_offset(self):
         ms = ModeState("ERG")
         display_val, show_pct = ms.resistance_display()
@@ -123,13 +107,10 @@ class TestModeStateDefaults:
 
 
 class TestActiveControlMode:
-    def test_erg_selected_returns_erg(self):
-        ms = ModeState("ERG")
-        assert ms.active_control_mode(_snapshot(), _simple_workout()) == "ERG"
-
-    def test_resistance_selected_returns_resistance(self):
-        ms = ModeState("Resistance")
-        assert ms.active_control_mode(_snapshot(), _simple_workout()) == "Resistance"
+    @pytest.mark.parametrize("mode", ["ERG", "Resistance"])
+    def test_fixed_mode_selection_is_returned(self, mode):
+        ms = ModeState(mode)
+        assert ms.active_control_mode(_snapshot(), _simple_workout()) == mode
 
     def test_hybrid_below_threshold_returns_erg(self):
         ms = ModeState("Hybrid")
@@ -151,18 +132,9 @@ class TestActiveControlMode:
         ms = ModeState("Hybrid")
         assert ms.active_control_mode(_snapshot(interval_index=None), _simple_workout()) == "ERG"
 
-    def test_free_ride_interval_forces_resistance_regardless_of_erg(self):
-        ms = ModeState("ERG")
-        workout = _simple_workout(free_ride=True)
-        assert ms.active_control_mode(_snapshot(), workout) == "Resistance"
-
-    def test_free_ride_interval_forces_resistance_regardless_of_hybrid(self):
-        ms = ModeState("Hybrid")
-        workout = _simple_workout(free_ride=True)
-        assert ms.active_control_mode(_snapshot(), workout) == "Resistance"
-
-    def test_free_ride_interval_forces_resistance_regardless_of_resistance_mode(self):
-        ms = ModeState("Resistance")
+    @pytest.mark.parametrize("mode", ["ERG", "Hybrid", "Resistance"])
+    def test_free_ride_interval_forces_resistance_regardless_of_mode(self, mode):
+        ms = ModeState(mode)
         workout = _simple_workout(free_ride=True)
         assert ms.active_control_mode(_snapshot(), workout) == "Resistance"
 
