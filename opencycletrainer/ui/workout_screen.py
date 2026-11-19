@@ -983,9 +983,19 @@ class WorkoutScreen(QWidget):
             self._course_map_width_px = self.course_map_panel.width()
 
     def _on_course_map_collapsed(self, collapsed: bool) -> None:
-        """Bring the map back at the width it had before it was tucked away."""
-        if not collapsed:
+        """Hand the map's room to the plots when it is tucked away; bring it back at its old width."""
+        if collapsed:
+            self._shrink_course_map_to_button()
+        else:
             self._restore_course_map_width()
+
+    def _shrink_course_map_to_button(self) -> None:
+        """Narrow the map's splitter slot to its edge button, so the plots fill the rest."""
+        total = sum(self.chart_splitter.sizes())
+        if total <= 0:
+            return
+        width = self.course_map_panel.maximumWidth()
+        self.chart_splitter.setSizes([max(total - width, 0), width])
 
     def _restore_course_map_width(self) -> None:
         """Give the map its remembered width, or its default share before the rider has chosen one."""

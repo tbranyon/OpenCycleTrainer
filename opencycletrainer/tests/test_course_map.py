@@ -460,6 +460,36 @@ def test_the_map_keeps_the_width_the_rider_drags_it_to():
     assert screen.course_map_panel.width() == dragged_width
 
 
+def _assert_plots_fill_beside_collapsed_map(screen):
+    splitter = screen.chart_splitter
+    panel = screen.course_map_panel
+    chart_width, map_width = splitter.sizes()
+    assert map_width == panel.collapse_button.width()
+    assert chart_width + splitter.handleWidth() + map_width == splitter.width()
+    assert panel.geometry().right() == splitter.contentsRect().right()
+
+
+def test_collapsing_the_map_gives_its_room_back_to_the_plots():
+    screen = _shown(_screen())
+    screen.load_course_chart(_course())
+    _qapp().processEvents()
+
+    screen.course_map_panel.collapse_button.click()
+    _qapp().processEvents()
+
+    _assert_plots_fill_beside_collapsed_map(screen)
+
+
+def test_a_map_left_collapsed_opens_tucked_against_the_right_edge():
+    from opencycletrainer.storage.settings import AppSettings
+
+    screen = _shown(_screen(AppSettings(course_map_collapsed=True)))
+    screen.load_course_chart(_course())
+    _qapp().processEvents()
+
+    _assert_plots_fill_beside_collapsed_map(screen)
+
+
 # ── Map tiles ─────────────────────────────────────────────────────────────────
 
 from PySide6.QtCore import QObject, Signal  # noqa: E402

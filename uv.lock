@@ -648,7 +648,7 @@ wheels = [
 
 [[package]]
 name = "opencycletrainer"
-version = "0.19.4"
+version = "0.19.5"
 source = { editable = "." }
 dependencies = [
     { name = "bleak" },
