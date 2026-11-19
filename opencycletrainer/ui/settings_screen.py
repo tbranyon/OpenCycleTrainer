@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Keep at module level: on Python 3.15+, a function-local import of this lazily
+# imported name comes back unresolved once PySide6 has replaced __import__.
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import math
 from pathlib import Path
@@ -869,7 +872,6 @@ class SettingsScreen(QWidget):
             except Exception as exc:  # noqa: BLE001
                 signal.emit(f"error:{exc}")
 
-        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="strava_sync_now")
         executor.submit(_run)
         executor.shutdown(wait=False)
@@ -920,7 +922,6 @@ class SettingsScreen(QWidget):
             except Exception as exc:  # noqa: BLE001
                 signal.emit(f"error:{exc}")
 
-        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intervals_icu_connect")
         executor.submit(_run)
         executor.shutdown(wait=False)
@@ -981,7 +982,6 @@ class SettingsScreen(QWidget):
             except Exception as exc:  # noqa: BLE001
                 signal.emit(f"error:{exc}")
 
-        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intervals_icu_sync_now")
         executor.submit(_run)
         executor.shutdown(wait=False)
