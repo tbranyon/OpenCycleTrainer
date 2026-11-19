@@ -29,7 +29,9 @@ checked against SHA-256 hashes.
 
 **Linux:** `flatpak`, and `curl` if uv is not installed. The KDE runtime and SDK, the
 PySide base app and, if `flatpak-builder` is not installed, `org.flatpak.Builder` are
-installed from Flathub for the current user, so no root access is needed.
+installed from Flathub for the current user, so no root access is needed. The tests run on
+your system Python (any version `pyproject.toml` allows; set `UV_PYTHON` to pick another),
+while the Flatpak itself always uses the Python in the KDE SDK.
 
 ## Dependencies
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the OpenCycleTrainer Flatpak bundle with one command.
 #
-# Fetches what it needs (uv, Python, the Flatpak runtime, SDK and PySide base app, and
+# Uses the system Python (any version pyproject.toml allows; set UV_PYTHON to choose
+# another). Fetches what it needs (uv, the Flatpak runtime, SDK and PySide base app, and
 # flatpak-builder if it is not installed) without root, brings the locked dependencies
 # up to date, runs the tests, generates the Flatpak's offline Python sources from
 # uv.lock, and builds the app. Only flatpak, curl and an internet connection are required.
@@ -9,7 +10,6 @@
 # Output: dist/OpenCycleTrainer-<version>-<arch>.flatpak
 set -euo pipefail
 
-readonly PYTHON_VERSION="3.13"
 readonly UV_VERSION="0.13.7"
 readonly UV_WHEEL_URL_X86_64="https://files.pythonhosted.org/packages/b9/93/0e053a2ca4523ee9825ccbedeb7121470d0a188933f11688b6d90d7f5c08/uv-0.13.7-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 readonly UV_WHEEL_SHA256_X86_64="2c9bdc4a872b60a93c5f26c0791089ea11585a4f9d3b3c017d78eb8487505e25"
@@ -131,7 +131,6 @@ cd "$REPO_ROOT"
 
 # Keep the build's environment apart from any development .venv.
 export UV_PROJECT_ENVIRONMENT="$BUILD_ROOT/venv"
-export UV_PYTHON="$PYTHON_VERSION"
 uv_bin="$(find_uv)"
 
 step "Updating dependencies"

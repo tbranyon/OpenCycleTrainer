@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencycletrainer"
-version = "0.19.1"
+version = "0.19.2"
 description = "OpenCycleTrainer desktop app scaffold"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "bleak>=0.22",
-  "fit-tool>=0.9.15",
+  "fit-tool>=0.9.17",
   "keyring>=25.0",
   "PySide6>=6.8",
   "pyqtgraph>=0.13",
