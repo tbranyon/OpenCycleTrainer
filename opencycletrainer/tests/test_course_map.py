@@ -53,6 +53,11 @@ def _xy(lat: float, lon: float) -> tuple[float, float]:
     return mercator_xy(lat, lon)
 
 
+def _approx_points(points: list[tuple[float, float]]) -> list:
+    """Approximate a list of (x, y) points; pytest.approx rejects nested sequences."""
+    return [pytest.approx(point) for point in points]
+
+
 def _series(item) -> list[tuple[float, float]]:
     x, y = item.getData()
     if x is None:
@@ -102,7 +107,7 @@ def test_a_new_course_is_all_still_to_ride():
     widget = _loaded()
 
     assert widget.has_route
-    assert _series(widget._ahead_item) == pytest.approx([_xy(*point) for point in _ROUTE])
+    assert _series(widget._ahead_item) == _approx_points([_xy(*point) for point in _ROUTE])
     assert _series(widget._ridden_item) == []
 
 
@@ -123,18 +128,18 @@ def test_the_route_splits_at_the_rider():
 
 def test_the_rider_dot_follows_the_position():
     widget = _loaded()
-    assert _series(widget._dot) == pytest.approx([_xy(*_ROUTE[0])])
+    assert _series(widget._dot) == _approx_points([_xy(*_ROUTE[0])])
 
     widget.set_position(650.0)
 
-    assert _series(widget._dot) == pytest.approx([_xy(45.004, 7.0035)])
+    assert _series(widget._dot) == _approx_points([_xy(45.004, 7.0035)])
 
 
 def test_start_and_finish_are_marked():
     widget = _loaded()
 
-    assert _series(widget._start_marker) == pytest.approx([_xy(*_ROUTE[0])])
-    assert _series(widget._finish_marker) == pytest.approx([_xy(*_ROUTE[-1])])
+    assert _series(widget._start_marker) == _approx_points([_xy(*_ROUTE[0])])
+    assert _series(widget._finish_marker) == _approx_points([_xy(*_ROUTE[-1])])
 
 
 def test_a_course_without_coordinates_has_no_route_to_draw():
@@ -167,7 +172,7 @@ def test_a_lapped_course_shows_only_the_lap_being_ridden():
 
     ridden = _series(widget._ridden_item)
     ahead = _series(widget._ahead_item)
-    assert ridden == pytest.approx([_xy(*_ROUTE[0]), _xy(45.0005, 7.0)])
+    assert ridden == _approx_points([_xy(*_ROUTE[0]), _xy(45.0005, 7.0)])
     assert ahead[-1] == pytest.approx(_xy(*_ROUTE[-1]))
     assert len(ridden) + len(ahead) == len(_ROUTE) + 2
 
@@ -333,7 +338,7 @@ def test_course_position_moves_the_map_dot():
 
     screen.update_course_position(650.0)
 
-    assert _series(screen.course_map_panel.map_widget._dot) == pytest.approx([_xy(45.004, 7.0035)])
+    assert _series(screen.course_map_panel.map_widget._dot) == _approx_points([_xy(45.004, 7.0035)])
 
 
 def test_leaving_course_mode_hides_the_map():
@@ -367,7 +372,7 @@ def test_turning_the_map_on_mid_ride_shows_the_rider_where_they_are():
     screen.apply_settings(AppSettings(course_map_enabled=True))
 
     assert screen.course_map_panel.isVisibleTo(screen)
-    assert _series(screen.course_map_panel.map_widget._dot) == pytest.approx([_xy(45.004, 7.0035)])
+    assert _series(screen.course_map_panel.map_widget._dot) == _approx_points([_xy(45.004, 7.0035)])
 
 
 def test_turning_the_map_off_mid_ride_hides_it():
@@ -648,7 +653,7 @@ def _course_with_pois() -> Course:
 def test_points_of_interest_are_shown_on_the_map_where_they_are():
     widget = _loaded(_course_with_pois())
 
-    assert _series(widget._poi_icons) == pytest.approx([_xy(45.0015, 7.0), _xy(45.004, 7.0042)])
+    assert _series(widget._poi_icons) == _approx_points([_xy(45.0015, 7.0), _xy(45.004, 7.0042)])
 
 
 def test_clearing_the_map_removes_its_points_of_interest():
@@ -697,5 +702,5 @@ def test_a_lapped_course_shows_each_point_of_interest_once_for_the_lap_being_rid
     widget.set_position(lap_length + 50.0)
 
     icons = widget._poi_icons
-    assert _series(icons) == pytest.approx([_xy(45.0015, 7.0), _xy(45.004, 7.0042)])
+    assert _series(icons) == _approx_points([_xy(45.0015, 7.0), _xy(45.004, 7.0042)])
     assert [spot.data().distance_m for spot in icons.points()] == [lap_length + 150.0, lap_length + 700.0]
